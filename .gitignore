@@ -1,0 +1,14 @@
+.venv/
+__pycache__/
+data/
+logs/
+.env
+KILL
+.claude/
+.DS_Store
+
+# local backups and runtime files
+backups/
+backup-before-desk-*/
+node_modules/
+*.pyc

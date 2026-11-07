@@ -1,0 +1,132 @@
+"""--lan: the dashboard opens on a phone on the home network only with the private key; this Mac never needs it."""
+import os
+import stat
+import tempfile
+import unittest
+from pathlib import Path
+from types import SimpleNamespace
+
+from aiohttp.test_utils import TestClient, TestServer
+
+from arbbot.server import Dashboard, lan_host_ok, lan_key
+
+KEY = "k" * 22
+
+
+class Phone(Dashboard):
+    """The test client connects from 127.0.0.1; pretend it is a phone on the Wi-Fi."""
+    def is_local(self, request):
+        return False
+
+
+class LanTests(unittest.IsolatedAsyncioTestCase):
+    async def start(self, cls=Phone, key=KEY):
+        cfg = SimpleNamespace(server=SimpleNamespace(host="0.0.0.0", port=1), feed=SimpleNamespace(interval_s=1.0))
+        engine = SimpleNamespace(swing=None, snapshot=lambda: {"ok": True})
+        self.dash = cls(engine, cfg, Path("web"), lan_key=key)
+        server = TestServer(self.dash.make_app())
+        await server.start_server()
+        self.dash.cfg.server.port = server.port               # the guard compares the Host header's port
+        self.dash.allowed_hosts.add(f"127.0.0.1:{server.port}")
+        self.client = TestClient(server)
+        await self.client.start_server()
+        self.port = server.port
+
+    async def asyncTearDown(self):
+        if hasattr(self, "client"):
+            await self.client.close()
+
+    def get(self, path, host=None, **kw):
+        return self.client.get(path, headers={"Host": host or f"192.168.100.9:{self.port}"}, allow_redirects=False, **kw)
+
+    async def test_a_phone_without_the_key_sees_a_locked_page_and_no_token(self):
+        await self.start()
+        for path in ("/", "/?key=wrong", "/api/snapshot", "/api/paper/state"):
+            r = await self.get(path)
+            body = await r.text()
+            self.assertEqual(r.status, 401, path)
+            self.assertIn("locked", body)
+            self.assertNotIn(self.dash.token, body)
+
+    async def test_the_key_link_sets_a_cookie_then_the_page_and_api_open(self):
+        await self.start()
+        r = await self.get(f"/?key={KEY}")
+        self.assertEqual((r.status, r.headers["Location"]), (302, "/"))
+        cookie = r.cookies[f"arb_lan_key_{self.port}"]                  # named after the port: see the clash test
+        self.assertEqual((cookie.value, bool(cookie["httponly"]), cookie["samesite"]), (KEY, True, "Strict"))
+        r = await self.get("/", cookies={"arb_lan_key": KEY})
+        self.assertEqual(r.status, 200)
+        self.assertIn(self.dash.token, await r.text())        # the page works: it carries the control token
+        self.assertEqual((await self.get("/api/snapshot", cookies={"arb_lan_key": KEY})).status, 200)
+
+    async def test_two_dashboards_on_one_host_keep_their_own_keys(self):
+        """A browser keeps one cookie per name per host, ports ignored: with one shared name, opening the paper
+        dashboard's link replaced the mainnet key and locked the mainnet page."""
+        await self.start()
+        host = f"192.168.100.9:{self.port}"
+        other = {f"arb_lan_key_{self.port + 1}": "the-other-dashboards-key"}   # the cookie another port set
+        r = await self.get(f"/?key={KEY}", host)
+        mine = {f"arb_lan_key_{self.port}": r.cookies[f"arb_lan_key_{self.port}"].value}
+        self.client.session.cookie_jar.clear()                     # only the cookies each request names below
+        self.assertEqual((await self.get("/", host, cookies={**other, **mine})).status, 200)   # both kept: both work
+        self.assertEqual((await self.get("/", host, cookies=other)).status, 401)              # another port's key: no
+        self.assertEqual((await self.get("/", host, cookies={"arb_lan_key": KEY})).status, 200)  # old shared name: yes
+        self.assertEqual((await self.get("/", host, cookies={"arb_lan_key": "wrong"})).status, 401)
+
+    async def test_hosts_a_phone_may_use_and_ones_it_may_not(self):
+        await self.start()
+        ok = {"arb_lan_key": KEY}
+        self.assertEqual((await self.get("/", f"192.168.100.9:{self.port}", cookies=ok)).status, 200)
+        self.assertEqual((await self.get("/", f"Surendras-Mac.local:{self.port}", cookies=ok)).status, 200)
+        self.assertEqual((await self.get("/", f"evil.example.com:{self.port}", cookies=ok)).status, 403)
+        self.assertEqual((await self.get("/", "192.168.100.9:9999", cookies=ok)).status, 403)
+        self.assertFalse(lan_host_ok("8.8.8.8:80"))
+        self.assertEqual((await self.get("/", f"100.101.102.103:{self.port}", cookies=ok)).status, 200)   # Tailscale
+        self.assertFalse(lan_host_ok("100.128.0.1:80"))      # just outside Tailscale's 100.64.0.0/10
+
+    async def test_this_mac_needs_no_key_and_without_lan_a_phone_address_is_refused(self):
+        await self.start(cls=Dashboard)
+        self.assertEqual((await self.get("/", f"127.0.0.1:{self.port}")).status, 200)
+        await self.client.close()
+        await self.start(cls=Dashboard, key=None)
+        self.assertEqual((await self.get("/", f"192.168.100.9:{self.port}")).status, 403)
+
+    def test_home_network_addresses_on_linux_and_macos(self):
+        from unittest import mock
+        from arbbot import server
+        linux_ip = ("1: lo    inet 127.0.0.1/8 scope host lo\n"
+                    "3: wlan0    inet 192.168.1.23/24 brd 192.168.1.255 scope global dynamic wlan0\n"
+                    "4: docker0    inet 172.17.0.1/16 brd 172.17.255.255 scope global docker0\n"
+                    "5: nordlynx    inet 10.5.0.2/32 scope global nordlynx\n"
+                    "6: tun0    inet 10.8.0.3/24 scope global tun0\n")
+        old_linux_ifconfig = ("eth0      Link encap:Ethernet\n          inet addr:10.0.0.7  Bcast:10.0.0.255\n"
+                              "lo        Link encap:Local Loopback\n          inet addr:127.0.0.1  Mask:255.0.0.0\n")
+        mac_ifconfig = ("lo0: flags=8049<UP,LOOPBACK>\n\tinet 127.0.0.1 netmask 0xff000000\n"
+                        "en0: flags=8863<UP>\n\tinet 192.168.100.9 netmask 0xffffff00 broadcast 192.168.100.255\n"
+                        "utun4: flags=8051<UP>\n\tinet 10.5.0.2 --> 10.5.0.2 netmask 0xff000000\n")
+        for outputs, want in (({"ip": linux_ip}, ["192.168.1.23"]),                 # Docker and VPNs left out
+                              ({"ifconfig": old_linux_ifconfig}, ["10.0.0.7"]),       # no `ip`: net-tools format
+                              ({"ifconfig": mac_ifconfig}, ["192.168.100.9"]),        # macOS has no `ip`
+                              ({}, [])):                                              # neither tool
+            with mock.patch.object(server, "_run", lambda cmd, o=outputs: o.get(cmd[0], "")):
+                self.assertEqual(server.lan_addresses(), want)
+
+    def test_a_tailscale_address_is_offered_as_a_phone_link(self):
+        from unittest import mock
+
+        from arbbot import server
+        ip_out = ("2: eth0    inet 45.76.12.34/24 brd 45.76.12.255 scope global eth0\n"       # a VPS's public address: never offered
+                  "3: tailscale0    inet 100.101.102.103/32 scope global tailscale0\n")
+        with mock.patch.object(server, "_run", return_value=ip_out):
+            self.assertEqual(server.lan_addresses(), ["100.101.102.103"])
+
+    def test_the_key_is_kept_private_and_reused(self):
+        path = Path(tempfile.mkdtemp()) / "lan-key-8767.txt"
+        key = lan_key(path)
+        self.assertGreaterEqual(len(key), 16)
+        self.assertEqual(lan_key(path), key)                  # a bookmarked phone link keeps working
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -1,0 +1,1425 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Basis Arb Monitor</title>
+<style>
+  :root {
+    --bg: #0b0f14; --panel: #121821; --panel-2: #172030; --line: #243044; --text: #e6edf6; --muted: #8394ab;
+    --accent: #4cc9f0; --pos: #2fd18b; --neg: #ff6b6b; --warn: #f5b942; --sim: #b58cff;
+    --shadow: 0 1px 0 rgba(255,255,255,.03) inset;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6fa; --panel: #ffffff; --panel-2: #eef2f8; --line: #d8e0ec; --text: #142033; --muted: #5d6f88;
+      --accent: #0a7fb0; --pos: #0e9d63; --neg: #d6403f; --warn: #b87a00; --sim: #7a4fd6;
+      --shadow: none; color-scheme: light;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .num, td.n, .kpi .v { font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .wrap { max-width: 1680px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .9px; color: var(--muted); margin: 0; font-weight: 600; }
+  .hdr-left, .hdr-right { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; font-weight: 600; background: var(--panel); }
+  .badge.paper { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .badge.live { color: #fff; background: var(--neg); border-color: var(--neg); }
+  .badge.sim { color: var(--sim); border-color: color-mix(in srgb, var(--sim) 50%, transparent); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--pos); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 25%, transparent); }
+  .dot.bad { background: var(--neg); }
+  button { font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; min-height: 32px; }
+  button:hover { border-color: var(--accent); }
+  button:focus-visible, th[data-k]:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.danger { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 45%, var(--line)); }
+  .banner { display: none; margin-bottom: 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); background: color-mix(in srgb, var(--warn) 12%, var(--panel)); color: var(--text); }
+  .banner.show { display: block; }
+  .banner.err { border-color: color-mix(in srgb, var(--neg) 55%, transparent); background: color-mix(in srgb, var(--neg) 12%, var(--panel)); }
+  .banner button { margin-left: 10px; min-height: 26px; padding: 2px 10px; font-size: 12px; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow); }
+  .kpi .l { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .7px; }
+  .kpi .v { font-size: 20px; font-weight: 650; margin-top: 2px; }
+  .kpi .s { color: var(--muted); font-size: 12px; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(320px, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .card + .card { margin-top: 14px; }
+  .card-h { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); gap: 10px; }
+  .card-h .hint { color: var(--muted); font-size: 12px; }
+  .scroll { overflow: auto; }
+  .scroll.tall { max-height: 74vh; }
+  .scroll.mid { max-height: 280px; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  th:first-child, td:first-child { text-align: left; }
+  th { position: sticky; top: 0; background: var(--panel-2); color: var(--muted); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; z-index: 1; }
+  th[data-k] { cursor: pointer; user-select: none; }
+  th[data-k]:hover { color: var(--text); }
+  th .arr { margin-left: 3px; color: var(--accent); }
+  tr.signal td { background: color-mix(in srgb, var(--pos) 11%, transparent); }
+  tr.held td { background: color-mix(in srgb, var(--accent) 11%, transparent); }
+  td.sym { font-weight: 600; font-family: ui-sans-serif, -apple-system, sans-serif; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); } .mut { color: var(--muted); } .warn { color: var(--warn); }
+  .chip { display: inline-block; min-width: 58px; text-align: center; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 650; border: 1px solid var(--line); color: var(--muted); }
+  .chip.signal { background: var(--pos); border-color: var(--pos); color: #04150d; }
+  .chip.held { background: var(--accent); border-color: var(--accent); color: #031219; }
+  .chip.watch { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+  .chip.stale { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 55%, transparent); }
+  .chip.warmup { border-style: dashed; }
+  .empty { padding: 18px 14px; color: var(--muted); }
+  .ev { padding: 6px 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); display: flex; gap: 10px; font-size: 12.5px; }
+  .ev time { color: var(--muted); font-family: ui-monospace, Menlo, monospace; flex: none; }
+  .ev.error { color: var(--neg); } .ev.win { color: var(--pos); } .ev.loss { color: var(--warn); } .ev.entry { color: var(--accent); }
+  footer { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .sw-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; padding: 0 14px 14px; align-items: start; }
+  .sw-grid h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+  .sw-grid .tbl { border: 1px solid var(--line); border-radius: 10px; }
+  .sw-note { padding: 0 14px 12px; color: var(--muted); font-size: 12px; }
+  #sw-accts { padding: 14px 14px 0; margin-bottom: 14px; }
+  .sw-right { display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 6px 14px; }
+  .sw-power { display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 650; }
+  .sw-toggle { width: 42px; height: 24px; min-height: 0; padding: 0; border-radius: 999px; position: relative; background: var(--line); border: 1px solid var(--line); }
+  .sw-toggle::after { content: ""; position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; transition: left .15s; }
+  .sw-toggle[aria-checked="true"] { background: var(--pos); border-color: var(--pos); }
+  .sw-toggle[aria-checked="true"]::after { left: 20px; }
+  .sw-toggle:disabled { opacity: .6; cursor: wait; }
+  .sw-fund { display: flex; flex-wrap: wrap; gap: 8px 18px; align-items: center; padding: 0 14px 14px; font-size: 12.5px; color: var(--muted); }
+  .sw-fund label { display: inline-flex; align-items: center; gap: 6px; text-transform: capitalize; }
+  .sw-fund input { width: 110px; padding: 4px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; font: inherit; }
+  .sw-fund button { padding: 4px 10px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel); color: inherit; font: inherit; cursor: pointer; }
+  .sw-fund button:disabled { opacity: .5; cursor: default; }
+  .sw-fund .msg { flex-basis: 100%; }
+  .mk-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(280px, 360px); gap: 14px; padding: 14px 14px 0; align-items: start; }
+  .mk-grid.one { grid-template-columns: minmax(0, 1fr); padding-bottom: 14px; }
+  @media (max-width: 980px) { .mk-grid { grid-template-columns: minmax(0, 1fr); } }
+  .mk-box { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); min-width: 0; overflow: hidden; }
+  .mk-tabs { display: flex; flex-wrap: wrap; gap: 2px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); }
+  .mk-tab { background: none; border: 1px solid transparent; min-height: 28px; padding: 4px 10px; color: var(--muted); border-radius: 6px; font-size: 13px; font-weight: 600; }
+  .mk-tab[aria-selected="true"] { color: var(--text); background: var(--panel-2); border-color: var(--line); }
+  span.mk-tab { display: inline-flex; align-items: center; }
+  .mk-spread { margin-left: auto; color: var(--muted); font-size: 12px; padding-right: 4px; font-family: ui-monospace, Menlo, monospace; }
+  .mk-mv { margin-left: auto; display: inline-flex; gap: 4px; }
+  .mk-mv[hidden] { display: none; }
+  .mk-mv button, .mk-iv button { min-height: 26px; padding: 2px 8px; font-size: 12px; background: none; border-color: transparent; color: var(--muted); }
+  .mk-mv button[aria-pressed="true"], .mk-iv button[aria-pressed="true"] { color: var(--text); border-color: var(--line); background: var(--panel-2); }
+  .mk-bar { display: flex; flex-wrap: wrap; gap: 6px 12px; align-items: center; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; color: var(--muted); }
+  .mk-bar select { font: inherit; color: var(--text); padding: 3px 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); margin-left: 4px; }
+  .mk-note { margin-left: auto; font-size: 11.5px; }
+  .mk-legend { padding: 6px 10px 0; font: 12px/1.55 ui-monospace, "SF Mono", Menlo, monospace; color: var(--muted); min-height: 46px; }
+  .mk-legend b { color: var(--text); font-weight: 650; }
+  #mk-canvas { display: block; width: 100%; height: 440px; cursor: crosshair; }
+  .mk-kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 1px; background: var(--line); }
+  .mk-kv > div { background: var(--panel); padding: 10px 12px; }
+  .mk-kv .l { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .6px; }
+  .mk-kv .v { font: 600 15px/1.4 ui-monospace, "SF Mono", Menlo, monospace; }
+  .bk-head, .bk-row { display: grid; grid-template-columns: 1.1fr 1fr 1fr; gap: 8px; padding: 2px 12px; position: relative; font: 12.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  .bk-head { color: var(--muted); font: 11.5px/1.4 ui-sans-serif, -apple-system, "Segoe UI", sans-serif; padding-top: 8px; padding-bottom: 4px; }
+  .bk-head span, .bk-row span { text-align: right; position: relative; z-index: 1; }
+  .bk-head span:first-child, .bk-row span:first-child { text-align: left; }
+  .bk-row i { position: absolute; top: 1px; bottom: 1px; right: 0; opacity: .16; z-index: 0; }
+  .bk-ask span:first-child { color: var(--neg); } .bk-ask i { background: var(--neg); }
+  .bk-bid span:first-child { color: var(--pos); } .bk-bid i { background: var(--pos); }
+  .bk-mid { display: flex; gap: 10px; align-items: baseline; padding: 8px 12px; border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); margin: 4px 0; }
+  .bk-mid .p { font: 650 20px/1.2 ui-monospace, "SF Mono", Menlo, monospace; }
+  .bk-mid .m { color: var(--muted); font: 12px ui-monospace, Menlo, monospace; }
+  #mk-movers tr { cursor: pointer; } #mk-movers tr:hover td { background: var(--panel-2); }
+  .mk-grid.three { grid-template-columns: minmax(0, 1fr) minmax(260px, 300px) minmax(280px, 320px); }
+  @media (max-width: 1380px) { .mk-grid.three { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); } .mk-grid.three .mk-chartbox { grid-column: 1 / -1; } }
+  @media (max-width: 720px) { .mk-grid.three { grid-template-columns: minmax(0, 1fr); } }
+  .ot { padding: 10px 12px 12px; font-size: 13px; }
+  .ot-top { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+  .ot-top .badge { margin-left: auto; }
+  .ot-chip { min-height: 28px; padding: 3px 12px; font-size: 12.5px; background: var(--panel-2); }
+  .ot-chip:disabled { cursor: default; opacity: 1; color: var(--text); }
+  .ot-tabs { display: flex; gap: 14px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
+  .ot-tabs button { background: none; border: 0; border-bottom: 2px solid transparent; border-radius: 0; padding: 6px 0; min-height: 0; color: var(--muted); font-size: 14px; }
+  .ot-tabs button[aria-selected="true"] { color: var(--text); border-bottom-color: var(--warn); }
+  .ot-avbl { color: var(--muted); margin-bottom: 8px; display: flex; align-items: center; gap: 4px; }
+  .ot-avbl b { color: var(--text); font-family: ui-monospace, Menlo, monospace; }
+  .ot-ico { min-height: 0; padding: 0 4px; background: none; border: 0; color: var(--warn); font-size: 15px; }
+  .ot-row { margin-bottom: 8px; }
+  .ot-lab { color: var(--muted); font-size: 12px; margin-bottom: 3px; }
+  .ot-in { display: flex; align-items: center; border: 1px solid var(--line); border-radius: 8px; background: var(--panel-2); padding: 0 8px; min-height: 36px; flex: 1; min-width: 0; }
+  .ot-in:focus-within { border-color: var(--warn); }
+  .ot-in input { flex: 1; min-width: 0; border: 0; background: none; color: var(--text); font: 14px ui-monospace, Menlo, monospace; padding: 7px 0; outline: none; }
+  .ot-in input:disabled { color: var(--muted); }
+  .ot-in .u { color: var(--muted); font-size: 12.5px; }
+  .ot-in select, select.ot-side, .ot-tif select { border: 0; background: none; color: var(--text); font: inherit; font-size: 12.5px; }
+  .ot-pair { display: flex; gap: 6px; }
+  .ot-side { min-height: 36px; padding: 0 10px; border: 1px solid var(--line) !important; border-radius: 8px; background: var(--panel-2); }
+  #ot-bbo[aria-pressed="true"] { border-color: var(--warn) !important; color: var(--warn); }
+  .ot-slider { display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; }
+  .ot-slider input { flex: 1; accent-color: var(--warn); }
+  .ot-slider span { color: var(--muted); font: 11.5px ui-monospace, Menlo, monospace; width: 34px; text-align: right; }
+  .ot-sep { border-top: 1px solid var(--line); margin: 4px 0 8px; }
+  .ot-ck { display: flex; align-items: center; gap: 7px; margin: 6px 0; color: var(--text); cursor: pointer; }
+  .ot-ck input[type="checkbox"] { accent-color: var(--warn); width: 15px; height: 15px; }
+  .ot-mini { width: 46px; border: 1px solid var(--line); border-radius: 6px; background: var(--panel-2); color: var(--text); font: 12.5px ui-monospace, Menlo, monospace; padding: 2px 4px; }
+  .ot-tpsl { display: grid; gap: 6px; margin: 4px 0 6px 22px; }
+  .ot-hint { color: var(--muted); font-size: 11.5px; }
+  .ot-ckrow { display: flex; justify-content: space-between; align-items: center; }
+  .ot-tif { color: var(--muted); font-size: 12.5px; }
+  .ot-btns { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0 8px; }
+  .ot-buy, .ot-sell { min-height: 40px; border: 0; color: #fff; font-size: 14.5px; }
+  .ot-buy { background: #2ebd85; } .ot-sell { background: #f6465d; }
+  .ot-buy:hover, .ot-sell:hover { filter: brightness(1.08); }
+  .ot-buy:disabled, .ot-sell:disabled { opacity: .55; cursor: wait; }
+  .ot-ok { background: var(--warn); color: #111; border-color: var(--warn); }
+  .ot-est { display: grid; grid-template-columns: 1fr 1fr; gap: 2px 8px; font-size: 12px; color: var(--muted); }
+  .ot-est div:nth-child(even) { text-align: right; }
+  .ot-est b { color: var(--text); font-weight: 500; font-family: ui-monospace, Menlo, monospace; }
+  .ot-fee { color: var(--muted); font-size: 12px; margin-top: 8px; }
+  .ot-msg { margin-top: 8px; font-size: 12.5px; min-height: 18px; }
+  .ot-levbox { border: 1px solid var(--line); border-radius: 8px; padding: 8px; margin-bottom: 8px; background: var(--panel-2); display: grid; gap: 6px; }
+  .ot-levbox input[type="range"] { accent-color: var(--warn); }
+  .ot-lev-note { color: var(--warn); font-size: 11.5px; min-height: 14px; }
+  td .mini { min-height: 24px; padding: 1px 8px; font-size: 12px; }
+  /* who opened a futures position or order: swing kit account, arbitrage, the order ticket, or none of the bot's systems */
+  .src { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+         border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: color-mix(in srgb, currentColor 10%, transparent); }
+  .src.swing { color: var(--pos); } .src.arb { color: var(--accent); } .src.ticket { color: var(--warn); } .src.ext { color: var(--muted); }
+  td.why { white-space: normal; min-width: 240px; text-align: left; color: var(--muted); font-size: 12.5px; }
+  th.why { text-align: left; }
+  .side-long { color: var(--pos); font-weight: 650; } .side-short { color: var(--neg); font-weight: 650; }
+  @media (max-width: 640px) { .wrap { padding: 12px 16px; } .kpi .v { font-size: 18px; } }
+  :root[data-theme="light"] {
+    --bg: #f4f6fa; --panel: #ffffff; --panel-2: #eef2f8; --line: #d8e0ec; --text: #142033; --muted: #5d6f88;
+    --accent: #0a7fb0; --pos: #0e9d63; --neg: #d6403f; --warn: #b87a00; --sim: #7a4fd6;
+    --shadow: none; color-scheme: light;
+  }
+  /* section menu: sticky, scrolls sideways on a phone */
+  .nav { position: sticky; top: 0; z-index: 6; display: flex; gap: 6px; overflow-x: auto; padding: 8px 0; margin: -6px 0 10px;
+         background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); scrollbar-width: none; }
+  .nav a { color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+           border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
+  .nav a:hover, .nav a:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
+  .nav a[aria-current="page"] { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+  /* the P&L reports page */
+  .reports { display: grid; gap: 14px; }
+  .reports .card + .card { margin-top: 0; }
+  .card-h a.more { color: var(--accent); text-decoration: none; font-size: 12.5px; font-weight: 600; white-space: nowrap; }
+  .card-h a.more:hover, .card-h a.more:focus-visible { text-decoration: underline; outline: none; }
+  @media (max-width: 640px) { .card-h { flex-wrap: wrap; } }
+  /* P&L report (daily / weekly / monthly) */
+  .pnl { border-top: 1px solid var(--line); padding: 12px 14px 14px; }
+  .pnl-h { display: flex; flex-wrap: wrap; gap: 8px 12px; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+  .pnl-h h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0; font-weight: 600; }
+  .pnl-ctl { display: flex; flex-wrap: wrap; gap: 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; min-height: 30px; padding: 4px 12px; background: none; color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+  .pnl-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 10px; }
+  .pnl-sum > div { background: var(--panel-2); border-radius: 8px; padding: 6px 10px; min-width: 0; }
+  .pnl-sum .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
+  .pnl-sum .v { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-weight: 650; font-size: 15px; }
+  .pnl-sum .s { font-size: 11.5px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pnl-chart { width: 100%; height: 160px; display: block; margin-bottom: 8px; }
+  .pnl-chart text { fill: var(--muted); font: 10.5px ui-sans-serif, -apple-system, sans-serif; }
+  .pnl .tbl { border: 1px solid var(--line); border-radius: 10px; }
+  .pnl-note { color: var(--muted); font-size: 12px; margin-top: 6px; }
+  .pnl tr.zero td { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="hdr-left">
+      <h1>Basis Arb Monitor</h1>
+      <span id="b-mode" class="badge paper">PAPER</span>
+      <span id="b-sim" class="badge sim" hidden>SIMULATED FEED</span>
+      <span class="badge"><span id="dot" class="dot"></span><span id="feedtxt">connecting…</span></span>
+    </div>
+    <div class="hdr-right">
+      <button id="btn-theme" type="button" title="Theme: follows the system" aria-label="Switch theme">◐ Auto</button>
+      <button id="btn-pause" type="button">Pause entries</button>
+      <button id="btn-flat" type="button" class="danger">Flatten all</button>
+    </div>
+  </header>
+
+  <!--NAV--><nav class="nav" aria-label="Pages">
+    <a href="/" data-view="reports">P&amp;L reports</a><a href="/arbitrage" data-view="arb">Arbitrage</a>
+    <a href="/swing" data-view="swing">Swing kit</a><a href="/market" data-view="market">Market &amp; ticket</a>
+    <a href="/terminal">Terminal ↗</a>
+  </nav><!--/NAV-->
+
+  <div id="banner" class="banner" role="status"></div>
+
+  <!--PNL--><div class="reports" data-show="reports">
+    <section class="card" aria-labelledby="h-r-arb">
+      <div class="card-h"><h2 id="h-r-arb">Arbitrage</h2><a class="more" href="/arbitrage">Markets, positions, trades, log →</a></div>
+      <div class="pnl" data-panel="arb" data-title="Arbitrage trades"></div>
+    </section>
+    <section class="card" aria-labelledby="h-r-sw">
+      <div class="card-h"><h2 id="h-r-sw">Swing kit</h2><a class="more" href="/swing">Accounts, positions, setups, trades →</a></div>
+      <div class="pnl" data-panel="swing" data-sources="demo,swing" data-title="Trend · swing · SMC"></div>
+    </section>
+    <section class="card" aria-labelledby="h-r-tk">
+      <div class="card-h"><h2 id="h-r-tk">Futures account</h2><a class="more" href="/market">Chart, order book, order ticket →</a></div>
+      <div class="pnl" data-panel="ticket" data-title="Order ticket account"></div>
+    </section>
+  </div><!--/PNL-->
+
+  <section class="kpis" id="overview" aria-label="Summary" data-show="arb">
+    <div class="kpi"><div class="l">Markets</div><div class="v" id="k-markets">–</div><div class="s" id="k-markets-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Signals now</div><div class="v" id="k-signals">–</div><div class="s" id="k-signals-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Open positions</div><div class="v" id="k-open">–</div><div class="s" id="k-open-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Realised P&amp;L</div><div class="v" id="k-real">–</div><div class="s" id="k-real-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Today (UTC)</div><div class="v" id="k-day">–</div><div class="s" id="k-day-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Win rate</div><div class="v" id="k-win">–</div><div class="s" id="k-win-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Feed</div><div class="v" id="k-feed">–</div><div class="s" id="k-feed-s">&nbsp;</div></div>
+  </section>
+
+  <div class="grid" id="arb" data-show="arb">
+    <section class="card" aria-labelledby="h-markets">
+      <div class="card-h"><h2 id="h-markets">Markets</h2><span class="hint" id="mk-hint">click a column to sort</span></div>
+      <div class="scroll tall">
+        <table>
+          <thead><tr id="mk-head"></tr></thead>
+          <tbody id="mk-body"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <div>
+      <section class="card" aria-labelledby="h-pos">
+        <div class="card-h"><h2 id="h-pos">Open positions</h2><span class="hint" id="pos-hint"></span></div>
+        <div class="scroll mid"><table><thead><tr><th>Market</th><th>Opened</th><th>Held</th><th>Size</th><th>Entry</th><th>Now</th><th>Unreal.</th></tr></thead><tbody id="pos-body"></tbody></table></div>
+      </section>
+      <section class="card" aria-labelledby="h-tr">
+        <div class="card-h"><h2 id="h-tr">Recent trades</h2></div>
+        <div class="scroll mid"><table><thead><tr><th>Market</th><th>Closed</th><th>P&amp;L</th><th>bps</th><th>Held</th><th>Reason</th></tr></thead><tbody id="tr-body"></tbody></table></div>
+      </section>
+      <section class="card" aria-labelledby="h-ev">
+        <div class="card-h"><h2 id="h-ev">Event log</h2></div>
+        <div class="scroll mid" id="ev-body"></div>
+      </section>
+    </div>
+  </div>
+
+  <section class="card" id="sw-card" aria-labelledby="h-swing" style="margin-top:14px" data-show="swing">
+    <div class="card-h"><h2 id="h-swing">Swing paper accounts · trend · swing · SMC</h2>
+      <div class="sw-right"><span class="hint" id="sw-hint"></span>
+        <span class="sw-power" id="sw-power" hidden><span id="sw-power-l"></span><button type="button" class="sw-toggle" id="sw-toggle" role="switch" aria-checked="true" aria-label="Swing toolkit on or off"></button></span></div></div>
+    <div id="sw-off" class="empty" hidden>The swing toolkit is not running in this bot. Start it with <code>--swing</code> to paper-trade the trend, swing and Smart Money strategies.</div>
+    <div id="sw-on" hidden>
+      <div class="kpis" id="sw-kpis" aria-label="Swing totals, all accounts"></div>
+      <div class="kpis" id="sw-accts"></div>
+      <div class="sw-fund" id="sw-fund" hidden></div>
+      <div class="sw-grid">
+        <div><h3>Open swing positions</h3><div class="tbl scroll mid"><table><thead><tr><th>Account</th><th>Market</th><th>Side</th><th>Opened</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L</th><th>Demo account</th></tr></thead><tbody id="sw-open"></tbody></table></div></div>
+        <div><h3>Waiting for the next candle open</h3><div class="tbl scroll mid"><table><thead><tr><th>Account</th><th>Market</th><th>Side</th><th>Near</th><th>Stop</th><th>Target</th><th class="why">Why</th></tr></thead><tbody id="sw-setups"></tbody></table></div></div>
+        <div><h3>Recent swing trades</h3><div class="tbl scroll mid"><table><thead><tr><th>Account</th><th>Market</th><th>Side</th><th>Opened → closed</th><th>In → out</th><th>P&amp;L</th><th>R</th><th>Out</th></tr></thead><tbody id="sw-trades"></tbody></table></div></div>
+        <div id="sw-demo-wrap" hidden><h3>Demo account trades · Binance futures testnet</h3><div class="tbl scroll mid"><table><thead><tr><th>Account</th><th>Market</th><th>Side</th><th>Opened → closed</th><th>In → out</th><th>P&amp;L after fees</th><th>Out</th></tr></thead><tbody id="sw-demo"></tbody></table></div></div>
+      </div>
+      <div class="sw-note" id="sw-note"></div>
+    </div>
+  </section>
+
+  <!--MARKET-->
+  <section class="card" id="mk-card" aria-labelledby="h-market" style="margin-top:14px" data-show="market">
+    <div class="card-h"><h2 id="h-market">Market · Binance USD-M futures</h2><span class="hint" id="mk-hint">connecting…</span></div>
+    <div class="mk-grid three">
+      <div class="mk-box mk-chartbox">
+        <div class="mk-tabs" role="tablist" aria-label="Market views">
+          <button class="mk-tab" role="tab" data-tab="chart">Chart</button>
+          <button class="mk-tab" role="tab" data-tab="info">Info</button>
+          <button class="mk-tab" role="tab" data-tab="data">Trading Data</button>
+        </div>
+        <div class="mk-bar">
+          <label>Market <select id="mk-sym" aria-label="Market"></select></label>
+          <span class="mk-iv" id="mk-iv" role="group" aria-label="Candle interval"></span>
+          <span class="mk-note">wheel = zoom · lines = swing positions on this market</span>
+        </div>
+        <div id="mk-pane-chart">
+          <div class="mk-legend" id="mk-legend">Loading candles…</div>
+          <canvas id="mk-canvas" aria-label="Candlestick chart with moving averages and volume"></canvas>
+        </div>
+        <div id="mk-pane-info" hidden><div class="mk-kv" id="mk-info"><div class="empty">Loading…</div></div></div>
+        <div id="mk-pane-data" hidden>
+          <div class="tbl scroll mid"><table><thead><tr><th>Hour</th><th>Accounts long</th><th>Taker buy / sell</th><th>Open interest</th></tr></thead><tbody id="mk-data"></tbody></table></div>
+          <div class="sw-note" style="padding-top:8px">Binance's public sentiment data, last 12 hours: the share of accounts that are long, aggressive buying vs selling (above 1 = more buying), and the open interest in dollars.</div>
+        </div>
+      </div>
+      <div class="mk-box">
+        <div class="mk-tabs"><span class="mk-tab" aria-selected="true">Order Book</span><span class="mk-spread" id="bk-spread"></span></div>
+        <div class="bk-head"><span>Price (USDT)</span><span>Size (USDT)</span><span>Sum (USDT)</span></div>
+        <div id="bk-asks"></div>
+        <div class="bk-mid"><span class="p" id="bk-last">–</span><span class="m" id="bk-mark"></span></div>
+        <div id="bk-bids"></div>
+      </div>
+      <div class="mk-box ot" id="ot">
+        <div class="ot-top">
+          <button type="button" class="ot-chip" disabled title="The paper account uses isolated margin">Isolated</button>
+          <button type="button" class="ot-chip" id="ot-lev" title="Leverage for this market">15x</button>
+          <button type="button" class="ot-chip" disabled title="Single-asset mode: margin in USDT">S</button>
+          <span class="badge paper" id="ot-venue" title="Orders fill against live Binance prices in a paper account. Nothing is ever sent to Binance.">PAPER</span>
+        </div>
+        <div class="ot-levbox" id="ot-levbox" hidden>
+          <div class="ot-lab">Leverage for <span id="ot-levsym"></span></div>
+          <div class="ot-in"><input id="ot-levn" type="number" min="1" max="125" step="1" aria-label="Leverage"><span class="u">x</span></div>
+          <input id="ot-levr" type="range" min="1" max="125" step="1" aria-label="Leverage slider">
+          <div class="ot-lev-note" id="ot-lev-note"></div>
+          <div class="ot-btns"><button type="button" id="ot-levcancel">Cancel</button><button type="button" id="ot-levok" class="ot-ok">Confirm</button></div>
+        </div>
+        <div class="ot-tabs" role="tablist" aria-label="Order type">
+          <button type="button" role="tab" data-ot="limit">Limit</button><button type="button" role="tab" data-ot="market">Market</button><button type="button" role="tab" data-ot="cond">Conditional</button>
+        </div>
+        <div class="ot-avbl">Avbl <b id="ot-avbl">–</b> USDT <button type="button" class="ot-ico" id="ot-transfer" title="Add or take out paper USDT">⇆</button></div>
+        <div class="ot-row" id="ot-stop-row"><div class="ot-lab">Stop Price</div>
+          <div class="ot-in"><input id="ot-stop" inputmode="decimal" autocomplete="off" aria-label="Stop price"><select id="ot-trigger" aria-label="Trigger price"><option value="last">Last</option><option value="mark">Mark</option></select></div></div>
+        <div class="ot-row" id="ot-price-row"><div class="ot-lab">Price</div>
+          <div class="ot-pair"><div class="ot-in"><input id="ot-price" inputmode="decimal" autocomplete="off" aria-label="Price"><span class="u">USDT</span></div>
+            <button type="button" class="ot-side" id="ot-bbo" aria-pressed="false" title="Best bid (buy) / best ask (sell) at the moment you order">BBO</button>
+            <select class="ot-side" id="ot-ctype" aria-label="Order released by the stop"><option value="limit">Limit</option><option value="market">Market</option></select></div></div>
+        <div class="ot-row"><div class="ot-lab">Size</div>
+          <div class="ot-in"><input id="ot-size" inputmode="decimal" autocomplete="off" aria-label="Size"><select id="ot-unit" aria-label="Size unit"><option value="usdt">USDT</option><option value="coin">BTC</option></select></div></div>
+        <div class="ot-slider"><input id="ot-pct" type="range" min="0" max="100" step="1" value="0" aria-label="Size as a share of the maximum"><span id="ot-pct-l">0%</span></div>
+        <div class="ot-sep"></div>
+        <label class="ot-ck" id="ot-slip-row"><input type="checkbox" id="ot-slip-on"> Slippage Tolerance <span id="ot-slip-box" hidden><input id="ot-slip" class="ot-mini" value="0.5" inputmode="decimal" aria-label="Slippage tolerance"> %</span></label>
+        <label class="ot-ck"><input type="checkbox" id="ot-tpsl-on"> TP/SL</label>
+        <div class="ot-tpsl" id="ot-tpsl" hidden>
+          <div class="ot-in"><input id="ot-tp" inputmode="decimal" placeholder="Take profit" aria-label="Take profit price"><span class="u">USDT</span></div>
+          <div class="ot-in"><input id="ot-sl" inputmode="decimal" placeholder="Stop loss" aria-label="Stop loss price"><span class="u">USDT</span></div>
+          <div class="ot-hint">Long: TP above, SL below the entry. Short: the other way round.</div>
+        </div>
+        <div class="ot-ckrow"><label class="ot-ck"><input type="checkbox" id="ot-ro"> Reduce-Only</label>
+          <span id="ot-tif-row" class="ot-tif">TIF <select id="ot-tif" aria-label="Time in force"><option>GTC</option><option>IOC</option><option>FOK</option></select></span></div>
+        <div class="ot-btns"><button type="button" class="ot-buy" id="ot-buy">Buy/Long</button><button type="button" class="ot-sell" id="ot-sell">Sell/Short</button></div>
+        <div class="ot-est">
+          <div><span>Liq Price</span> <b id="ot-liq-b">--</b> USDT</div><div><span>Liq Price</span> <b id="ot-liq-s">--</b> USDT</div>
+          <div><span>Cost</span> <b id="ot-cost-b">0.00</b> USDT</div><div><span>Cost</span> <b id="ot-cost-s">0.00</b> USDT</div>
+          <div><span>Max</span> <b id="ot-max-b">0.00</b> USDT</div><div><span>Max</span> <b id="ot-max-s">0.00</b> USDT</div>
+        </div>
+        <div class="ot-fee" id="ot-fee">% Fee level</div>
+        <div class="ot-msg" id="ot-msg" role="status" aria-live="polite"></div>
+      </div>
+    </div>
+    <div class="mk-grid one">
+      <div class="mk-box">
+        <div class="mk-tabs" role="tablist" aria-label="Trades and movers">
+          <button class="mk-tab" role="tab" data-low="trades">Trades</button>
+          <button class="mk-tab" role="tab" data-low="movers">Top Movers</button>
+          <span class="mk-mv" id="mk-mv" hidden><button data-mv="gainers">Gainers</button><button data-mv="losers">Losers</button><button data-mv="volume">Volume</button></span>
+        </div>
+        <div id="mk-pane-trades" class="tbl scroll mid"><table><thead><tr><th style="text-align:left">Price (USDT)</th><th>Amount (USDT)</th><th>Time</th></tr></thead><tbody id="mk-trades"></tbody></table></div>
+        <div id="mk-pane-movers" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Market</th><th>Last</th><th>24h</th><th>24h volume</th></tr></thead><tbody id="mk-movers"></tbody></table></div>
+      </div>
+      <div class="mk-box">
+        <div class="mk-tabs" role="tablist" aria-label="Paper futures account">
+          <button class="mk-tab" role="tab" data-pf="pos">Positions (<span id="pf-npos">0</span>)</button>
+          <button class="mk-tab" role="tab" data-pf="orders">Open Orders (<span id="pf-nord">0</span>)</button>
+          <button class="mk-tab" role="tab" data-pf="hist">Order History</button>
+          <button class="mk-tab" role="tab" data-pf="trades">Trade History</button>
+          <button class="mk-tab" role="tab" data-pf="assets">Assets</button>
+          <span class="mk-spread" id="pf-venue">paper futures account</span>
+        </div>
+        <div id="pf-pane-pos" class="tbl scroll mid"><table><thead><tr><th style="text-align:left">Market</th><th style="text-align:left">Opened by</th><th>Size</th><th>Entry</th><th>Mark</th><th>Liq. price</th><th>Margin</th><th>PnL (ROE)</th><th>TP / SL</th><th>Close</th></tr></thead><tbody id="pf-pos"></tbody></table></div>
+        <div id="pf-pane-orders" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th style="text-align:left">Opened by</th><th>Type</th><th>Side</th><th>Price</th><th>Trigger</th><th>Amount</th><th>Reduce-only</th><th>TIF</th><th>Cancel</th></tr></thead><tbody id="pf-orders"></tbody></table></div>
+        <div id="pf-pane-hist" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th>Type</th><th>Side</th><th>Avg / price</th><th>Amount</th><th>Status</th><th class="why">Note</th></tr></thead><tbody id="pf-hist"></tbody></table></div>
+        <div id="pf-pane-trades" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th>Side</th><th>Price</th><th>Amount</th><th>Fee</th><th>Realized PnL</th><th>Role</th></tr></thead><tbody id="pf-trades"></tbody></table></div>
+        <div id="pf-pane-assets" hidden><div class="mk-kv" id="pf-assets"></div></div>
+      </div>
+    </div>
+    <div class="sw-note">Live public market data from Binance USD-M futures, relayed by this bot (read-only: nothing here can place an order). Click a top mover to chart it.</div>
+  </section>
+  <!--/MARKET-->
+
+  <footer id="foot"></footer>
+</div>
+
+<script>
+const TOKEN = "__TOKEN__";
+const COLS = [
+  { k: "sym", t: "Market", f: r => r.sym, cls: "sym" },
+  { k: "perp", t: "Perp", f: r => price(r.perp) },
+  { k: "basis", t: "Basis bps", f: r => sg(r.basis, 1), tip: "Perp mid vs spot mid" },
+  { k: "z", t: "Z", f: r => warm(r) ? "–" : r.z.toFixed(2), tip: "Basis vs its own rolling mean, in std devs" },
+  { k: "entry", t: "Entry bps", f: r => sg(r.entry, 1), tip: "Executable: short perp at bid vs buy spot at ask" },
+  { k: "net", t: "Net edge", f: r => warm(r) ? "–" : sg(r.net, 1), tip: "Expected profit in bps after all fees and slippage" },
+  { k: "mi", t: "Mark−Idx", f: r => sg(r.mi, 1), tip: "Mark price vs index price, bps" },
+  { k: "fund", t: "Funding APR", f: r => sg(r.fund, 1) + "%", tip: "Approximate, 8h-interval basis" },
+  { k: "depth", t: "Depth", f: r => "$" + (r.depth >= 1000 ? (r.depth / 1000).toFixed(1) + "k" : r.depth.toFixed(0)), tip: "Top-of-book fillable USD (smaller side)" },
+  { k: "age", t: "Age", f: r => r.age < 1000 ? r.age.toFixed(0) + "ms" : (r.age / 1000).toFixed(1) + "s" },
+  { k: "status", t: "Status", f: r => chip(r) },
+];
+const RANK = { signal: 0, held: 1, watch: 2, ok: 3, warmup: 4, stale: 5 };
+let snap = null, sortKey = "net", sortDir = -1, ws = null, retry = 0;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const warm = r => r.status === "warmup" || r.status === "stale";
+function price(p) { if (!p) return "–"; return p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toPrecision(4); }
+function sg(v, d) { return (v > 0 ? "+" : "") + v.toFixed(d); }
+function money(v) { return (v < 0 ? "−$" : "+$") + Math.abs(v).toFixed(2); }
+function cls(v) { return v > 0 ? "pos" : v < 0 ? "neg" : "mut"; }
+function dur(s) { s = Math.max(0, Math.round(s)); return s < 90 ? s + "s" : s < 5400 ? Math.round(s / 60) + "m" : (s / 3600).toFixed(1) + "h"; }
+function chip(r) {
+  const label = r.status === "warmup" ? `warm ${r.n}/${snap.model.min_samples}` : r.status;
+  return `<span class="chip ${r.status}" ${r.note ? `title="${esc(r.note)}"` : ""}>${esc(label)}</span>`;
+}
+
+function renderHead() {
+  $("mk-head").innerHTML = COLS.map(c =>
+    `<th data-k="${c.k}" tabindex="0" ${c.tip ? `title="${esc(c.tip)}"` : ""} aria-sort="${c.k === sortKey ? (sortDir < 0 ? "descending" : "ascending") : "none"}">${esc(c.t)}${c.k === sortKey ? `<span class="arr">${sortDir < 0 ? "▼" : "▲"}</span>` : ""}</th>`
+  ).join("");
+}
+function setSort(k) {
+  if (k === sortKey) sortDir = -sortDir; else { sortKey = k; sortDir = k === "sym" ? 1 : -1; }
+  renderHead(); if (snap) renderMarkets();
+}
+$("mk-head").addEventListener("click", e => { const th = e.target.closest("th[data-k]"); if (th) setSort(th.dataset.k); });
+$("mk-head").addEventListener("keydown", e => { if (e.key === "Enter" || e.key === " ") { const th = e.target.closest("th[data-k]"); if (th) { e.preventDefault(); setSort(th.dataset.k); } } });
+
+function renderMarkets() {
+  const rows = snap.markets.slice();
+  const key = r => sortKey === "status" ? RANK[r.status] : sortKey === "sym" ? r.sym : (warm(r) && (sortKey === "net" || sortKey === "z") ? -1e9 : r[sortKey]);
+  rows.sort((a, b) => { const x = key(a), y = key(b); return (x < y ? -1 : x > y ? 1 : 0) * sortDir; });
+  const m = snap.model;
+  $("mk-body").innerHTML = rows.map(r => {
+    const tds = COLS.map(c => {
+      let extra = "";
+      if (c.k === "z" && !warm(r) && r.z >= m.z_entry) extra = "pos";
+      else if (c.k === "net" && !warm(r)) extra = cls(r.net);
+      else if (c.k === "mi" && Math.abs(r.mi) >= 10) extra = "warn";
+      else if (c.k === "age" && r.age > 2000) extra = "neg";
+      return `<td class="${c.cls || "n"} ${extra}">${c.f(r)}</td>`;
+    }).join("");
+    return `<tr class="${r.status}">${tds}</tr>`;
+  }).join("");
+}
+
+// The on/off switch, like the fund editor, exists only on the local page (it needs the control token).
+function renderPower(w) {
+  const box = $("sw-power");
+  if (typeof TOKEN === "undefined" || !w || w.enabled === undefined) { box.hidden = true; return; }
+  box.hidden = false;
+  $("sw-toggle").setAttribute("aria-checked", String(w.enabled));
+  $("sw-power-l").textContent = w.enabled ? "Toolkit ON" : "Toolkit OFF";
+  $("sw-power-l").className = w.enabled ? "pos" : "warn";
+}
+
+// The fund editor exists only on the local page (it needs the control token); the hosted copy has no TOKEN and stays read-only.
+function renderFunds(w) {
+  const box = $("sw-fund");
+  if (typeof TOKEN === "undefined" || !w.funds) { box.hidden = true; return; }
+  box.hidden = false;
+  if (!box.dataset.built) {
+    box.innerHTML = `<span>Fund per account (USD):</span>` + Object.keys(w.funds).map(n =>
+      `<label>${esc(n)} <input type="number" min="100" max="10000000" step="100" data-fund="${esc(n)}"> <button type="button" data-set="${esc(n)}">Set</button></label>`
+    ).join("") + `<span class="msg" id="sw-fund-msg">Changing a fund restarts that one account from now: its open paper trades are closed at the last price and its stats start again from zero. The other accounts are not touched and old trades stay in the journal.</span>`;
+    box.dataset.built = "1";
+  }
+  box.querySelectorAll("input[data-fund]").forEach(inp => {
+    const cur = w.funds[inp.dataset.fund];
+    inp.placeholder = String(cur);
+    if (document.activeElement !== inp && !inp.dataset.dirty) inp.value = cur;
+  });
+}
+
+function renderSwing() {
+  const w = snap.swing, off = $("sw-off"), on = $("sw-on");
+  if (!w) { off.hidden = false; on.hidden = true; $("sw-hint").textContent = ""; renderPower(null); return; }
+  off.hidden = true; on.hidden = false;
+  const coin = s => esc(s.replace(/USDT$/, "")), px = v => v == null ? "–" : price(v);
+  const side = s => `<span class="side-${esc(s)}">${esc(s.toUpperCase())}</span>`;
+  const usd = v => "$" + v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  $("sw-hint").textContent = w.loading ? "loading the first candles…"
+    : `${w.interval} · ${w.symbols.length > 8 ? w.symbols.length + " markets" : w.symbols.map(s => s.replace(/USDT$/, "")).join(" ")} · since ${new Date(w.start_ts).toISOString().slice(0, 16).replace("T", " ")} UTC · checked ${w.checked_age_s == null ? "–" : dur(w.checked_age_s) + " ago"}`;
+  const A = w.accounts, sum = f => A.reduce((t, a) => t + (a[f] || 0), 0), each = f => A.map(a => `${a.strategy} ${f(a)}`).join(" · ");
+  const wins = sum("wins"), closed = sum("closed"), real = sum("total_pnl"), today = sum("today_pnl");
+  const kpi = (label, v, vcls, sub, tip) => `<div class="kpi" title="${esc(tip)}"><div class="l">${label}</div><div class="v ${vcls}">${v}</div><div class="s">${sub}</div></div>`;
+  const D = w.demo || [], dsum = f => D.reduce((t, d) => t + (d.stats[f] || 0), 0);
+  const deach = f => D.map(d => `${d.strategy} ${f(d.stats)}`).join(" · ");
+  if (D.length) {   // the accounts trade on the futures testnet: its real fills are the result, the paper is the plan
+    const dw = dsum("wins"), dc = dsum("closed"), dr = dsum("realized"), dt = dsum("today"), wait = dsum("unsettled");
+    $("sw-kpis").innerHTML = [
+      kpi("Demo open positions", dsum("open"), "", esc(deach(s => s.open)) + ` · paper ${sum("open")}`,
+          "Positions really open on the Binance futures testnet, per account; paper = what the strategies hold"),
+      kpi("Demo realised P&amp;L", money(dr), cls(dr), `unrealised ${money(dsum("unrealized"))}`,
+          deach(s => money(s.realized)) + ` · after fees, from Binance's fills · paper ${money(real)}`),
+      kpi("Demo today (UTC)", money(dt), cls(dt), wait ? `${wait} result${wait > 1 ? "s" : ""} still being read` : "after fees",
+          deach(s => money(s.today)) + ` · paper ${money(today)}`),
+      kpi("Demo win rate", dc ? (dw / dc * 100).toFixed(0) + "%" : "–", "", `${dw}W / ${dc - dw}L`,
+          deach(s => s.closed ? `${s.wins}W/${s.losses}L` : "no trades") + ` · paper ${wins}W/${closed - wins}L`),
+    ].join("");
+  } else $("sw-kpis").innerHTML = A.length ? [   // totals over the three paper accounts, like the arbitrage cards above
+    kpi("Swing open positions", sum("open"), "", esc(each(a => a.open)), "Open paper positions per account"),
+    kpi("Swing realised P&amp;L", money(real), cls(real), `unrealised ${money(w.open.reduce((t, p) => t + (p.pnl || 0), 0))}`,
+        each(a => money(a.total_pnl))),
+    kpi("Swing today (UTC)", money(today), cls(today), `${sum("closed_today")} closed today`, each(a => money(a.today_pnl || 0))),
+    kpi("Swing win rate", closed ? (wins / closed * 100).toFixed(0) + "%" : "–", "", `${wins}W / ${closed - wins}L`,
+        each(a => a.closed ? `${a.wins}W/${a.closed - a.wins}L` : "no trades")),
+  ].join("") : "";
+  if (typeof pnlSwingSources === "function") pnlSwingSources(D.length > 0);   // not on the hosted copy
+  const demoOf = name => D.find(d => d.strategy === name);
+  const demoCell = p => {   // is this paper position really open on the testnet, and what is it making there?
+    const d = demoOf(p.strategy);
+    if (!d) return `<td class="mut">–</td>`;
+    const why = d.status[`${p.symbol}:${p.entry_ts}`] || "not copied", o = d.open[p.symbol];
+    return why === "on demo" && o ? `<td class="n ${cls(o.pnl || 0)}" title="testnet entry ${o.entry_px ?? "–"}">on demo ${money(o.pnl || 0)}</td>`
+      : `<td class="mut" title="${esc(why)}">${esc(why.length > 34 ? why.slice(0, 32) + "…" : why)}</td>`;
+  };
+  const copies = D.flatMap(d => d.copies).sort((a, b) => b.closed_ms - a.closed_ms).slice(0, 15);
+  $("sw-demo-wrap").hidden = !D.length;
+  $("sw-demo").innerHTML = copies.length ? copies.map(c =>
+    `<tr><td class="sym">${esc(c.account)}</td><td class="sym">${coin(c.symbol)}</td><td>${side(c.side === "buy" ? "long" : "short")}</td><td class="n mut">${dtm(c.opened_ms)} → ${dtm(c.closed_ms)}</td><td class="n">${px(c.entry)} → ${px(c.exit)}</td>` +
+    (c.pnl == null ? `<td class="n mut">reading…</td>` : `<td class="n ${cls(c.pnl)}" title="fees ${money(-(c.fees || 0))}">${money(c.pnl)}</td>`) + `<td class="mut">${esc(c.why)}</td></tr>`
+  ).join("") : `<tr><td colspan="7" class="empty">No demo trades closed yet.</td></tr>`;
+  $("sw-accts").innerHTML = w.accounts.length ? w.accounts.map(a =>
+    `<div class="kpi"><div class="l">${esc(a.strategy)} · ${usd(a.capital)} fund</div><div class="v">${usd(a.equity)}</div>` +
+    `<div class="s"><span class="${cls(a.return_pct)}">${sg(a.return_pct, 2)}%</span> · ${a.open} open · ${a.closed} closed${a.closed ? ` · ${a.wins}W · ${sg(a.avg_r, 2)}R avg` : ""}</div></div>`
+  ).join("") : `<div class="empty">Loading the first candles…</div>`;
+  $("sw-open").innerHTML = w.open.length ? w.open.map(p =>
+    `<tr title="${esc(p.reason)}"><td class="sym">${esc(p.strategy)}</td><td class="sym">${coin(p.symbol)}</td><td>${side(p.side)}</td><td class="n mut">${dtm(p.entry_ts)}</td><td class="n">${px(p.entry)}</td><td class="n">${px(p.mark)}</td><td class="n">${px(p.stop)}</td><td class="n">${px(p.target)}</td><td class="n ${cls(p.pnl)}">${money(p.pnl)} (${sg(p.r, 2)}R)</td>${demoCell(p)}</tr>`
+  ).join("") : `<tr><td colspan="10" class="empty">No open swing positions.</td></tr>`;
+  $("sw-setups").innerHTML = w.setups.length ? w.setups.map(s =>
+    `<tr><td class="sym">${esc(s.strategy)}</td><td class="sym">${coin(s.symbol)}</td><td>${side(s.side)}</td><td class="n">${px(s.near)}</td><td class="n">${px(s.stop)}</td><td class="n">${px(s.target)}</td><td class="why">${esc(s.reason)}</td></tr>`
+  ).join("") : `<tr><td colspan="7" class="empty">No setups waiting. That is the usual answer: these strategies wait for a pattern.</td></tr>`;
+  $("sw-trades").innerHTML = w.trades.length ? w.trades.map(t =>
+    `<tr><td class="sym">${esc(t.strategy)}</td><td class="sym">${coin(t.symbol)}</td><td>${side(t.side)}</td><td class="n mut">${dtm(t.opened_at)} → ${dtm(t.closed_at)}</td><td class="n">${px(t.entry)} → ${px(t.exit)}</td><td class="n ${cls(t.pnl)}">${money(t.pnl)}</td><td class="n ${cls(t.r)}">${sg(t.r, 2)}R</td><td class="mut">${esc(t.reason)}</td></tr>`
+  ).join("") : `<tr><td colspan="8" class="empty">No closed swing trades yet.</td></tr>`;
+  renderFunds(w);
+  renderPower(w);
+  if (w.enabled === false) $("sw-hint").textContent = `⏸ OFF since ${new Date(w.off_since).toISOString().slice(0, 16).replace("T", " ")} UTC · ` + $("sw-hint").textContent;
+  $("sw-note").textContent = `Each account risks ${w.risk_pct}% of its own equity per trade. ` + (D.length
+    ? `Trading on the Binance futures TESTNET (demo account, test money): ${D.map(d => d.strategy).join(", ")} decide on the paper replay and every trade is placed on the demo account, whose real fills give the results above. They decide`
+    : `Paper only: nothing here places an order. They decide`) + ` on closed ${w.interval} candles and fill at the next open, so most of the time they simply wait.` + (w.symbols.length > 8 ? ` Markets: ${w.symbols.map(s => s.replace(/USDT$/, "")).join(" ")}.` : "") + (Object.keys(w.unavailable || {}).length ? ` Skipped (no usable candles): ${Object.keys(w.unavailable).map(s => s.replace(/USDT$/, "")).join(" ")}.` : "") + (w.error ? ` The last refresh failed: ${w.error}` : "");
+}
+
+function renderAll() {
+  const s = snap.stats, f = snap.feed, h = snap.halt, m = snap.model;
+  const mode = $("b-mode");
+  mode.textContent = snap.mode === "live" ? `LIVE · ${snap.env.toUpperCase()}` : "PAPER";
+  mode.className = "badge " + snap.mode;
+  const page = typeof pageLabel === "function" ? pageLabel() : "";   // not on the hosted copy (one page there)
+  document.title = `${mode.textContent}${page ? " · " + page : ""} · Basis Arb Monitor`;   // each tab says which bot and page
+  $("b-sim").hidden = f.kind !== "sim";
+  $("dot").className = "dot " + (f.ok ? "ok" : "bad");
+  const fb = f.configured === "ws" && f.kind === "rest";
+  $("feedtxt").textContent = !f.ok ? "feed down" : f.kind === "sim" ? "sim feed"
+    : f.kind === "ws" ? `Binance WebSocket · ${f.latency_ms.toFixed(0)}ms lag`
+    : `Binance REST${fb ? " (fallback)" : ""} · ${f.latency_ms.toFixed(0)}ms`;
+
+  $("k-markets").textContent = s.scanned;
+  $("k-markets-s").textContent = `${s.fresh} fresh · ${s.scanned - s.fresh} stale`;
+  $("k-signals").textContent = s.signals;
+  $("k-signals-s").textContent = `z ≥ ${m.z_entry} & net ≥ ${m.min_net_edge_bps} bps`;
+  $("k-open").textContent = `${s.open}/${s.max_open}`;
+  $("k-open-s").textContent = `$${s.open_notional.toFixed(0)} deployed`;
+  const real = $("k-real"); real.textContent = money(s.realized); real.className = "v " + cls(s.realized);
+  $("k-real-s").textContent = `unrealised ${money(s.unrealized)}`;
+  const day = $("k-day"); day.textContent = money(s.day); day.className = "v " + cls(s.day);
+  $("k-day-s").textContent = `limit −$${s.day_limit.toFixed(0)}`;
+  const n = s.wins + s.losses;
+  $("k-win").textContent = n ? (s.win_rate * 100).toFixed(0) + "%" : "–";
+  $("k-win-s").textContent = `${s.wins}W / ${s.losses}L`;
+  $("k-feed").textContent = f.kind.toUpperCase();
+  $("k-feed-s").textContent = `${f.polls} updates · tick ${s.tick_ms.toFixed(0)}ms · up ${dur(s.uptime_s)}`;
+
+  const banner = $("banner");
+  if (!f.ok) { banner.className = "banner err show"; banner.textContent = `Feed error: ${f.last_error || "no data yet"} — no new entries until quotes are fresh.`; }
+  else if (h.halted) {
+    banner.className = "banner show" + (h.reason.startsWith("FAULT") ? " err" : "");
+    banner.innerHTML = esc(`Entries halted — ${h.reason}`) +
+      (h.dismissable ? ` <button type="button" data-dismiss title="Trade the other coins; the bot stays off these positions">Dismiss</button>` : "");
+  }
+  else if (!h.trading) { banner.className = "banner show"; banner.textContent = "Monitor-only mode (--no-trade): the bot will not open positions."; }
+  else banner.className = "banner";
+  const pause = $("btn-pause");
+  pause.textContent = h.manual ? "Resume entries" : "Pause entries";
+  pause.dataset.act = h.manual ? "resume" : "halt";
+  pause.disabled = !h.trading;
+  $("btn-flat").disabled = s.open === 0;
+
+  renderMarkets();
+  renderSwing();
+
+  $("pos-hint").textContent = s.open ? `${s.open} open` : "";
+  $("pos-body").innerHTML = snap.positions.length ? snap.positions.map(p =>
+    `<tr><td class="sym">${esc(p.sym)}</td><td class="n mut">${dtm((p.opened_at || Date.now() / 1000 - p.held_s) * 1000)}</td><td class="n">${dur(p.held_s)}</td><td class="n">$${p.notional.toFixed(0)}</td><td class="n">${sg(p.entry_basis, 1)}</td><td class="n">${sg(p.basis_now, 1)}</td><td class="n ${cls(p.unreal)}">${money(p.unreal)}</td></tr>`
+  ).join("") : `<tr><td colspan="7" class="empty">No open positions.</td></tr>`;
+
+  $("tr-body").innerHTML = snap.trades.length ? snap.trades.map(t =>
+    `<tr title="opened ${dtm((t.opened_at || t.closed_at - t.held_s) * 1000)}"><td class="sym">${esc(t.sym)}</td><td class="n mut">${dtm(t.closed_at * 1000)}</td><td class="n ${cls(t.pnl)}">${money(t.pnl)}</td><td class="n ${cls(t.bps)}">${sg(t.bps, 1)}</td><td class="n">${dur(t.held_s)}</td><td class="mut">${esc(t.reason)}</td></tr>`
+  ).join("") : `<tr><td colspan="6" class="empty">No closed trades yet.</td></tr>`;
+
+  $("ev-body").innerHTML = snap.events.length ? snap.events.map(e =>
+    `<div class="ev ${esc(e.lvl)}"><time>${new Date(e.ts * 1000).toLocaleTimeString([], { hour12: false })}</time><span>${esc(e.msg)}</span></div>`
+  ).join("") : `<div class="empty">Waiting for events…</div>`;
+
+  $("foot").textContent = `Round-trip cost ${m.cost_bps.toFixed(1)} bps (fees + slippage, both legs, in and out). A trade needs z ≥ ${m.z_entry} and expected net edge ≥ ${m.min_net_edge_bps} bps after that cost. Exit at z ≤ ${m.exit_z}, stop-loss, or timeout. Size ${"$" + m.trade_usd.toFixed(0)} per position.`;
+}
+
+async function act(name) {
+  try {
+    const r = await fetch("/api/" + name, { method: "POST", headers: { "X-Token": TOKEN } });
+    if (!r.ok) throw new Error(r.status);
+  } catch (e) { alert("Action failed: " + e.message); }
+}
+$("sw-toggle").addEventListener("click", async e => {
+  const btn = e.currentTarget, on = btn.getAttribute("aria-checked") !== "true";
+  if (!on && !confirm("Switch the swing toolkit OFF?\n\nTrend, swing and SMC will take no new entries and send no setup alerts until you switch it back on. Open positions keep their stops, targets and exits.")) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/swing-power", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ on }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.status);
+    btn.setAttribute("aria-checked", String(d.enabled));
+    $("sw-power-l").textContent = d.enabled ? "Toolkit ON" : "Toolkit OFF";
+    $("sw-power-l").className = d.enabled ? "pos" : "warn";
+  } catch (err) { alert("Could not switch the swing toolkit: " + err.message); }
+  finally { btn.disabled = false; }
+});
+$("sw-fund").addEventListener("input", e => { if (e.target.dataset.fund) e.target.dataset.dirty = "1"; });
+$("sw-fund").addEventListener("click", async e => {
+  const name = e.target.dataset ? e.target.dataset.set : null;
+  if (!name) return;
+  const inp = $("sw-fund").querySelector(`input[data-fund="${name}"]`), msg = $("sw-fund-msg");
+  const amount = Number(inp.value);
+  if (!(amount >= 100 && amount <= 10000000)) { alert("Enter a fund between $100 and $10,000,000."); return; }
+  if (!confirm(`Set the ${name} account to $${amount.toLocaleString()}?\n\nThis restarts that account from now: its open paper trades are closed at the last price and its stats start again from zero. The other accounts are not touched. Old trades stay in the journal.`)) return;
+  e.target.disabled = true;
+  try {
+    const r = await fetch("/api/swing-capital", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ strategy: name, capital: amount }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || r.status);
+    delete inp.dataset.dirty;
+    msg.textContent = d.message;
+  } catch (err) { alert("Could not change the fund: " + err.message); }
+  finally { e.target.disabled = false; }
+});
+$("btn-pause").addEventListener("click", e => act(e.currentTarget.dataset.act || "halt"));
+$("banner").addEventListener("click", e => {
+  if (e.target.closest("[data-dismiss]") && confirm("Dismiss this warning?\n\nThe positions stay open on Binance and the bot keeps off those coins. Entries on the other coins can then be resumed.")) act("dismiss");
+});
+$("btn-flat").addEventListener("click", () => { if (confirm("Close ALL open positions at market and pause entries?")) act("flatten"); });
+
+// ---- market panel: chart, order book, trades, movers, info (local page only; the hosted copies have no /api/market) ----
+const MK = { sym: "BTCUSDT", iv: "1h", tab: "chart", low: "trades", mv: "gainers", spacing: 8, k: [], book: null, trades: [],
+             info: null, data: null, movers: null, hover: -1, hoverY: 0, dp: 2, seq: 0, busy: {}, at: {}, okAt: 0, err: "", L: null };
+const MK_IVS = [["1m", "1m", 6e4], ["5m", "5m", 3e5], ["15m", "15m", 9e5], ["1h", "1H", 36e5], ["4h", "4H", 144e5], ["1d", "1D", 864e5], ["1w", "1W", 6048e5]];
+const MA_COLORS = { 7: "#f0b90b", 25: "#d946ef", 99: "#2dd4bf" };
+try {
+  const s = JSON.parse(localStorage.getItem("mk") || "{}");
+  if (/^[A-Z0-9]{2,20}USDT$/.test(s.sym)) MK.sym = s.sym;
+  if (MK_IVS.some(v => v[0] === s.iv)) MK.iv = s.iv;
+  if (["chart", "info", "data"].includes(s.tab)) MK.tab = s.tab;
+  if (["trades", "movers"].includes(s.low)) MK.low = s.low;
+  if (["gainers", "losers", "volume"].includes(s.mv)) MK.mv = s.mv;
+  if (s.spacing >= 3 && s.spacing <= 24) MK.spacing = s.spacing;
+} catch (_) { /* private window: defaults */ }
+function mkSave() { try { localStorage.setItem("mk", JSON.stringify({ sym: MK.sym, iv: MK.iv, tab: MK.tab, low: MK.low, mv: MK.mv, spacing: MK.spacing })); } catch (_) { } }
+const cssVar = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+function compact(v) { const a = Math.abs(v); return a >= 1e9 ? (v / 1e9).toFixed(2) + "B" : a >= 1e6 ? (v / 1e6).toFixed(2) + "M" : a >= 1e3 ? (v / 1e3).toFixed(2) + "K" : v.toFixed(2); }
+function dtm(ms) {   // a trade time as local date and time: 2026-10-27 14:32
+  if (!ms) return "–";
+  const d = new Date(ms), p = n => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+function fmtP(p) { return p == null ? "–" : p.toLocaleString(undefined, { minimumFractionDigits: MK.dp, maximumFractionDigits: MK.dp }); }
+function learnDp(prices) { let d = 0; for (const p of prices.slice(-60)) d = Math.max(d, (String(p).split(".")[1] || "").length); MK.dp = Math.min(8, d); }
+function niceStep(raw) { const p = Math.pow(10, Math.floor(Math.log10(raw))), n = raw / p; return (n < 1.5 ? 1 : n < 3 ? 2 : n < 7 ? 5 : 10) * p; }
+function sma(vals, n) { const out = new Array(vals.length).fill(null); let s = 0; for (let i = 0; i < vals.length; i++) { s += vals[i]; if (i >= n) s -= vals[i - n]; if (i >= n - 1) out[i] = s / n; } return out; }
+function fmtT(ts) {
+  const d = new Date(ts), two = v => String(v).padStart(2, "0");
+  if (MK.iv === "1d" || MK.iv === "1w") return `${two(d.getMonth() + 1)}/${two(d.getDate())}`;
+  return d.getHours() === 0 && d.getMinutes() === 0 ? `${two(d.getMonth() + 1)}/${two(d.getDate())}` : `${two(d.getHours())}:${two(d.getMinutes())}`;
+}
+async function mkGet(kind, params) {
+  const r = await fetch("/api/market/" + kind + "?" + new URLSearchParams(params || {}), { cache: "no-store" });
+  const d = await r.json().catch(() => ({ error: "HTTP " + r.status }));
+  if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+  return d;
+}
+function mkLines() {   // the swing paper positions (and waiting setups) on the charted market, drawn as price lines
+  const w = snap && snap.swing, out = [], accent = cssVar("--accent");
+  for (const p of (w && w.open) || []) if (p.symbol === MK.sym) {
+    out.push({ px: p.entry, label: `${p.strategy} ${p.side} entry`, color: accent }, { px: p.stop, label: `${p.strategy} stop`, color: cssVar("--neg") });
+    if (p.target != null) out.push({ px: p.target, label: `${p.strategy} target`, color: cssVar("--pos") });
+  }
+  for (const s of (w && w.setups) || []) if (s.symbol === MK.sym) out.push({ px: s.near, label: `${s.strategy} ${s.side} setup`, color: cssVar("--warn") });
+  if (OT && OT.st) {   // the paper futures account: its position, liquidation price and working orders on this market
+    for (const p of OT.st.positions) if (p.symbol === MK.sym) {
+      out.push({ px: p.entry, label: `paper ${p.side} ${p.leverage}x entry`, color: "#f0b90b" });
+      if (p.liq) out.push({ px: p.liq, label: "paper liq. price", color: cssVar("--warn") });
+    }
+    for (const o of OT.st.orders) if (o.symbol === MK.sym) {
+      const px = o.price != null && (o.type === "limit" || o.triggered) ? o.price : o.stop_price;
+      if (px) out.push({ px, label: `paper ${o.reason || o.side + " " + o.type.replace("_", " ")}`, color: cssVar("--muted") });
+    }
+  }
+  return out;
+}
+
+function drawChart() {
+  const cv = $("mk-canvas");
+  if (MK.tab !== "chart" || !cv.clientWidth) return;
+  const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+  if (cv.width !== Math.round(W * dpr) || cv.height !== Math.round(H * dpr)) { cv.width = Math.round(W * dpr); cv.height = Math.round(H * dpr); }
+  const g = cv.getContext("2d");
+  g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  g.clearRect(0, 0, W, H);
+  const k = MK.k;
+  if (!k.length) { $("mk-legend").textContent = MK.err ? "No candles: " + MK.err : "Loading candles…"; return; }
+  const C = { pos: cssVar("--pos"), neg: cssVar("--neg"), line: cssVar("--line"), muted: cssVar("--muted"), text: cssVar("--text"), bg: cssVar("--panel") };
+  const axisW = 78, timeH = 22, top = 8, plotW = W - axisW, volH = Math.round((H - timeH) * 0.2), priceH = H - timeH - volH - top - 6;
+  const sp = MK.spacing, n = Math.max(10, Math.min(k.length, Math.floor(plotW / sp))), start = k.length - n, vis = k.slice(start);
+  const offX = plotW - n * sp, x = i => offX + (i + 0.5) * sp, bw = Math.max(1, Math.floor(sp * 0.7));
+  const closes = k.map(r => r[4]), mas = { 7: sma(closes, 7), 25: sma(closes, 25), 99: sma(closes, 99) };
+  let lo = Infinity, hi = -Infinity;
+  vis.forEach((r, i) => {
+    lo = Math.min(lo, r[3]); hi = Math.max(hi, r[2]);
+    for (const m of Object.values(mas)) { const v = m[start + i]; if (v != null) { lo = Math.min(lo, v); hi = Math.max(hi, v); } }
+  });
+  const lines = mkLines().filter(l => l.px > lo * 0.85 && l.px < hi * 1.15);
+  for (const l of lines) { lo = Math.min(lo, l.px); hi = Math.max(hi, l.px); }
+  const pad = (hi - lo) * 0.06 || hi * 0.01; lo -= pad; hi += pad;
+  const y = p => top + (hi - p) / (hi - lo) * priceH;
+  MK.L = { start, n, sp, offX, plotW, top, priceH, lo, hi };
+  g.font = "11px ui-monospace, Menlo, monospace"; g.textBaseline = "middle"; g.lineWidth = 1;
+  // grid and axes
+  g.strokeStyle = C.line; g.fillStyle = C.muted;
+  const step = niceStep((hi - lo) / 6);
+  for (let p = Math.ceil(lo / step) * step; p <= hi; p += step) {
+    const yy = Math.round(y(p)) + 0.5;
+    g.beginPath(); g.moveTo(0, yy); g.lineTo(plotW, yy); g.stroke();
+    g.fillText(fmtP(p), plotW + 6, yy);
+  }
+  g.textAlign = "center";
+  const every = Math.max(1, Math.round(120 / sp));
+  for (let i = n - 1; i >= 0; i -= every) {
+    const xx = Math.round(x(i)) + 0.5;
+    g.beginPath(); g.moveTo(xx, top); g.lineTo(xx, H - timeH); g.stroke();
+    g.fillText(fmtT(vis[i][0]), xx, H - timeH / 2);
+  }
+  g.textAlign = "left";
+  g.beginPath(); g.moveTo(plotW + 0.5, 0); g.lineTo(plotW + 0.5, H - timeH); g.moveTo(0, H - timeH + 0.5); g.lineTo(W, H - timeH + 0.5); g.stroke();
+  // volume
+  const vmax = Math.max(...vis.map(r => r[5])) || 1, vBase = H - timeH;
+  g.globalAlpha = 0.45;
+  vis.forEach((r, i) => { g.fillStyle = r[4] >= r[1] ? C.pos : C.neg; const h = r[5] / vmax * (volH - 4); g.fillRect(Math.round(x(i) - bw / 2), vBase - h, bw, h); });
+  g.globalAlpha = 1;
+  // candles
+  vis.forEach((r, i) => {
+    const up = r[4] >= r[1], xx = Math.round(x(i)) + 0.5;
+    g.strokeStyle = g.fillStyle = up ? C.pos : C.neg;
+    g.beginPath(); g.moveTo(xx, y(r[2])); g.lineTo(xx, y(r[3])); g.stroke();
+    const y1 = y(Math.max(r[1], r[4])), y2 = y(Math.min(r[1], r[4]));
+    g.fillRect(Math.round(x(i) - bw / 2), Math.round(y1), bw, Math.max(1, Math.round(y2 - y1)));
+  });
+  // moving averages
+  g.lineWidth = 1.3;
+  for (const [len, m] of Object.entries(mas)) {
+    g.strokeStyle = MA_COLORS[len]; g.beginPath(); let on = false;
+    for (let i = 0; i < n; i++) { const v = m[start + i]; if (v == null) continue; on ? g.lineTo(x(i), y(v)) : g.moveTo(x(i), y(v)); on = true; }
+    g.stroke();
+  }
+  g.lineWidth = 1;
+  const tag = (yy, text, bg, fg) => { g.fillStyle = bg; g.fillRect(plotW + 1, yy - 9, axisW - 1, 18); g.fillStyle = fg; g.fillText(text, plotW + 6, yy); };
+  // swing position lines
+  g.setLineDash([6, 4]);
+  for (const l of lines) {
+    const yy = Math.round(y(l.px)) + 0.5;
+    g.strokeStyle = l.color; g.beginPath(); g.moveTo(0, yy); g.lineTo(plotW, yy); g.stroke();
+    g.fillStyle = l.color; g.fillText(l.label, 6, yy - 8);
+    tag(yy, fmtP(l.px), l.color, "#0b0f14");
+  }
+  // last price
+  const last = vis[n - 1], up = last[4] >= last[1], ly = Math.round(y(last[4])) + 0.5;
+  g.strokeStyle = up ? C.pos : C.neg; g.setLineDash([2, 3]);
+  g.beginPath(); g.moveTo(0, ly); g.lineTo(plotW, ly); g.stroke();
+  g.setLineDash([]);
+  tag(ly, fmtP(last[4]), up ? C.pos : C.neg, "#0b0f14");
+  // crosshair
+  const hv = MK.hover >= 0 && MK.hover < n ? MK.hover : -1;
+  if (hv >= 0) {
+    const xx = Math.round(x(hv)) + 0.5, yy = Math.round(MK.hoverY) + 0.5;
+    g.strokeStyle = C.muted; g.setLineDash([3, 3]);
+    g.beginPath(); g.moveTo(xx, top); g.lineTo(xx, H - timeH); g.stroke();
+    if (MK.hoverY > top && MK.hoverY < top + priceH) { g.beginPath(); g.moveTo(0, yy); g.lineTo(plotW, yy); g.stroke(); tag(yy, fmtP(hi - (MK.hoverY - top) / priceH * (hi - lo)), C.muted, C.bg); }
+    g.setLineDash([]);
+    const t = new Date(vis[hv][0]).toLocaleString([], { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
+    const tw = g.measureText(t).width + 12;
+    g.fillStyle = C.muted; g.fillRect(xx - tw / 2, H - timeH + 1, tw, timeH - 2);
+    g.fillStyle = C.bg; g.textAlign = "center"; g.fillText(t, xx, H - timeH / 2); g.textAlign = "left";
+  }
+  // legend: the hovered candle, else the latest
+  const r = vis[hv >= 0 ? hv : n - 1], idx = start + (hv >= 0 ? hv : n - 1), ch = r[4] - r[1], c = ch >= 0 ? "pos" : "neg";
+  const ivLabel = MK_IVS.find(v => v[0] === MK.iv)[1];
+  const ma = len => mas[len][idx] == null ? "–" : fmtP(mas[len][idx]);
+  $("mk-legend").innerHTML = `<b>${esc(MK.sym)} Perpetual</b> · ${ivLabel} · Binance &nbsp; O <span class="${c}">${fmtP(r[1])}</span> H <span class="${c}">${fmtP(r[2])}</span> L <span class="${c}">${fmtP(r[3])}</span> C <span class="${c}">${fmtP(r[4])}</span> <span class="${c}">${ch >= 0 ? "+" : ""}${fmtP(ch)} (${(ch / r[1] * 100).toFixed(2)}%)</span><br>` +
+    `<span style="color:${MA_COLORS[7]}">MA(7) ${ma(7)}</span> &nbsp; <span style="color:${MA_COLORS[25]}">MA(25) ${ma(25)}</span> &nbsp; <span style="color:${MA_COLORS[99]}">MA(99) ${ma(99)}</span> &nbsp; Vol ${compact(r[5])} · ${compact(r[6])} USDT`;
+}
+
+function renderBook() {
+  const b = MK.book;
+  if (!b) { $("bk-asks").innerHTML = $("bk-bids").innerHTML = ""; $("bk-spread").textContent = ""; renderBookMid(); return; }
+  const rows = side => { let s = 0; return side.slice(0, 8).map(([p, q]) => { const u = p * q; s += u; return [p, u, s]; }); };
+  const asks = rows(b.asks), bids = rows(b.bids), max = Math.max(asks.length ? asks[asks.length - 1][2] : 0, bids.length ? bids[bids.length - 1][2] : 0) || 1;
+  const row = (cls, [p, u, sum]) => `<div class="bk-row ${cls}" data-px="${p}" title="Use this price in the order ticket"><i style="width:${(sum / max * 100).toFixed(1)}%"></i><span>${fmtP(p)}</span><span>${compact(u)}</span><span>${compact(sum)}</span></div>`;
+  $("bk-asks").innerHTML = asks.slice().reverse().map(r => row("bk-ask", r)).join("");
+  $("bk-bids").innerHTML = bids.map(r => row("bk-bid", r)).join("");
+  $("bk-spread").textContent = b.asks.length && b.bids.length ? "spread " + fmtP(b.asks[0][0] - b.bids[0][0]) : "";
+  renderBookMid();
+}
+function renderBookMid() {
+  const t = MK.trades, b = MK.book, el = $("bk-last");
+  const last = t.length ? t[0].price : b && b.asks.length && b.bids.length ? (b.asks[0][0] + b.bids[0][0]) / 2 : null;
+  const prev = t.find(x => x.price !== last);
+  const up = !prev || last >= prev.price;
+  el.textContent = last == null ? "–" : fmtP(last) + (prev ? (up ? " ↑" : " ↓") : "");
+  el.className = "p " + (prev ? (up ? "pos" : "neg") : "");
+  $("bk-mark").textContent = MK.info && MK.info.symbol === MK.sym ? "mark " + fmtP(MK.info.mark) : "";
+}
+function renderTrades() {
+  $("mk-trades").innerHTML = MK.trades.length ? MK.trades.map(t =>
+    `<tr><td class="n ${t.sell ? "neg" : "pos"}" style="text-align:left">${fmtP(t.price)}</td><td class="n">${compact(t.usd)}</td><td class="n mut">${new Date(t.ts).toLocaleTimeString([], { hour12: false })}</td></tr>`
+  ).join("") : `<tr><td colspan="3" class="empty">${MK.err ? esc(MK.err) : "Loading trades…"}</td></tr>`;
+}
+function renderMovers() {
+  document.querySelectorAll("#mk-mv button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.mv === MK.mv)));
+  const rows = MK.movers ? MK.movers[MK.mv] : null;
+  $("mk-movers").innerHTML = !rows ? `<tr><td colspan="4" class="empty">Loading…</td></tr>` : rows.map(r =>
+    `<tr data-sym="${esc(r.symbol)}" title="Chart ${esc(r.symbol)}"><td class="sym" style="text-align:left">${esc(r.symbol.replace(/USDT$/, ""))}</td><td class="n">${price(r.last)}</td><td class="n ${cls(r.change_pct)}">${sg(r.change_pct, 2)}%</td><td class="n">${compact(r.quote_volume)}</td></tr>`
+  ).join("");
+}
+function renderInfo() {
+  const i = MK.info;
+  if (!i || i.symbol !== MK.sym) { $("mk-info").innerHTML = `<div class="empty">${MK.err ? esc(MK.err) : "Loading…"}</div>`; return; }
+  const kv = (l, v, c) => `<div><div class="l">${l}</div><div class="v ${c || ""}">${v}</div></div>`;
+  $("mk-info").innerHTML = kv("Last price", fmtP(i.last)) + kv("24h change", sg(i.change_pct, 2) + "%", cls(i.change_pct)) +
+    kv("24h high", fmtP(i.high)) + kv("24h low", fmtP(i.low)) + kv("24h volume", compact(i.volume) + " " + esc(i.symbol.replace(/USDT$/, ""))) +
+    kv("24h volume (USDT)", compact(i.quote_volume)) + kv("Mark price", fmtP(i.mark)) + kv("Index price", fmtP(i.index)) +
+    kv("Funding rate", (i.funding_rate * 100).toFixed(4) + "%", cls(-i.funding_rate)) + kv("Next funding in", dur((i.next_funding - Date.now()) / 1000)) +
+    kv("Open interest", compact(i.open_interest) + " " + esc(i.symbol.replace(/USDT$/, ""))) + kv("Open interest (USDT)", compact(i.open_interest_usd));
+}
+function renderData() {
+  const d = MK.data;
+  $("mk-data").innerHTML = !d || d.symbol !== MK.sym ? `<tr><td colspan="4" class="empty">${MK.err ? esc(MK.err) : "Loading…"}</td></tr>` : d.rows.map(r =>
+    `<tr><td class="mut">${new Date(r.ts).toLocaleString([], { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" })}</td><td class="n">${r.long_pct == null ? "–" : r.long_pct.toFixed(1) + "%"}</td><td class="n ${r.taker_ratio == null ? "" : r.taker_ratio >= 1 ? "pos" : "neg"}">${r.taker_ratio == null ? "–" : r.taker_ratio.toFixed(3)}</td><td class="n">${r.oi_usd == null ? "–" : "$" + compact(r.oi_usd)}</td></tr>`
+  ).join("");
+}
+function patchLast() {   // move the forming candle with the latest trade between candle refreshes
+  const k = MK.k, t = MK.trades[0], ms = MK_IVS.find(v => v[0] === MK.iv)[2];
+  if (!k.length || !t) return;
+  const c = k[k.length - 1];
+  if (t.ts >= c[0] && t.ts < c[0] + ms) { c[4] = t.price; c[2] = Math.max(c[2], t.price); c[3] = Math.min(c[3], t.price); drawChart(); }
+}
+
+const MK_TASKS = {
+  klines: { every: 5000, run: async s => { const k = await mkGet("klines", { symbol: s, interval: MK.iv }); return () => { MK.k = k; learnDp(k.map(r => r[4])); drawChart(); }; } },
+  depth: { every: 2000, run: async s => { const b = await mkGet("depth", { symbol: s }); return () => { MK.book = b; renderBook(); }; } },
+  trades: { every: 3000, run: async s => { const t = await mkGet("trades", { symbol: s }); return () => { MK.trades = t; renderTrades(); renderBookMid(); patchLast(); }; } },
+  info: { every: 5000, run: async s => { const i = await mkGet("info", { symbol: s }); return () => { MK.info = i; renderInfo(); renderBookMid(); }; } },
+  data: { every: 30000, when: () => MK.tab === "data", run: async s => { const d = await mkGet("data", { symbol: s }); return () => { MK.data = d; renderData(); }; } },
+  movers: { every: 15000, when: () => MK.low === "movers", run: async () => { const m = await mkGet("movers"); return () => { MK.movers = m; renderMovers(); }; } },
+};
+function mkTick() {
+  if (document.hidden || pageView() !== "market") return;   // only the market page polls Binance for it
+  mkSyncSymbols();
+  const now = Date.now();
+  for (const [name, t] of Object.entries(MK_TASKS)) {
+    if ((t.when && !t.when()) || MK.busy[name] === MK.seq || now - (MK.at[name] || 0) < t.every) continue;
+    const seq = MK.seq;
+    MK.busy[name] = seq; MK.at[name] = now;
+    t.run(MK.sym)
+      .then(apply => { if (seq === MK.seq) { apply(); MK.okAt = Date.now(); MK.err = ""; mkHint(); } })
+      .catch(e => { if (seq === MK.seq) { MK.err = e.message; mkHint(); } })
+      .finally(() => { if (MK.busy[name] === seq) MK.busy[name] = null; });
+  }
+  mkHint();
+}
+function mkHint() {
+  $("mk-hint").textContent = MK.err ? "Binance data unavailable: " + MK.err
+    : MK.okAt ? `live · ${MK.sym} · updated ${dur((Date.now() - MK.okAt) / 1000)} ago` : "connecting…";
+}
+let mkSymKey = "";
+function mkSyncSymbols() {
+  const list = (snap && snap.swing && snap.swing.symbols && snap.swing.symbols.length) ? snap.swing.symbols.slice() : ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "XRPUSDT"];
+  if (!list.includes(MK.sym)) list.unshift(MK.sym);
+  const key = list.join(",") + "|" + MK.sym;
+  if (key === mkSymKey) return;
+  mkSymKey = key;
+  $("mk-sym").innerHTML = list.map(s => `<option value="${esc(s)}"${s === MK.sym ? " selected" : ""}>${esc(s.replace(/USDT$/, ""))} · ${esc(s)}</option>`).join("");
+}
+function mkReset() { MK.seq++; MK.at = {}; MK.err = ""; MK.hover = -1; mkSave(); }
+function mkSelect(sym) {
+  if (sym === MK.sym) return;
+  MK.sym = sym; MK.k = []; MK.book = null; MK.trades = []; MK.info = null; MK.data = null; MK.dp = 2;
+  mkReset(); mkSyncSymbols(); renderBook(); renderTrades(); renderInfo(); renderData(); drawChart(); mkTick();
+}
+function mkShowTabs() {
+  document.querySelectorAll(".mk-tab[data-tab]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.tab === MK.tab)));
+  document.querySelectorAll(".mk-tab[data-low]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.low === MK.low)));
+  for (const t of ["chart", "info", "data"]) $("mk-pane-" + t).hidden = t !== MK.tab;
+  $("mk-pane-trades").hidden = MK.low !== "trades"; $("mk-pane-movers").hidden = MK.low !== "movers"; $("mk-mv").hidden = MK.low !== "movers";
+  $("mk-iv").style.visibility = MK.tab === "chart" ? "visible" : "hidden";
+  document.querySelectorAll("#mk-iv button").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.iv === MK.iv)));
+}
+$("mk-iv").innerHTML = MK_IVS.map(([v, label]) => `<button type="button" data-iv="${v}">${label}</button>`).join("");
+$("mk-iv").addEventListener("click", e => {
+  const v = e.target.dataset.iv;
+  if (!v || v === MK.iv) return;
+  MK.iv = v; MK.k = []; MK.at.klines = 0; MK.seq++; MK.err = ""; MK.hover = -1; mkSave(); mkShowTabs(); drawChart(); mkTick();
+});
+document.querySelectorAll(".mk-tab[data-tab]").forEach(b => b.addEventListener("click", () => {
+  MK.tab = b.dataset.tab; mkSave(); mkShowTabs();
+  if (MK.tab === "chart") drawChart(); else if (MK.tab === "info") renderInfo(); else { MK.at.data = 0; renderData(); }
+  mkTick();
+}));
+document.querySelectorAll(".mk-tab[data-low]").forEach(b => b.addEventListener("click", () => {
+  MK.low = b.dataset.low; mkSave(); mkShowTabs(); if (MK.low === "movers") { renderMovers(); MK.at.movers = 0; } mkTick();
+}));
+$("mk-mv").addEventListener("click", e => { if (e.target.dataset.mv) { MK.mv = e.target.dataset.mv; mkSave(); renderMovers(); } });
+$("mk-movers").addEventListener("click", e => { const tr = e.target.closest("tr[data-sym]"); if (tr) mkSelect(tr.dataset.sym); });
+$("mk-sym").addEventListener("change", e => mkSelect(e.target.value));
+const cvs = $("mk-canvas");
+cvs.addEventListener("mousemove", e => {
+  const L = MK.L; if (!L) return;
+  const rect = cvs.getBoundingClientRect(), mx = e.clientX - rect.left;
+  MK.hover = mx > L.plotW ? -1 : Math.max(0, Math.min(L.n - 1, Math.floor((mx - L.offX) / L.sp)));
+  MK.hoverY = e.clientY - rect.top;
+  requestAnimationFrame(drawChart);
+});
+cvs.addEventListener("mouseleave", () => { MK.hover = -1; requestAnimationFrame(drawChart); });
+cvs.addEventListener("wheel", e => {
+  e.preventDefault();
+  MK.spacing = Math.max(3, Math.min(24, MK.spacing * (e.deltaY > 0 ? 0.9 : 1.1))); mkSave(); requestAnimationFrame(drawChart);
+}, { passive: false });
+new ResizeObserver(() => requestAnimationFrame(drawChart)).observe(cvs);
+window.matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => requestAnimationFrame(drawChart));
+document.addEventListener("visibilitychange", () => { if (!document.hidden) mkTick(); });
+mkShowTabs(); renderTrades(); renderBookMid();
+setInterval(mkTick, 1000);
+
+// ---- paper order ticket + paper futures account (local page only; arbbot/paper_futures.py, nothing reaches Binance) ----
+var OT = { type: "limit", bbo: false, unit: "usdt", pf: "pos", st: null, err: "", priceSym: "", busy: false };
+try {
+  const s = JSON.parse(localStorage.getItem("ot") || "{}");
+  if (["limit", "market", "cond"].includes(s.type)) OT.type = s.type;
+  if (["pos", "orders", "hist", "trades", "assets"].includes(s.pf)) OT.pf = s.pf;
+  if (s.unit === "coin") OT.unit = "coin";
+} catch (_) { /* defaults */ }
+function otSave() { try { localStorage.setItem("ot", JSON.stringify({ type: OT.type, pf: OT.pf, unit: OT.unit })); } catch (_) { } }
+const fmt2 = v => v.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const coin = () => MK.sym.replace(/USDT$/, "");
+const otLev = () => OT.st ? (OT.st.leverage[MK.sym] || OT.st.default_leverage) : 15;
+const numIn = id => { const v = parseFloat(String($(id).value).replace(/,/g, "")); return isFinite(v) && v > 0 ? v : null; };
+const fmtQ = q => q >= 1000 ? q.toLocaleString(undefined, { maximumFractionDigits: 2 }) : q.toPrecision(Math.min(8, Math.max(4, Math.ceil(Math.log10(q + 1)) + 4))).replace(/\.?0+$/, "");
+const tms = ms => new Date(ms).toLocaleString([], { hour12: false, month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const typeLabel = o => ({ limit: "Limit", market: "Market", stop_limit: "Stop limit", stop_market: "Stop market" })[o.type] + (o.reason && ["take-profit", "stop-loss", "liquidation"].includes(o.reason) ? ` · ${o.reason}` : "");
+function otLast() { return MK.trades.length ? MK.trades[0].price : MK.k.length ? MK.k[MK.k.length - 1][4] : null; }
+function otTop(buy, own) {   // own=true: our side of the book (BBO); otherwise the side we would take from
+  const b = MK.book;
+  if (!b || !b.asks.length || !b.bids.length) return otLast();
+  return (buy === own) ? b.bids[0][0] : b.asks[0][0];
+}
+function otRef(buy) {
+  if (OT.type === "limit") return OT.bbo ? otTop(buy, true) : numIn("ot-price");
+  if (OT.type === "market") return otTop(buy, false);
+  return $("ot-ctype").value === "limit" ? numIn("ot-price") : numIn("ot-stop");
+}
+function otUsdt(ref) { const v = numIn("ot-size"); return v == null ? null : OT.unit === "usdt" ? v : ref ? v * ref : null; }
+function otMax() { if (!OT.st) return 0; const lev = otLev(), t = OT.st.taker_bps / 1e4; return Math.max(0, OT.st.available * lev / (1 + lev * t)); }
+function otMsg(text, bad) { const m = $("ot-msg"); m.textContent = text; m.className = "ot-msg " + (bad ? "neg" : "pos"); }
+
+function otMode() {
+  document.querySelectorAll(".ot-tabs button").forEach(b => b.setAttribute("aria-selected", String(b.dataset.ot === OT.type)));
+  const cond = OT.type === "cond", condLimit = cond && $("ot-ctype").value === "limit";
+  $("ot-stop-row").hidden = !cond;
+  $("ot-price-row").hidden = !(OT.type === "limit" || condLimit);
+  if (cond && !condLimit) $("ot-price-row").hidden = false;     // keep the Limit/Market switch reachable
+  $("ot-price").parentElement.style.display = cond && !condLimit ? "none" : "";
+  $("ot-bbo").hidden = OT.type !== "limit";
+  $("ot-ctype").hidden = !cond;
+  $("ot-price").disabled = OT.type === "limit" && OT.bbo;
+  if (OT.type === "limit" && OT.bbo) $("ot-price").value = "BBO";
+  else if ($("ot-price").value === "BBO") $("ot-price").value = "";
+  $("ot-bbo").setAttribute("aria-pressed", String(OT.bbo));
+  $("ot-slip-row").hidden = OT.type !== "market";
+  $("ot-tif-row").style.visibility = OT.type === "limit" || condLimit ? "visible" : "hidden";
+  $("ot-unit").value = OT.unit;
+  otEst();
+}
+function otDefaults() {   // fill the price with the last price whenever the charted market changes
+  const last = otLast();
+  if (!last) return;
+  if (OT.priceSym !== MK.sym) {
+    OT.priceSym = MK.sym;
+    if (!(OT.type === "limit" && OT.bbo)) $("ot-price").value = last.toFixed(MK.dp);
+    $("ot-stop").value = ""; $("ot-size").value = ""; $("ot-pct").value = 0; $("ot-pct-l").textContent = "0%";
+    $("ot-tp").value = ""; $("ot-sl").value = ""; $("ot-msg").textContent = "";
+  }
+}
+// "paper" (simulated account), "testnet" (real orders on the Binance futures testnet, test money) or "mainnet"
+// (REAL-MONEY orders on your Binance futures account: only when the bot runs with --live --real-ticket)
+const VN = () => (OT.st && ["testnet", "mainnet"].includes(OT.st.venue)) ? OT.st.venue : "paper";
+const VNC = () => ({ testnet: "Testnet", mainnet: "REAL-MONEY" })[VN()] || "Paper";
+const REAL = () => VN() === "mainnet";
+function otVenue() {
+  const v = VN(), b = $("ot-venue");
+  b.textContent = { testnet: "TESTNET", mainnet: "REAL MONEY" }[v] || "PAPER";
+  b.className = "badge " + (v === "mainnet" ? "live" : "paper");
+  b.title = v === "mainnet" ? `Orders are sent to your Binance FUTURES account on MAINNET: REAL money. At most ${OT.st.max_order_usd} USDT per order; each one asks you to confirm.`
+    : v === "testnet" ? "Orders are sent to the Binance FUTURES TESTNET: real testnet orders, test money only."
+    : "Orders fill against live Binance prices in a paper account. Nothing is ever sent to Binance.";
+  $("ot-transfer").hidden = v !== "paper";
+  $("pf-venue").textContent = { testnet: "Binance futures TESTNET account", mainnet: "Binance futures MAINNET account · REAL MONEY" }[v] || "paper futures account";
+}
+function otEst() {
+  otVenue();
+  $("ot-unit").options[1].text = coin();
+  $("ot-lev").textContent = otLev() + "x";
+  $("ot-avbl").textContent = OT.st ? fmt2(OT.st.available) : "–";
+  $("ot-fee").textContent = OT.st ? `% Fee level · maker ${(OT.st.maker_bps / 100).toFixed(3)}% · taker ${(OT.st.taker_bps / 100).toFixed(3)}%`
+    : (OT.err ? `${VNC()} account unavailable: ` + OT.err : "% Fee level");
+  const lev = otLev(), t = OT.st ? OT.st.taker_bps / 1e4 : 5e-4, mmr = OT.st ? OT.st.mmr : 0.005, max = otMax(), ro = $("ot-ro").checked;
+  for (const [buy, k] of [[true, "b"], [false, "s"]]) {
+    const ref = otRef(buy), usdt = otUsdt(ref || otLast());
+    $("ot-max-" + k).textContent = fmt2(max);
+    if (!ref || !usdt || ro) { $("ot-liq-" + k).textContent = "--"; $("ot-cost-" + k).textContent = "0.00"; continue; }
+    $("ot-cost-" + k).textContent = fmt2(usdt / lev + usdt * t);
+    $("ot-liq-" + k).textContent = fmtP(buy ? ref * (1 - 1 / lev) / (1 - mmr) : ref * (1 + 1 / lev) / (1 + mmr));
+  }
+}
+async function pfPost(op, body, buttons) {
+  (buttons || []).forEach(b => b.disabled = true);
+  try {
+    const r = await fetch("/api/paper/" + op, { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    OT.st = d.state; OT.err = ""; pfRender(); otEst(); requestAnimationFrame(drawChart);
+    return d;
+  } catch (e) { otMsg(e.message, true); return null; }
+  finally { (buttons || []).forEach(b => b.disabled = false); }
+}
+function otDescribe(o) {
+  const what = `${o.side === "buy" ? "Buy/Long" : "Sell/Short"} ${fmtQ(o.qty)} ${o.symbol.replace(/USDT$/, "")}`;
+  if (o.status === "filled") return [`${VNC()} fill: ${what} @ ${o.filled_px ? fmtP(o.filled_px) : "market"}${VN() === "paper" ? ` (fee ${fmt2(o.fee)} USDT)` : ""}.`, false];
+  if (o.status === "new") return [`${VNC()} ${typeLabel(o).toLowerCase()} order placed: ${what}${o.price ? " @ " + fmtP(o.price) : ""}${o.stop_price ? ", stop " + fmtP(o.stop_price) : ""}.`, false];
+  return [`Not filled (${o.status}): ${o.reason}`, true];
+}
+async function otSubmit(side) {
+  const req = { symbol: MK.sym, side, reduce_only: $("ot-ro").checked };
+  if (OT.type === "limit") {
+    req.type = "limit"; req.tif = $("ot-tif").value;
+    if (OT.bbo) req.bbo = true; else if (!(req.price = numIn("ot-price"))) return otMsg("Enter a price.", true);
+  } else if (OT.type === "market") {
+    req.type = "market";
+    if ($("ot-slip-on").checked && !(req.slippage_pct = numIn("ot-slip"))) return otMsg("Enter a slippage tolerance in %.", true);
+  } else {
+    const lim = $("ot-ctype").value === "limit";
+    req.type = lim ? "stop_limit" : "stop_market"; req.trigger = $("ot-trigger").value;
+    if (!(req.stop_price = numIn("ot-stop"))) return otMsg("Enter a stop price.", true);
+    if (lim) { req.tif = $("ot-tif").value; if (!(req.price = numIn("ot-price"))) return otMsg("Enter a price.", true); }
+  }
+  const v = numIn("ot-size");
+  if (v == null) return otMsg("Enter a size.", true);
+  if (OT.unit === "usdt") req.size_usdt = v; else req.qty = v;
+  if ($("ot-tpsl-on").checked) {
+    req.tp = numIn("ot-tp"); req.sl = numIn("ot-sl");
+    if (!req.tp && !req.sl) return otMsg("Enter a take-profit and/or stop-loss price, or untick TP/SL.", true);
+  }
+  if (REAL()) {
+    const size = req.size_usdt != null ? `${req.size_usdt} USDT` : `${req.qty} ${coin()}`;
+    const px = req.bbo ? " at the best price" : req.price ? ` @ ${req.price}` : "";
+    const what = `${side === "buy" ? "BUY / LONG" : "SELL / SHORT"} ${size} of ${MK.sym}, ${req.type.replace("_", " ")}${px}` +
+      `${req.stop_price ? `, stop ${req.stop_price}` : ""}, ${otLev()}x${req.reduce_only ? ", reduce-only" : ""}`;
+    if (!confirm(`REAL MONEY order on your Binance account:\n\n${what}\n\nSend it?`)) return otMsg("Not sent.", true);
+  }
+  const d = await pfPost("order", req, [$("ot-buy"), $("ot-sell")]);
+  if (d) {
+    const [text, bad] = otDescribe(d.result);
+    otMsg(text, bad);
+    if (!bad) { $("ot-size").value = ""; $("ot-pct").value = 0; $("ot-pct-l").textContent = "0%"; otEst(); }
+  }
+}
+
+// Who opened a futures position or order (TestnetTicket.origin). A paper account only ever has the ticket's own trades.
+function srcTag(s) {
+  s = s || "ticket";
+  if (s.startsWith("swing:")) return `<span class="src swing" title="Swing kit, ${esc(s.slice(6))} account (mirrored to this account)">Swing · ${esc(s.slice(6))}</span>`;
+  if (s === "arbitrage") return `<span class="src arb" title="Arbitrage bot: the short perp leg, hedged with spot">Arbitrage</span>`;
+  if (s === "ticket") return `<span class="src ticket" title="Placed from this dashboard's order ticket">Order ticket</span>`;
+  return `<span class="src ext" title="Not opened by this bot (e.g. the Binance app or another program)">Outside the bot</span>`;
+}
+
+function pfRender() {
+  const st = OT.st;
+  document.querySelectorAll(".mk-tab[data-pf]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.pf === OT.pf)));
+  for (const p of ["pos", "orders", "hist", "trades", "assets"]) $("pf-pane-" + p).hidden = p !== OT.pf;
+  if (!st) {
+    const msg = `<tr><td colspan="10" class="empty">${OT.err ? `${VNC()} account unavailable: ` + esc(OT.err) : "Loading…"}</td></tr>`;
+    for (const id of ["pf-pos", "pf-orders", "pf-hist", "pf-trades"]) $(id).innerHTML = msg;
+    return;
+  }
+  $("pf-npos").textContent = st.positions.length; $("pf-nord").textContent = st.orders.length;
+  const sideTxt = s => s === "buy" || s === "long" ? `<span class="pos">${s === "buy" ? "Buy" : "Long"}</span>` : `<span class="neg">${s === "sell" ? "Sell" : "Short"}</span>`;
+  const tpsl = sym => {
+    const kids = st.orders.filter(o => o.symbol === sym && o.reduce_only && o.oco != null);
+    const tp = kids.find(o => o.reason === "take-profit"), sl = kids.find(o => o.reason === "stop-loss");
+    return `${tp ? price(tp.stop_price) : "–"} / ${sl ? price(sl.stop_price) : "–"}`;
+  };
+  $("pf-pos").innerHTML = st.positions.length ? st.positions.map(p =>
+    `<tr><td class="sym" style="text-align:left">${esc(p.symbol)} ${sideTxt(p.side)} <span class="mut">${p.leverage}x</span></td><td style="text-align:left">${srcTag(p.source)}</td><td class="n">${fmtQ(p.qty)} <span class="mut">${esc(p.symbol.replace(/USDT$/, ""))} · ${compact(p.notional)}</span></td>` +
+    `<td class="n">${price(p.entry)}</td><td class="n">${price(p.mark)}</td><td class="n warn">${p.liq ? price(p.liq) : "–"}</td><td class="n">${fmt2(p.margin)}</td>` +
+    `<td class="n ${cls(p.pnl)}">${money(p.pnl)} (${sg(p.roe, 2)}%)</td><td class="n">${tpsl(p.symbol)}</td>` +
+    `<td>${p.source === "arbitrage" ? `<span class="mut" title="Hedged with spot: the arbitrage bot closes it (or Flatten all)">arbitrage bot</span>`
+                                     : `<button type="button" class="mini" data-close="${esc(p.symbol)}">Market close</button>`}</td></tr>`
+  ).join("") : `<tr><td colspan="10" class="empty">No open ${VN()} positions. Use the order ticket above.</td></tr>`;
+  $("pf-orders").innerHTML = st.orders.length ? st.orders.slice().reverse().map(o =>
+    `<tr><td class="mut" style="text-align:left">${tms(o.created)}</td><td class="sym" style="text-align:left">${esc(o.symbol)}</td><td style="text-align:left">${srcTag(o.source)}</td><td class="n">${esc(typeLabel(o))}</td><td class="n">${sideTxt(o.side)}</td>` +
+    `<td class="n">${o.price != null ? price(o.price) : "Market"}</td><td class="n">${o.stop_price ? `${o.triggered ? "triggered " : ""}${o.above ? "≥" : "≤"} ${price(o.stop_price)} <span class="mut">${esc(o.trigger)}</span>` : "–"}</td>` +
+    `<td class="n">${fmtQ(o.qty)}</td><td class="n">${o.reduce_only ? "Yes" : "No"}</td><td class="n">${esc(o.tif)}</td>` +
+    `<td><button type="button" class="mini" data-cancel="${o.id}">Cancel</button></td></tr>`
+  ).join("") : `<tr><td colspan="11" class="empty">No open ${VN()} orders.</td></tr>`;
+  $("pf-hist").innerHTML = st.order_history.length ? st.order_history.map(o =>
+    `<tr><td class="mut" style="text-align:left">${tms(o.updated)}</td><td class="sym" style="text-align:left">${esc(o.symbol)}</td><td class="n">${esc(typeLabel(o))}</td><td class="n">${sideTxt(o.side)}</td>` +
+    `<td class="n">${o.filled_px != null ? price(o.filled_px) : o.price != null ? price(o.price) : "–"}</td><td class="n">${fmtQ(o.qty)}</td>` +
+    `<td class="n ${o.status === "filled" ? "pos" : o.status === "liquidated" || o.status === "rejected" ? "neg" : "mut"}">${esc(o.status)}</td><td class="why">${esc(o.reason || "")}</td></tr>`
+  ).join("") : `<tr><td colspan="8" class="empty">No ${VN()} orders yet.</td></tr>`;
+  $("pf-trades").innerHTML = st.trades.length ? st.trades.map(t =>
+    `<tr><td class="mut" style="text-align:left">${tms(t.time)}</td><td class="sym" style="text-align:left">${esc(t.symbol)}</td><td class="n">${sideTxt(t.side)}</td><td class="n">${price(t.price)}</td>` +
+    `<td class="n">${fmtQ(t.qty)}</td><td class="n">${fmt2(t.fee)}</td><td class="n ${cls(t.realized)}">${t.realized ? money(t.realized) : "–"}</td><td class="n mut">${t.liquidation ? "liquidation" : esc(t.role)}</td></tr>`
+  ).join("") : `<tr><td colspan="8" class="empty">No ${VN()} fills yet.</td></tr>`;
+  const kv = (l, v, c) => `<div><div class="l">${l}</div><div class="v ${c || ""}">${v}</div></div>`;
+  $("pf-assets").innerHTML = kv("Wallet balance", fmt2(st.balance) + " USDT") + kv("Available", fmt2(st.available) + " USDT") +
+    kv("Unrealized PnL", money(st.unrealized), cls(st.unrealized)) + kv("Equity", fmt2(st.equity) + " USDT") +
+    kv("Net paper deposits", fmt2(st.deposits) + " USDT") + kv("Total PnL", money(st.equity - st.deposits), cls(st.equity - st.deposits)) +
+    kv("Fees", `maker ${(st.maker_bps / 100).toFixed(3)}% · taker ${(st.taker_bps / 100).toFixed(3)}%`) + kv("Maintenance margin", (st.mmr * 100).toFixed(2) + "%");
+}
+async function pfPoll() {
+  if (document.hidden || OT.busy || pageView() !== "market") return;
+  OT.busy = true;
+  try {
+    const r = await fetch("/api/paper/state", { cache: "no-store" });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
+    OT.st = d; OT.err = d.error || "";
+  } catch (e) { OT.err = e.message; }
+  finally { OT.busy = false; }
+  pfRender(); otEst(); otDefaults();
+}
+
+document.querySelectorAll(".ot-tabs button").forEach(b => b.addEventListener("click", () => { OT.type = b.dataset.ot; otSave(); otMode(); }));
+$("ot-ctype").addEventListener("change", otMode);
+$("ot-bbo").addEventListener("click", () => { OT.bbo = !OT.bbo; if (!OT.bbo) $("ot-price").value = (otLast() || 0).toFixed(MK.dp); otMode(); });
+$("ot-unit").addEventListener("change", e => { OT.unit = e.target.value; $("ot-size").value = ""; $("ot-pct").value = 0; $("ot-pct-l").textContent = "0%"; otSave(); otEst(); });
+for (const id of ["ot-price", "ot-stop", "ot-tp", "ot-sl"]) $(id).addEventListener("input", otEst);
+$("ot-size").addEventListener("input", () => {
+  const max = otMax(), usdt = otUsdt(otRef(true) || otLast());
+  const pct = max && usdt ? Math.min(100, Math.round(usdt / max * 100)) : 0;
+  $("ot-pct").value = pct; $("ot-pct-l").textContent = pct + "%"; otEst();
+});
+$("ot-pct").addEventListener("input", e => {
+  const pct = Number(e.target.value), usdt = otMax() * pct / 100, ref = otRef(true) || otLast();
+  $("ot-pct-l").textContent = pct + "%";
+  $("ot-size").value = !pct ? "" : OT.unit === "usdt" ? usdt.toFixed(2) : ref ? fmtQ(usdt / ref) : "";
+  otEst();
+});
+$("ot-ro").addEventListener("change", otEst);
+$("ot-slip-on").addEventListener("change", e => { $("ot-slip-box").hidden = !e.target.checked; });
+$("ot-tpsl-on").addEventListener("change", e => { $("ot-tpsl").hidden = !e.target.checked; });
+$("ot-buy").addEventListener("click", () => otSubmit("buy"));
+$("ot-sell").addEventListener("click", () => otSubmit("sell"));
+for (const id of ["bk-asks", "bk-bids"]) $(id).addEventListener("click", e => {   // click a book level: use its price
+  const row = e.target.closest("[data-px]");
+  if (!row || OT.type === "market") return;
+  OT.bbo = false; $("ot-price").value = Number(row.dataset.px).toFixed(MK.dp); otMode();
+});
+$("ot-transfer").addEventListener("click", async () => {
+  const v = prompt("Add paper USDT (e.g. 500) or take some out (e.g. -200). This is play money: nothing moves on Binance.", "500");
+  if (v == null) return;
+  const d = await pfPost("transfer", { amount: Number(v) });
+  if (d) otMsg(`Paper balance is now ${fmt2(d.result)} USDT.`);
+});
+function levNote() {
+  const v = Number($("ot-levn").value), busy = OT.st && (OT.st.positions.some(p => p.symbol === MK.sym) || OT.st.orders.some(o => o.symbol === MK.sym));
+  $("ot-lev-note").textContent = busy ? "Close the position and cancel the orders on this market first." :
+    v > 20 ? `High leverage: a ${(100 / v).toFixed(1)}% move against you wipes the margin.` : "";
+}
+$("ot-lev").addEventListener("click", () => {
+  const box = $("ot-levbox");
+  box.hidden = !box.hidden;
+  if (!box.hidden) { $("ot-levsym").textContent = MK.sym; $("ot-levn").value = $("ot-levr").value = otLev(); levNote(); }
+});
+$("ot-levr").addEventListener("input", e => { $("ot-levn").value = e.target.value; levNote(); });
+$("ot-levn").addEventListener("input", e => { $("ot-levr").value = e.target.value; levNote(); });
+$("ot-levcancel").addEventListener("click", () => { $("ot-levbox").hidden = true; });
+$("ot-levok").addEventListener("click", async () => {
+  const d = await pfPost("leverage", { symbol: MK.sym, leverage: Number($("ot-levn").value) }, [$("ot-levok")]);
+  if (d) { $("ot-levbox").hidden = true; otMsg(`Leverage for ${MK.sym} set to ${d.result}x${REAL() ? " on your real Binance account" : ""}.`); }
+});
+document.querySelectorAll(".mk-tab[data-pf]").forEach(b => b.addEventListener("click", () => { OT.pf = b.dataset.pf; otSave(); pfRender(); }));
+$("pf-pos").addEventListener("click", async e => {
+  const sym = e.target.dataset && e.target.dataset.close;
+  if (!sym || !confirm(REAL() ? `Close your REAL-MONEY ${sym} position at market on Binance?` : `Close the ${VN()} ${sym} position at market?`)) return;
+  const d = await pfPost("close", { symbol: sym }, [e.target]);
+  if (d) { const [text, bad] = otDescribe(d.result); otMsg(text, bad); }
+});
+$("pf-orders").addEventListener("click", async e => {
+  const id = e.target.dataset && e.target.dataset.cancel;
+  // regular order ids are numbers; testnet conditional (Algo API) orders have ids like "a123"
+  if (id && await pfPost("cancel", { id: /^\d+$/.test(id) ? Number(id) : id }, [e.target])) otMsg(`${VNC()} order canceled.`);
+});
+$("mk-sym").addEventListener("change", () => { $("ot-levbox").hidden = true; otEst(); });
+otMode(); pfRender();
+setInterval(pfPoll, 2000);
+pfPoll();
+mkTick();
+
+// ---- pages: / = the P&L reports, /arbitrage, /swing, /market = the details (one HTML page, one view each) -------
+const PAGES = { reports: "P&L reports", arb: "Arbitrage", swing: "Swing kit", market: "Market & ticket" };
+function pageView() {
+  return { "/arbitrage": "arb", "/swing": "swing", "/market": "market" }[location.pathname.replace(/\/+$/, "")] || "reports";
+}
+function pageLabel() { return PAGES[pageView()]; }
+(function showPage() {
+  const v = pageView();
+  document.querySelectorAll("[data-show]").forEach(el => { el.hidden = !el.dataset.show.split(" ").includes(v); });
+  document.querySelectorAll(".nav a[data-view]").forEach(a => {
+    if (a.dataset.view === v) a.setAttribute("aria-current", "page"); else a.removeAttribute("aria-current");
+  });
+})();
+
+// ---- P&L reports: daily / weekly / monthly on each panel (/api/pnl) --------------------------------------------
+const PNL_PER = [["day", "Daily"], ["week", "Weekly"], ["month", "Monthly"]], PNL_SRC = { demo: "Demo account", swing: "Paper" };
+const lsGet = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { } };
+function pnlInit(el) {
+  const panel = el.dataset.panel, sources = el.dataset.sources ? el.dataset.sources.split(",") : null;
+  const st = el._pnl = { panel, sources, period: lsGet(`pnl-${panel}-p`) || "day",
+                         source: sources ? (lsGet(`pnl-${panel}-s`) || sources[0]) : panel, data: null };
+  el.innerHTML = `<div class="pnl-h"><h3>${esc(el.dataset.title || "P&L report")}</h3><div class="pnl-ctl">` +
+    (sources ? `<div class="seg" role="group" aria-label="Which results">${sources.map(s => `<button type="button" data-src="${s}">${PNL_SRC[s]}</button>`).join("")}</div>` : "") +
+    `<div class="seg" role="group" aria-label="Period">${PNL_PER.map(([k, l]) => `<button type="button" data-per="${k}">${l}</button>`).join("")}</div></div></div>` +
+    `<div class="pnl-sum"></div><svg class="pnl-chart" role="img" aria-label="P&L per period, with the running total"></svg>` +
+    `<div class="tbl scroll mid"><table><thead><tr><th>Period (UTC)</th><th>P&amp;L</th><th>Trades</th><th>Win rate</th><th>Running total</th></tr></thead><tbody></tbody></table></div>` +
+    `<div class="pnl-note"></div>`;
+  el.addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (b?.dataset.per) { st.period = b.dataset.per; lsSet(`pnl-${panel}-p`, st.period); }
+    else if (b?.dataset.src) { st.source = b.dataset.src; lsSet(`pnl-${panel}-s`, st.source); }
+    else return;
+    pnlLoad(el);
+  });
+  pnlLoad(el);
+}
+async function pnlLoad(el) {
+  const st = el._pnl;
+  el.querySelectorAll("[data-per]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.per === st.period)));
+  el.querySelectorAll("[data-src]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.src === st.source)));
+  try {
+    const r = await fetch(`/api/pnl?panel=${encodeURIComponent(st.source)}&period=${st.period}`, { cache: "no-store" });
+    const d = await r.json().catch(() => ({ error: `HTTP ${r.status}` }));
+    if (!r.ok || d.error) throw new Error(d.error || `HTTP ${r.status}`);
+    st.data = d;
+  } catch (e) {
+    st.data = null;
+    el.querySelector(".pnl-sum").innerHTML = "";
+    el.querySelector(".pnl-chart").innerHTML = "";
+    el.querySelector("tbody").innerHTML = `<tr><td colspan="5" class="empty">The P&amp;L report is not available here.</td></tr>`;
+    el.querySelector(".pnl-note").textContent = String(e.message || e);
+    return;
+  }
+  pnlRender(el);
+}
+function pnlRender(el) {
+  const d = el._pnl.data;
+  if (!d) return;
+  const rows = d.rows.slice().reverse();                    // oldest first, for the chart and the running total
+  let run = 0;
+  const cum = rows.map(r => (run += r.pnl));
+  const wr = (w, n) => n ? `${(w / n * 100).toFixed(0)}%` : "–";
+  const tile = (l, v, vc, s) => `<div><div class="l">${l}</div><div class="v ${vc || ""}">${v}</div><div class="s">${s || "&nbsp;"}</div></div>`;
+  const per = { day: "days", week: "weeks", month: "months" }[d.period];
+  el.querySelector(".pnl-sum").innerHTML = [
+    tile(`Total · last ${d.rows.length} ${per}`, money(d.total), cls(d.total), `${d.trades} trade${d.trades === 1 ? "" : "s"}`),
+    tile("Win rate", wr(d.wins, d.trades), "", `${d.wins}W / ${d.losses}L`),
+    tile(`Green / red ${per}`, `${d.green} / ${d.red}`, "", `${d.active} with activity`),
+    tile(`Average per ${d.period}`, d.active ? money(d.avg) : "–", cls(d.avg), "active periods only"),
+    tile("Best", d.best ? money(d.best.pnl) : "–", d.best ? cls(d.best.pnl) : "", d.best ? esc(d.best.label) : ""),
+    tile("Worst", d.worst ? money(d.worst.pnl) : "–", d.worst ? cls(d.worst.pnl) : "", d.worst ? esc(d.worst.label) : ""),
+  ].join("");
+  // chart: one bar per period (green up, red down), the running total as a line on its own scale
+  const svg = el.querySelector(".pnl-chart");
+  svg.hidden = !d.active;
+  if (!d.active) {                                          // nothing yet: say so instead of an empty chart
+    el.querySelector("tbody").innerHTML = `<tr><td colspan="5" class="empty">No closed trades in the last ${d.rows.length} ${per} yet.</td></tr>`;
+    el.querySelector(".pnl-note").textContent = `${d.note}. Updated ${new Date().toLocaleTimeString()}.`;
+    return;
+  }
+  const W = Math.max(280, svg.clientWidth || 600), H = 160, padL = 6, padR = 6, top = 10, bot = 20;
+  const n = rows.length, bw = (W - padL - padR) / n, max = Math.max(1e-9, ...rows.map(r => Math.abs(r.pnl)));
+  const y0 = top + (H - top - bot) / 2, sc = (H - top - bot) / 2 / max;
+  const cmax = Math.max(1e-9, ...cum.map(Math.abs)), cy = v => y0 - v / cmax * (H - top - bot) / 2;
+  const short = l => l.replace("week of ", "").slice(d.period === "month" ? 0 : 5);
+  let g = `<line x1="0" x2="${W}" y1="${y0}" y2="${y0}" style="stroke:var(--line)"/>`;
+  rows.forEach((r, i) => {
+    const h = Math.abs(r.pnl) * sc, x = padL + i * bw + bw * .15, w = Math.max(1, bw * .7);
+    g += `<rect x="${x.toFixed(1)}" y="${(r.pnl >= 0 ? y0 - h : y0).toFixed(1)}" width="${w.toFixed(1)}" height="${Math.max(h, r.trades ? 1 : 0).toFixed(1)}" rx="1.5" style="fill:var(${r.pnl >= 0 ? "--pos" : "--neg"})"><title>${esc(r.label)}: ${money(r.pnl)} · ${r.trades} trade${r.trades === 1 ? "" : "s"} · running ${money(cum[i])}</title></rect>`;
+  });
+  if (rows.some(r => r.pnl)) g += `<polyline fill="none" style="stroke:var(--accent)" stroke-width="1.5" stroke-dasharray="4 3" points="${cum.map((v, i) => `${(padL + i * bw + bw / 2).toFixed(1)},${cy(v).toFixed(1)}`).join(" ")}"/>`;
+  g += `<text x="${padL}" y="${H - 5}">${esc(short(rows[0].label))}</text><text x="${W - padR}" y="${H - 5}" text-anchor="end">${esc(short(rows[n - 1].label))}</text>`;
+  g += `<text x="${padL}" y="${top + 2}">bars up to ±${money(max).slice(1)} · dashed line = running total</text>`;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = g;
+  el.querySelector("tbody").innerHTML = d.rows.map((r, i) => {
+    const c = cum[n - 1 - i];
+    return `<tr class="${r.trades || r.pnl ? "" : "zero"}"><td>${esc(r.label)}</td><td class="n ${cls(r.pnl)}">${r.trades || r.pnl ? money(r.pnl) : "–"}</td><td class="n">${r.trades || "–"}</td><td class="n">${wr(r.wins, r.trades)}</td><td class="n ${cls(c)}">${money(c)}</td></tr>`;
+  }).join("");
+  el.querySelector(".pnl-note").textContent = `${d.note}. Updated ${new Date().toLocaleTimeString()}.`;
+}
+function pnlSwingSources(hasDemo) {   // the demo-account choice only where the swing kit trades on the testnet
+  const el = document.querySelector('.pnl[data-panel="swing"]');
+  if (!el?._pnl) return;
+  const b = el.querySelector('[data-src="demo"]');
+  if (b) b.hidden = !hasDemo;
+  if (!hasDemo && el._pnl.source === "demo") { el._pnl.source = "swing"; pnlLoad(el); }
+}
+
+// ---- theme: follow the system, or force light / dark (remembered on this device) ------------------------------
+const THEMES = [["auto", "◐ Auto", "follows the system"], ["light", "☀ Light", "light"], ["dark", "☾ Dark", "dark"]];
+function applyTheme(t) {
+  const i = Math.max(0, THEMES.findIndex(x => x[0] === t));
+  if (THEMES[i][0] === "auto") delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = THEMES[i][0];
+  $("btn-theme").textContent = THEMES[i][1];
+  $("btn-theme").title = `Theme: ${THEMES[i][2]} (click to change)`;
+  requestAnimationFrame(() => { if (typeof drawChart === "function") drawChart(); document.querySelectorAll(".pnl").forEach(pnlRender); });
+}
+$("btn-theme").addEventListener("click", () => {
+  const cur = document.documentElement.dataset.theme || "auto", next = THEMES[(THEMES.findIndex(x => x[0] === cur) + 1) % THEMES.length][0];
+  lsSet("theme", next);
+  applyTheme(next);
+});
+applyTheme(lsGet("theme") || "auto");
+document.querySelectorAll(".pnl").forEach(pnlInit);
+setInterval(() => document.querySelectorAll(".pnl").forEach(el => { if (el.offsetParent !== null) pnlLoad(el); }), 60_000);
+let pnlResize;
+window.addEventListener("resize", () => { clearTimeout(pnlResize); pnlResize = setTimeout(() => document.querySelectorAll(".pnl").forEach(pnlRender), 200); });
+
+function connect() {
+  ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);
+  ws.onopen = () => { retry = 0; };
+  ws.onmessage = ev => { snap = JSON.parse(ev.data); renderAll(); };
+  ws.onclose = () => {
+    $("dot").className = "dot bad"; $("feedtxt").textContent = "dashboard disconnected";
+    setTimeout(connect, Math.min(10000, 500 * 2 ** retry++));
+  };
+}
+renderHead();
+connect();
+</script>
+</body>
+</html>

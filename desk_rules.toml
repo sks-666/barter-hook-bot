@@ -1,0 +1,21 @@
+# Desk rules for the research gates and promotion ladder (deskkit). Change a value, bump `version`, and every result
+# written afterwards says which rules produced it. Defaults are the protocol's; nothing here moves any money.
+[desk]
+version = "paper-v1"
+capital = 10000          # planned account in USD (sizing, capacity)
+risk_pct = 1.0           # % of equity risked per trade
+train_months = 12
+test_months = 3
+step_months = 3
+min_oos_trades = 30
+dsr_min = 0.95           # deflated Sharpe ratio, counting every configuration ever tested
+wf_positive_min = 0.70   # share of test windows that must be profitable
+crash_fall = 0.30        # a BTC fall this big inside a test window makes it a crash window
+crash_mult = 1.5         # crash-window drawdown must stay within 1.5 x the planned drawdown
+d_plan_pct = 25          # planned maximum drawdown in %, for any strategy not named below
+plateau_band = 0.20      # settings within +-20% must still be profitable
+capacity_pct = 1.0       # planned size as % of the median hourly traded value
+min_trades_8w = 20       # a strategy must be able to reach 20 trades in 8 weeks
+
+[d_plan]
+# trend = 30
