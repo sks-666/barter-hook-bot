@@ -6,7 +6,8 @@ exchange and everything the page shows (balance, positions, open orders, fills) 
 
 Safety, by construction:
 * It refuses a mainnet client unless real_money=True, and then it also needs a cap on each order's value
-  (max_order_usd); new orders are refused while the KILL file is present (`blocked`). Closing is always allowed.
+  (max_order_usd) and keeps the ticket's whole exposure under max_total_usd (3x the order cap unless given); new orders
+  are refused while the KILL file is present (`blocked`). Closing is always allowed.
 * The futures account is shared with the arbitrage bot (one position per coin in one-way mode), so the two never touch
   the same coin: the ticket refuses coins the arbitrage bot holds, the arbitrage bot skips coins the ticket owns, and
   the bot's startup check ignores the coins saved in `owned` (data/ticket-<state>.json).
@@ -63,7 +64,7 @@ class TestnetTicket:
     def __init__(self, client, path: Path | None, arb_symbols: Callable[[], set[str]] = lambda: set(),
                  notify=None, taker_bps: float = 5.0, clock=time.time, poll_s: float = 4.0, real_money: bool = False,
                  max_order_usd: float | None = None, default_leverage: int = DEFAULT_LEVERAGE,
-                 blocked: Callable[[], str] = lambda: ""):
+                 blocked: Callable[[], str] = lambda: "", max_total_usd: float | None = None):
         if "testnet" in client.hosts.get("fapi", ""):
             self.venue = "testnet"
         elif not real_money:
@@ -73,8 +74,13 @@ class TestnetTicket:
         else:
             self.venue = "mainnet"
         self.max_order_usd, self.default_leverage, self.blocked = max_order_usd, default_leverage, blocked
+        # all the ticket's positions and resting orders together (real money only: one order at a time is not enough)
+        self.max_total_usd = (max_total_usd or 3 * max_order_usd) if self.venue == "mainnet" else max_total_usd
         self.c, self.path, self.arb_symbols, self.clock, self.poll_s = client, path, arb_symbols, clock, poll_s
         self.notify = notify or (lambda text: None)
+        # which system opened a coin's position, for the page ("swing:trend", ...; "" = not one of them). Set by main.py
+        # once the swing mirrors exist.
+        self.source: Callable[[str], str] = lambda sym: ""
         self.taker_bps = taker_bps
         self.s = self._load() or {"owned": [], "tpsl": {}, "history": [], "start_balance": None}
         self.filters: dict[str, dict] = {}
@@ -221,10 +227,13 @@ class TestnetTicket:
                 price = (q["bid"] if buy else q["ask"]) if (req.get("bbo") and typ == "limit") else _num(req, "price", True)
             stop = _num(req, "stop_price", True) if typ.startswith("stop") else None
             ref = price or stop or (q["ask"] if buy else q["bid"])
+            # What the order can really be worth: a sell priced below the bid (or a stop below it) fills at about the bid,
+            # so it is sized and capped at the higher of the two, never at a mistyped low price. Buys fill at or below ref.
+            worth = ref if buy else max(ref, q["bid"])
             qty, size = _num(req, "qty"), _num(req, "size_usdt")
             if (qty is None) == (size is None):
                 raise ValueError("give the size either in USDT or in coins")
-            qd = self._qty(sym, qty if qty is not None else size / ref)
+            qd = self._qty(sym, qty if qty is not None else size / worth)
             f = self.filters[sym]
             if qd <= 0 or qd < f["min_qty"]:
                 raise ValueError(f"size is below the minimum quantity for {sym} ({_fmt(f['min_qty'])})")
@@ -233,9 +242,15 @@ class TestnetTicket:
                                  f"({_fmt(f['market_max'])}); split it into smaller orders")
             if not reduce_only and float(qd) * ref < f["min_notional"]:
                 raise ValueError(f"order value must be at least {f['min_notional']:g} USDT on {sym}")
-            if self.max_order_usd and not reduce_only and float(qd) * ref > self.max_order_usd:
-                raise ValueError(f"order value {float(qd) * ref:,.2f} USDT is above the {self.max_order_usd:g} USDT cap per "
+            if self.max_order_usd and not reduce_only and float(qd) * worth > self.max_order_usd:
+                raise ValueError(f"order value {float(qd) * worth:,.2f} USDT is above the {self.max_order_usd:g} USDT cap per "
                                  f"order (run.py --real-ticket-max-usd)")
+            if self.max_total_usd and not reduce_only:
+                rows = await self._get_v3("/fapi/v3/positionRisk", "/fapi/v2/positionRisk")   # fresh, not the last poll
+                total = self._exposure(rows, sym, float(qd) if buy else -float(qd), worth)
+                if total > self.max_total_usd:
+                    raise ValueError(f"this would bring the ticket's positions and open orders to {total:,.2f} USDT, above "
+                                     f"the {self.max_total_usd:g} USDT total cap (run.py --real-ticket-max-total-usd)")
             if tp and (tp <= ref if buy else tp >= ref):
                 raise ValueError("take-profit must be above the entry for a long, below it for a short")
             if sl and (sl >= ref if buy else sl <= ref):
@@ -289,6 +304,21 @@ class TestnetTicket:
                         f"{out['filled_px'] or 0:.8g} ({'testnet: test money' if self.venue == 'testnet' else 'REAL MONEY'})")
         await self._safe_refresh()
         return out
+
+    def _exposure(self, rows: list[dict], sym: str, delta: float, px: float) -> float:
+        """USDT value of the ticket's positions once `delta` coins of `sym` are added at `px`, plus its resting orders that
+        could still add to them (counted at full size whichever side they are on: an upper bound)."""
+        owned = set(self.s["owned"]) | {sym}
+        total = 0.0
+        for r in rows:
+            if r["symbol"] in owned and r["symbol"] != sym:
+                total += abs(float(r["positionAmt"])) * float(r.get("markPrice") or 0)
+        cur = next((float(r["positionAmt"]) for r in rows if r["symbol"] == sym), 0.0)
+        total += abs(cur + delta) * px
+        for o in self.open_orders:
+            if o["symbol"] in owned and not (o.get("closePosition") in (True, "true") or o.get("reduceOnly") in (True, "true")):
+                total += float(o.get("origQty") or 0) * (float(o.get("price") or 0) or float(o.get("stopPrice") or 0))
+        return total
 
     async def _describe(self, sym: str, o: dict) -> dict:
         """One Binance order as the ticket's order dict (paper shape)."""
@@ -548,12 +578,19 @@ class TestnetTicket:
         self._income_at = self.clock()
         return self._income
 
+    def origin(self, sym: str, arb: set[str]) -> str:
+        """What opened this coin's position or order: "arbitrage", "swing:<account>" (the swing mirror), "ticket" (an
+        order placed from the dashboard), or "external" (none of the bot's systems: e.g. the Binance app)."""
+        if sym in arb:
+            return "arbitrage"
+        return self.source(sym) or ("ticket" if sym in self.s["owned"] else "external")
+
     def view(self) -> dict:
         arb = self.arb_symbols()
         positions = []
         for p in self.risk:
             amt = float(p.get("positionAmt") or 0)
-            if amt == 0 or p["symbol"] in arb:
+            if amt == 0:
                 continue
             mark, entry = float(p.get("markPrice") or 0), float(p.get("entryPrice") or 0)
             margin = float(p.get("isolatedMargin") or p.get("isolatedWallet") or 0) or abs(amt) * entry / max(
@@ -564,7 +601,8 @@ class TestnetTicket:
                                   mark=mark, notional=abs(amt) * mark, margin=margin,
                                   leverage=int(float(p.get("leverage") or self.leverage.get(p["symbol"], self.default_leverage))),
                                   pnl=pnl, roe=pnl / margin * 100 if margin else 0.0, liq=liq or None, realized=0.0,
-                                  funding=0.0, opened=int(p.get("updateTime") or 0)))
+                                  funding=0.0, opened=int(p.get("updateTime") or 0),
+                                  source=self.origin(p["symbol"], arb)))
         orders = []
         for o in self.open_orders:
             if o["symbol"] in arb:
@@ -580,16 +618,18 @@ class TestnetTicket:
                                tif=o.get("timeInForce", "GTC"), reduce_only=bool(o.get("reduceOnly")) or close,
                                reason=reason, oco=0 if close else None, triggered=False,
                                above=(t.startswith("STOP") == buy) if t not in ("LIMIT", "MARKET") else None,
-                               created=int(o.get("time") or o.get("updateTime") or 0), status="new"))
+                               created=int(o.get("time") or o.get("updateTime") or 0), status="new",
+                               source=self.origin(o["symbol"], arb)))
         trades = [dict(time=int(f["time"]), symbol=f["symbol"], side=str(f["side"]).lower(), price=float(f["price"]),
                        qty=float(f["qty"]), fee=float(f.get("commission") or 0), realized=float(f.get("realizedPnl") or 0),
                        role="maker" if f.get("maker") else "taker", liquidation=False) for f in self.fills]
         balance, available = self._usdt("walletBalance"), self._usdt("availableBalance")
-        upnl = sum(p["pnl"] for p in positions)
+        # the arbitrage short is shown (read-only) but hedged by spot held elsewhere: its P&L is not the account's
+        upnl = sum(p["pnl"] for p in positions if p["source"] != "arbitrage")
         return dict(venue=self.venue, balance=balance, available=available, unrealized=upnl, equity=balance + upnl,
                     deposits=self.s["start_balance"] or balance, leverage=dict(self.leverage),
                     default_leverage=self.default_leverage, max_leverage=MAX_LEVERAGE, maker_bps=2.0,
-                    max_order_usd=self.max_order_usd,
+                    max_order_usd=self.max_order_usd, max_total_usd=self.max_total_usd,
                     taker_bps=self.taker_bps, mmr=0.005, min_notional=5.0, positions=positions, orders=orders,
                     order_history=self.s["history"][-50:][::-1], trades=trades, error=self.last_error,
                     arb_symbols=sorted(arb))

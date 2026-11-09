@@ -10,6 +10,9 @@ The paper bot (port 8765) only opens on this laptop.
 - Opening the address without the key shows "This dashboard is locked" (HTTP 401). That is expected: only links
   with the key get in.
 
+The connection is plain HTTP (not encrypted), so only use it on a Wi-Fi you trust, such as your own home network
+with a password. On shared or public Wi-Fi another device could copy the key from the traffic.
+
 ## Get your phone link
 
 The link includes a private key, so it is not written in this file. Print it from the project folder:

@@ -183,6 +183,10 @@
   .ot-levbox input[type="range"] { accent-color: var(--warn); }
   .ot-lev-note { color: var(--warn); font-size: 11.5px; min-height: 14px; }
   td .mini { min-height: 24px; padding: 1px 8px; font-size: 12px; }
+  /* who opened a futures position or order: swing kit account, arbitrage, the order ticket, or none of the bot's systems */
+  .src { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+         border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: color-mix(in srgb, currentColor 10%, transparent); }
+  .src.swing { color: var(--pos); } .src.arb { color: var(--accent); } .src.ticket { color: var(--warn); } .src.ext { color: var(--muted); }
   td.why { white-space: normal; min-width: 240px; text-align: left; color: var(--muted); font-size: 12.5px; }
   th.why { text-align: left; }
   .side-long { color: var(--pos); font-weight: 650; } .side-short { color: var(--neg); font-weight: 650; }
@@ -245,6 +249,7 @@
   <!--NAV--><nav class="nav" aria-label="Pages">
     <a href="/" data-view="reports">P&amp;L reports</a><a href="/arbitrage" data-view="arb">Arbitrage</a>
     <a href="/swing" data-view="swing">Swing kit</a><a href="/market" data-view="market">Market &amp; ticket</a>
+    <a href="/terminal">Terminal ↗</a>
   </nav><!--/NAV-->
 
   <div id="banner" class="banner" role="status"></div>
@@ -418,8 +423,8 @@
           <button class="mk-tab" role="tab" data-pf="assets">Assets</button>
           <span class="mk-spread" id="pf-venue">paper futures account</span>
         </div>
-        <div id="pf-pane-pos" class="tbl scroll mid"><table><thead><tr><th style="text-align:left">Market</th><th>Size</th><th>Entry</th><th>Mark</th><th>Liq. price</th><th>Margin</th><th>PnL (ROE)</th><th>TP / SL</th><th>Close</th></tr></thead><tbody id="pf-pos"></tbody></table></div>
-        <div id="pf-pane-orders" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th>Type</th><th>Side</th><th>Price</th><th>Trigger</th><th>Amount</th><th>Reduce-only</th><th>TIF</th><th>Cancel</th></tr></thead><tbody id="pf-orders"></tbody></table></div>
+        <div id="pf-pane-pos" class="tbl scroll mid"><table><thead><tr><th style="text-align:left">Market</th><th style="text-align:left">Opened by</th><th>Size</th><th>Entry</th><th>Mark</th><th>Liq. price</th><th>Margin</th><th>PnL (ROE)</th><th>TP / SL</th><th>Close</th></tr></thead><tbody id="pf-pos"></tbody></table></div>
+        <div id="pf-pane-orders" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th style="text-align:left">Opened by</th><th>Type</th><th>Side</th><th>Price</th><th>Trigger</th><th>Amount</th><th>Reduce-only</th><th>TIF</th><th>Cancel</th></tr></thead><tbody id="pf-orders"></tbody></table></div>
         <div id="pf-pane-hist" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th>Type</th><th>Side</th><th>Avg / price</th><th>Amount</th><th>Status</th><th class="why">Note</th></tr></thead><tbody id="pf-hist"></tbody></table></div>
         <div id="pf-pane-trades" class="tbl scroll mid" hidden><table><thead><tr><th style="text-align:left">Time</th><th style="text-align:left">Market</th><th>Side</th><th>Price</th><th>Amount</th><th>Fee</th><th>Realized PnL</th><th>Role</th></tr></thead><tbody id="pf-trades"></tbody></table></div>
         <div id="pf-pane-assets" hidden><div class="mk-kv" id="pf-assets"></div></div>
@@ -1140,6 +1145,15 @@ async function otSubmit(side) {
   }
 }
 
+// Who opened a futures position or order (TestnetTicket.origin). A paper account only ever has the ticket's own trades.
+function srcTag(s) {
+  s = s || "ticket";
+  if (s.startsWith("swing:")) return `<span class="src swing" title="Swing kit, ${esc(s.slice(6))} account (mirrored to this account)">Swing · ${esc(s.slice(6))}</span>`;
+  if (s === "arbitrage") return `<span class="src arb" title="Arbitrage bot: the short perp leg, hedged with spot">Arbitrage</span>`;
+  if (s === "ticket") return `<span class="src ticket" title="Placed from this dashboard's order ticket">Order ticket</span>`;
+  return `<span class="src ext" title="Not opened by this bot (e.g. the Binance app or another program)">Outside the bot</span>`;
+}
+
 function pfRender() {
   const st = OT.st;
   document.querySelectorAll(".mk-tab[data-pf]").forEach(b => b.setAttribute("aria-selected", String(b.dataset.pf === OT.pf)));
@@ -1157,17 +1171,18 @@ function pfRender() {
     return `${tp ? price(tp.stop_price) : "–"} / ${sl ? price(sl.stop_price) : "–"}`;
   };
   $("pf-pos").innerHTML = st.positions.length ? st.positions.map(p =>
-    `<tr><td class="sym" style="text-align:left">${esc(p.symbol)} ${sideTxt(p.side)} <span class="mut">${p.leverage}x</span></td><td class="n">${fmtQ(p.qty)} <span class="mut">${esc(p.symbol.replace(/USDT$/, ""))} · ${compact(p.notional)}</span></td>` +
+    `<tr><td class="sym" style="text-align:left">${esc(p.symbol)} ${sideTxt(p.side)} <span class="mut">${p.leverage}x</span></td><td style="text-align:left">${srcTag(p.source)}</td><td class="n">${fmtQ(p.qty)} <span class="mut">${esc(p.symbol.replace(/USDT$/, ""))} · ${compact(p.notional)}</span></td>` +
     `<td class="n">${price(p.entry)}</td><td class="n">${price(p.mark)}</td><td class="n warn">${p.liq ? price(p.liq) : "–"}</td><td class="n">${fmt2(p.margin)}</td>` +
     `<td class="n ${cls(p.pnl)}">${money(p.pnl)} (${sg(p.roe, 2)}%)</td><td class="n">${tpsl(p.symbol)}</td>` +
-    `<td><button type="button" class="mini" data-close="${esc(p.symbol)}">Market close</button></td></tr>`
-  ).join("") : `<tr><td colspan="9" class="empty">No open ${VN()} positions. Use the order ticket above.</td></tr>`;
+    `<td>${p.source === "arbitrage" ? `<span class="mut" title="Hedged with spot: the arbitrage bot closes it (or Flatten all)">arbitrage bot</span>`
+                                     : `<button type="button" class="mini" data-close="${esc(p.symbol)}">Market close</button>`}</td></tr>`
+  ).join("") : `<tr><td colspan="10" class="empty">No open ${VN()} positions. Use the order ticket above.</td></tr>`;
   $("pf-orders").innerHTML = st.orders.length ? st.orders.slice().reverse().map(o =>
-    `<tr><td class="mut" style="text-align:left">${tms(o.created)}</td><td class="sym" style="text-align:left">${esc(o.symbol)}</td><td class="n">${esc(typeLabel(o))}</td><td class="n">${sideTxt(o.side)}</td>` +
+    `<tr><td class="mut" style="text-align:left">${tms(o.created)}</td><td class="sym" style="text-align:left">${esc(o.symbol)}</td><td style="text-align:left">${srcTag(o.source)}</td><td class="n">${esc(typeLabel(o))}</td><td class="n">${sideTxt(o.side)}</td>` +
     `<td class="n">${o.price != null ? price(o.price) : "Market"}</td><td class="n">${o.stop_price ? `${o.triggered ? "triggered " : ""}${o.above ? "≥" : "≤"} ${price(o.stop_price)} <span class="mut">${esc(o.trigger)}</span>` : "–"}</td>` +
     `<td class="n">${fmtQ(o.qty)}</td><td class="n">${o.reduce_only ? "Yes" : "No"}</td><td class="n">${esc(o.tif)}</td>` +
     `<td><button type="button" class="mini" data-cancel="${o.id}">Cancel</button></td></tr>`
-  ).join("") : `<tr><td colspan="10" class="empty">No open ${VN()} orders.</td></tr>`;
+  ).join("") : `<tr><td colspan="11" class="empty">No open ${VN()} orders.</td></tr>`;
   $("pf-hist").innerHTML = st.order_history.length ? st.order_history.map(o =>
     `<tr><td class="mut" style="text-align:left">${tms(o.updated)}</td><td class="sym" style="text-align:left">${esc(o.symbol)}</td><td class="n">${esc(typeLabel(o))}</td><td class="n">${sideTxt(o.side)}</td>` +
     `<td class="n">${o.filled_px != null ? price(o.filled_px) : o.price != null ? price(o.price) : "–"}</td><td class="n">${fmtQ(o.qty)}</td>` +

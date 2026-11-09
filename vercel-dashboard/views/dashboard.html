@@ -184,6 +184,10 @@
   .ot-levbox input[type="range"] { accent-color: var(--warn); }
   .ot-lev-note { color: var(--warn); font-size: 11.5px; min-height: 14px; }
   td .mini { min-height: 24px; padding: 1px 8px; font-size: 12px; }
+  /* who opened a futures position or order: swing kit account, arbitrage, the order ticket, or none of the bot's systems */
+  .src { display: inline-block; padding: 0 7px; border-radius: 999px; font-size: 11.5px; font-weight: 600; white-space: nowrap;
+         border: 1px solid color-mix(in srgb, currentColor 45%, transparent); background: color-mix(in srgb, currentColor 10%, transparent); }
+  .src.swing { color: var(--pos); } .src.arb { color: var(--accent); } .src.ticket { color: var(--warn); } .src.ext { color: var(--muted); }
   td.why { white-space: normal; min-width: 240px; text-align: left; color: var(--muted); font-size: 12.5px; }
   th.why { text-align: left; }
   .side-long { color: var(--pos); font-weight: 650; } .side-short { color: var(--neg); font-weight: 650; }

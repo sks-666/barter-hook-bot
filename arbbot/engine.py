@@ -41,6 +41,12 @@ class Engine:
         self.tick_count = 0
         self.tick_ms = 0.0
         self.flatten_requested = False
+        # positions whose close left the exchange in an unknown state (or that disagreed with it at startup): the saved
+        # sizes are no longer true, so they are never closed automatically again (a retry would sell what is not held)
+        self.stuck: set[str] = set()
+        # the funding rate each market showed for its upcoming funding time: once that time passes the feed already
+        # carries the NEXT period's rate, so the accrual must use the one seen before
+        self._funding_seen: dict[str, tuple[int, float]] = {}
         self.started = time.time()
         self.clock = time.time                  # wall clock for manual trades; replaceable so tests can use simulated time
         self.swing = None                       # a swingkit SwingRunner (paper), shown on the dashboard when present
@@ -119,7 +125,7 @@ class Engine:
         t0 = time.monotonic()
         now = time.time() if now is None else now
         self.tick_count += 1
-        self.risk.refresh(now)
+        self.risk.refresh(now, self._unrealized())
         self.sigs = {sym: self.scanner.evaluate(m, now) for sym, m in self.board.markets.items()}
         self._watch_state(now)
         if self.recorder is not None:
@@ -137,6 +143,11 @@ class Engine:
             if self.trading and not self.risk.halted:
                 await self._entries(now)
         self.tick_ms = (time.monotonic() - t0) * 1000
+
+    def _unrealized(self) -> float:
+        """What closing every open position at the current quotes would realise, in USD."""
+        return sum(unrealized_usd(pos, m, self.cfg.fees) for sym, pos in self.pf.open.items()
+                   if (m := self.board.markets.get(sym)) is not None)
 
     # ---- alerts --------------------------------------------------------------------------------
     def _watch_state(self, now: float) -> None:
@@ -175,12 +186,18 @@ class Engine:
         now_ms = int(now * 1000)
         for pos in self.pf.open.values():
             m = self.board.markets.get(pos.symbol)
-            if m is None or not pos.next_funding_ms or now_ms < pos.next_funding_ms or m.perp is None:
+            if m is None:
                 continue
-            pos.funding_acc += pos.perp_qty * m.perp.mid * m.funding_rate
-            step_ms = int(m.funding_interval_h * 3600 * 1000)
-            pos.next_funding_ms = m.next_funding_ms if m.next_funding_ms > pos.next_funding_ms else pos.next_funding_ms + step_ms
-            self.pf.update(pos)
+            if pos.next_funding_ms and now_ms >= pos.next_funding_ms and m.perp is not None:
+                seen = self._funding_seen.get(pos.symbol)       # read before this tick's quotes overwrite it
+                rate = seen[1] if seen and seen[0] == pos.next_funding_ms else m.funding_rate
+                pos.funding_acc += pos.perp_qty * m.perp.mid * rate
+                step_ms = int(m.funding_interval_h * 3600 * 1000)
+                pos.next_funding_ms = (m.next_funding_ms if m.next_funding_ms > pos.next_funding_ms
+                                       else pos.next_funding_ms + step_ms)
+                self.pf.update(pos)
+            if now_ms < m.next_funding_ms:
+                self._funding_seen[pos.symbol] = (m.next_funding_ms, m.funding_rate)
 
     def _loss_bps(self, pos: Position, m) -> float:
         """What closing now would lose, in bps of the entry notional (negative when in profit)."""
@@ -223,6 +240,8 @@ class Engine:
 
     async def _exits(self, now: float) -> None:
         for sym, pos in list(self.pf.open.items()):
+            if sym in self.stuck:
+                continue
             m, sig = self.board.markets.get(sym), self.sigs.get(sym)
             if m is None or sig is None or m.spot is None or m.perp is None:
                 continue
@@ -231,7 +250,7 @@ class Engine:
             reason = self._exit_reason(pos, sig, m, now)
             if reason:
                 await self._close(pos, sig, now, reason)
-        if self.flatten_requested and not self.pf.open:
+        if self.flatten_requested and not set(self.pf.open) - self.stuck:
             self.flatten_requested = False
 
     async def _close(self, pos: Position, sig: Signal, now: float, reason: str) -> None:
@@ -240,7 +259,9 @@ class Engine:
             trade = await self.executor.close(pos, m, sig, now, reason)
         except UnhedgedError as e:
             self.risk.trip_fault(str(e))
-            self.event("error", f"UNHEDGED on close: {e}", now)
+            self.stuck.add(pos.symbol)
+            self.event("error", f"UNHEDGED on close: {e}. Automatic exits for {pos.symbol} are stopped: close what is "
+                                f"left on Binance by hand, then restart", now)
             return
         except Exception as e:
             self.event("error", f"close {pos.symbol} failed: {e}", now)
@@ -452,7 +473,7 @@ class Engine:
                 "sym": sym, "opened_at": pos.opened_at, "held_s": now - pos.opened_at, "notional": pos.notional,
                 "entry_basis": pos.entry_basis_bps,
                 "basis_now": sig.basis_out_bps if sig else 0.0, "z": sig.z if sig else 0.0, "unreal": u,
-                "funding": pos.funding_acc, "live": pos.live, "manual": pos.manual,
+                "funding": pos.funding_acc, "live": pos.live, "manual": pos.manual, "stuck": sym in self.stuck,
             })
         trades = [
             {"sym": t.symbol, "opened_at": t.opened_at, "closed_at": t.closed_at, "pnl": t.pnl_usd, "bps": t.pnl_bps, "reason": t.reason,

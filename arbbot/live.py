@@ -18,6 +18,7 @@ Run it on testnet (--live --testnet) and then with minimum size before trusting 
 """
 import asyncio
 import logging
+import secrets
 from decimal import ROUND_DOWN, Decimal
 
 from .binance_client import BinanceClient, BinanceError, NotSentError
@@ -145,6 +146,7 @@ class LiveExecutor:
         """
         problems: list[str] = []
         self.unknown_positions: dict[str, float] = {}   # the "no record of" problems, by symbol: these can be dismissed
+        self.mismatched: set[str] = set()               # saved positions the exchange disagrees with: never auto-closed
         risk = await self._fut_get("/fapi/v3/positionRisk", "/fapi/v2/positionRisk")
         shorts = {p["symbol"]: float(p["positionAmt"]) for p in risk if float(p.get("positionAmt", 0)) != 0}
         acct = await self.c.get("spot", "/api/v3/account", signed=True)
@@ -153,10 +155,12 @@ class LiveExecutor:
             amt = shorts.pop(sym, 0.0)
             if amt >= 0 or abs(abs(amt) - pos.perp_qty) > max(1e-9, 0.01 * pos.perp_qty):
                 problems.append(f"{sym}: bot expects short {pos.perp_qty:g} but Binance reports positionAmt {amt:g}")
+                self.mismatched.add(sym)
             m = markets.get(sym)
             base = m.base_asset if m else ""
             if base and held.get(base, 0.0) < pos.spot_qty * 0.98:
                 problems.append(f"{sym}: bot expects ~{pos.spot_qty:g} {base} spot but wallet holds {held.get(base, 0.0):g}")
+                self.mismatched.add(sym)
         for sym, amt in shorts.items():
             if sym in markets and sym not in ignore:     # `ignore`: coins the testnet order ticket owns
                 problems.append(f"{sym}: Binance has an open perp position ({amt:g}) the bot has no record of")
@@ -238,15 +242,50 @@ class LiveExecutor:
         return (float(row["positionAmt"]), float(row["entryPrice"])) if row else (0.0, 0.0)
 
     async def _spot_market(self, symbol: str, side: str, qty: Decimal) -> dict:
-        o = await self.c.post(
-            "spot", "/api/v3/order",
-            {"symbol": symbol, "side": side, "type": "MARKET", "quantity": fmt(qty), "newOrderRespType": "FULL"},
-        )
+        cid = "arb" + secrets.token_hex(12)            # our own id, so a lost reply can be looked up
+        params = {"symbol": symbol, "side": side, "type": "MARKET", "quantity": fmt(qty), "newOrderRespType": "FULL",
+                  "newClientOrderId": cid}
+        try:
+            o = await self.c.post("spot", "/api/v3/order", params)
+        except NotSentError:                           # held back by the rate-limit backoff: it never left
+            raise
+        except BinanceError as e:
+            if e.status < 500:                         # Binance refused it: certainly not filled
+                raise
+            o = await self._spot_lookup(symbol, side, cid, e)   # 5xx: Binance says the outcome is unknown
+        except Exception as e:                         # timeout or lost connection: it may have filled
+            o = await self._spot_lookup(symbol, side, cid, e)
         executed = float(o.get("executedQty") or 0)
         if executed <= 0:
             raise RuntimeError(f"spot {side} {symbol} not filled (status={o.get('status')})")
         quote = float(o["cummulativeQuoteQty"])
         return {"avg": quote / executed, "qty": executed, "quote": quote, "fills": o.get("fills", [])}
+
+    async def _spot_lookup(self, symbol: str, side: str, cid: str, err: Exception) -> dict:
+        """A spot order whose reply was lost: read it back by its client id. Returns the order (with its fills when it
+        filled), raises a plain error when it never reached the exchange, and UnhedgedError when that cannot be told."""
+        try:
+            o = await self.c.get("spot", "/api/v3/order", {"symbol": symbol, "origClientOrderId": cid}, signed=True)
+        except BinanceError as e:
+            if e.code == -2013:                        # "Order does not exist"
+                raise RuntimeError(f"spot {side} {symbol} not placed ({err})") from err
+            raise UnhedgedError(f"{symbol}: spot {side} reported an error ({err}) and the order could not be checked "
+                                f"({e}); check the exchange") from e
+        except Exception as e:
+            raise UnhedgedError(f"{symbol}: spot {side} reported an error ({err}) and the order could not be checked "
+                                f"({type(e).__name__}: {e}); check the exchange") from e
+        executed = float(o.get("executedQty") or 0)
+        if executed <= 0:
+            return o
+        try:                                           # the fees (often paid in the base asset) decide the net quantity
+            trades = await self.c.get("spot", "/api/v3/myTrades", {"symbol": symbol, "orderId": o["orderId"]}, signed=True)
+        except Exception as e:
+            raise UnhedgedError(f"{symbol}: spot {side} FILLED {executed:g} (its reply was lost) but its fees could not be "
+                                f"read ({type(e).__name__}: {e}); check the exchange") from e
+        log.error("%s spot %s reported an error (%s) but the exchange shows it filled %g; continuing as filled",
+                  symbol, side, err, executed)
+        return dict(o, fills=[{"price": t["price"], "qty": t["qty"], "commission": t["commission"],
+                               "commissionAsset": t["commissionAsset"]} for t in trades])
 
     @staticmethod
     async def _retry(fn, attempts: int = 3, delay: float = 0.4):
@@ -254,6 +293,8 @@ class LiveExecutor:
         for i in range(attempts):
             try:
                 return await fn()
+            except UnhedgedError:   # the state is unknown: repeating the order could double it
+                raise
             except Exception as e:  # noqa: BLE001 - we re-raise the last one
                 last = e
                 log.warning("retry %d/%d after error: %s", i + 1, attempts, e)
@@ -273,6 +314,8 @@ class LiveExecutor:
                 break
             try:
                 r = await order_fn(remaining)
+            except UnhedgedError:
+                raise
             except Exception:
                 if i == 0:
                     raise
@@ -321,6 +364,8 @@ class LiveExecutor:
                 log.error("%s futures sell reported an error (%s) but the exchange shows a %g short @ %g; continuing "
                           "as filled", m.symbol, fr, amt, entry)
                 fr = {"avg": entry, "qty": abs(amt), "quote": entry * abs(amt), "fills": []}
+        if isinstance(sr, UnhedgedError):          # the spot outcome is unknown: nothing is unwound on a guess
+            raise UnhedgedError(f"{sr}; futures short {'failed' if isinstance(fr, Exception) else 'IS OPEN'}") from sr
         if isinstance(fr, Exception) and isinstance(sr, Exception):
             raise RuntimeError(f"both legs failed on entry: futures={fr}; spot={sr}")
         if isinstance(sr, Exception):  # futures short filled (maybe partly), spot did not -> buy the short back
@@ -371,12 +416,14 @@ class LiveExecutor:
             raise UnhedgedError(f"{m.symbol}: nothing left after rebalancing (spot {spot_net:g}, perp {perp_qty:g})")
 
         fut_fee = fr["qty"] * perp_avg * self.fees.futures_taker_bps / BPS
+        spot_px = sr["quote"] / sr["qty"]            # the spot leg's average fill price, before fees
         return Position(
             symbol=m.symbol, spot_symbol=m.spot_symbol, mult=m.mult, opened_at=now, notional=perp_qty * perp_avg,
             spot_qty=spot_net, perp_qty=perp_qty,
             spot_entry=spot_cost / spot_net,         # effective cost per unit actually held (fees/rebalancing embedded)
             perp_entry=perp_proceeds / perp_qty,
-            entry_basis_bps=sig.basis_in_bps, entry_z=sig.z,
+            # the basis actually obtained, from the fill prices (as the paper executor does), not the signal's quote
+            entry_basis_bps=(perp_avg - spot_px * m.mult) / (spot_px * m.mult) * BPS, entry_z=sig.z,
             fees_paid=quote_fee + fut_fee + extra_fees, next_funding_ms=m.next_funding_ms, last_fresh=now, live=True,
             mu_entry=sig.mean_bps, sigma_entry=sig.std_bps, entry_mid_bps=sig.basis_mid_bps,
             predicted_net_bps=sig.net_edge_bps, funding_interval_h=m.funding_interval_h,
@@ -395,6 +442,9 @@ class LiveExecutor:
             return self._drain(lambda q: self._spot_market(m.spot_symbol, "SELL", q), sell_qty, _d(sf.step), sf.min_qty)
 
         fr, sr = await asyncio.gather(fut_leg(), spot_leg(), return_exceptions=True)
+        for r in (fr, sr):
+            if isinstance(r, UnhedgedError):       # an order's outcome is unknown: a retry could double it
+                raise r
         # Re-try only the leg that failed outright; if it still fails the book is unhedged.
         if isinstance(fr, Exception) and not isinstance(sr, Exception):
             try:

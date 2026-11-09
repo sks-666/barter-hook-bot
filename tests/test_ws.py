@@ -72,9 +72,10 @@ class HandleTests(unittest.TestCase):
         self.assertAlmostEqual(self.board.latency_ms, 120.0, places=3)
 
     def test_urls_use_lowercase_streams(self):
-        (fut_url,) = self.feed.urls("fut")
+        mark_url, fut_url = self.feed.urls("fut")
         (spot_url,) = self.feed.urls("spot")
-        self.assertIn("!markPrice@arr@1s/btcusdt@bookTicker/1000shibusdt@bookTicker", fut_url)
+        self.assertTrue(mark_url.endswith("/stream?streams=!markPrice@arr@1s"))
+        self.assertTrue(fut_url.endswith("streams=btcusdt@bookTicker/1000shibusdt@bookTicker"))
         self.assertTrue(spot_url.endswith("streams=btcusdt@bookTicker/shibusdt@bookTicker"))
 
     def test_streams_are_chunked_so_urls_stay_short_at_scale(self):
@@ -85,12 +86,29 @@ class HandleTests(unittest.TestCase):
         cfg = make_cfg()
         cfg.feed.ws_streams_per_conn = 40
         feed = WsFeed(None, board, cfg, "wss://f", "wss://s")
-        self.assertEqual([len(c) for c in feed.plan["fut"]], [40, 40, 21])  # 100 books + markPrice
+        self.assertEqual([len(c) for c in feed.plan["fut"]], [1, 40, 40, 20])  # markPrice alone, then 100 books
         self.assertEqual([len(c) for c in feed.plan["spot"]], [40, 40, 20])
         self.assertTrue(all(len(u) < 1200 for u in feed.urls("fut") + feed.urls("spot")))  # vs 2000+ unchunked
         self.assertIn("!markPrice@arr@1s", feed.urls("fut")[0])
+        self.assertNotIn("!markPrice", "".join(feed.urls("fut")[1:]))
         every = [s for c in feed.plan["fut"] for s in c]
         self.assertEqual(len(every), len(set(every)))  # each stream subscribed exactly once
+
+    def test_mainnet_serves_mark_price_under_market_and_the_books_on_the_root(self):
+        from arbbot.feeds import WS_DEFAULTS, WS_MARK_PATH
+        fut_base, spot_base = WS_DEFAULTS["mainnet"]
+        feed = WsFeed(None, self.board, make_cfg(), fut_base, spot_base, mark_path=WS_MARK_PATH["mainnet"])
+        mark_url, books_url = feed.urls("fut")
+        self.assertTrue(mark_url.startswith("wss://fstream.binance.com/market/stream?streams=!markPrice@arr@1s"))
+        self.assertTrue(books_url.startswith("wss://fstream.binance.com/stream?streams="))     # the root sends no mark price
+        t_fut, t_spot = WS_DEFAULTS["testnet"]
+        testnet = WsFeed(None, self.board, make_cfg(), t_fut, t_spot, mark_path=WS_MARK_PATH["testnet"])
+        self.assertTrue(testnet.urls("fut")[0].startswith("wss://fstream.binancefuture.com/stream?"))   # unchanged there
+        feed.connected = {k: True for k in feed.conn_keys}
+        feed.last_msg = {"fut": 100.0, "spot": 100.0}
+        self.assertTrue(feed.healthy(100.5))
+        feed.connected[("fut", 0)] = False                       # the mark-price connection drops: REST takes over
+        self.assertFalse(feed.healthy(100.5))
 
     def test_venue_needs_every_connection_up(self):
         board = Board("ws")
@@ -186,7 +204,8 @@ class SocketRoundTripTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(btc.spot.ask, 65000.5)
             self.assertEqual(btc.mark, 65010.5)
             self.assertAlmostEqual(btc.perp.ts, time.time(), delta=1.5)  # touched, so it reads as fresh
-            self.assertTrue(any("!markPrice@arr@1s" in q and "btcusdt@bookTicker" in q for q in self.seen))
+            self.assertTrue(any("!markPrice@arr@1s" in q for q in self.seen))               # mark price: its own connection
+            self.assertTrue(any("btcusdt@bookTicker" in q and "!markPrice" not in q for q in self.seen))
         finally:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)

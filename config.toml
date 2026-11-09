@@ -67,11 +67,11 @@ leverage = 2                      # futures leverage for the short leg (isolated
 
 [server]
 host = "127.0.0.1"
-port = 8765
+port = 8770                       # the real-money bot; the paper bot is 8765 and the testnet bot 8767 (deploy.sh / config.testnet.toml). Two bots on one port: the second one crashes
 
 [recorder]                        # live market data for backtests: python backtest.py info|slippage|replay
 enabled = true                    # real feeds only (about 50-100 MB/day compressed)
-dir = "data/recordings"
+dir = "data/recordings-mainnet"   # the real-money bot's own folder; the paper bot uses data/recordings-paper (deploy.sh)
 depth_every_s = 1.0               # one order-book sample per second, round-robin over all markets
 max_mb = 2000                     # oldest recordings are deleted beyond this
 

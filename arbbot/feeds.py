@@ -194,29 +194,36 @@ WS_DEFAULTS = {
     "mainnet": ("wss://fstream.binance.com", "wss://stream.binance.com:9443"),
     "testnet": ("wss://fstream.binancefuture.com", "wss://stream.testnet.binance.vision"),
 }
+# Mainnet moved the futures mark-price stream under /market: the old root path still connects but sends nothing for it, so
+# mark price, index and funding would silently stop updating (order books still flow from the root). The testnet is unchanged.
+WS_MARK_PATH = {"mainnet": "/market", "testnet": ""}
+MARK_STREAM = "!markPrice@arr@1s"
 
 
 class WsFeed:
-    """Binance WebSocket streams: futures `!markPrice@arr@1s` + per-symbol `@bookTicker`, spot `@bookTicker`.
+    """Binance WebSocket streams: futures `!markPrice@arr@1s` (own connection) + per-symbol `@bookTicker`, spot `@bookTicker`.
 
     A book stream only emits when the book changes, so a quiet market would look stale. While a venue's
     connection is demonstrably alive, a once-per-interval "touch" re-confirms quotes that have changed
     within `ws_max_silent_s`. `healthy` is what HybridFeed uses to decide on REST fallback.
     """
 
-    def __init__(self, session: aiohttp.ClientSession, board: Board, cfg: Config, fut_base: str, spot_base: str):
+    def __init__(self, session: aiohttp.ClientSession, board: Board, cfg: Config, fut_base: str, spot_base: str,
+                 mark_path: str = ""):
         self.session = session
         self.board = board
         self.cfg = cfg
         self.bases = {"fut": fut_base.rstrip("/"), "spot": spot_base.rstrip("/")}
+        self.mark_base = self.bases["fut"] + mark_path      # where the mark-price stream is served (see WS_MARK_PATH)
         self.by_perp = {m.symbol: m for m in board.markets.values()}
         self.by_spot = {m.spot_symbol: m for m in board.markets.values()}
         # Streams are split over several connections so every URL stays short however many markets we scan.
         n = max(1, cfg.feed.ws_streams_per_conn)
-        fut = ["!markPrice@arr@1s"] + [f"{s.lower()}@bookTicker" for s in self.by_perp]
+        fut = [f"{s.lower()}@bookTicker" for s in self.by_perp]
         spot = [f"{s.lower()}@bookTicker" for s in self.by_spot]
         self.plan = {
-            "fut": [fut[i:i + n] for i in range(0, len(fut), n)],
+            # the mark-price stream gets a connection of its own: it can live on a different path than the order books
+            "fut": [[MARK_STREAM]] + [fut[i:i + n] for i in range(0, len(fut), n)],
             "spot": [spot[i:i + n] for i in range(0, len(spot), n)],
         }
         self.conn_keys = [(v, i) for v, chunks in self.plan.items() for i in range(len(chunks))]
@@ -225,7 +232,8 @@ class WsFeed:
         self._last_real: dict[tuple[str, str], float] = {}
 
     def urls(self, venue: str) -> list[str]:
-        return [f"{self.bases[venue]}/stream?streams={'/'.join(c)}" for c in self.plan[venue]]
+        return [f"{self.mark_base if c == [MARK_STREAM] else self.bases[venue]}/stream?streams={'/'.join(c)}"
+                for c in self.plan[venue]]
 
     def alive(self, venue: str, now: float) -> bool:
         """Every connection of the venue is up and the venue has produced data recently."""

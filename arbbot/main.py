@@ -19,7 +19,7 @@ from .commands import CommandHandler, TelegramListener
 from .config import load
 from .engine import Engine
 from .executor import PaperExecutor
-from .feeds import WS_DEFAULTS, Board, HybridFeed, RestFeed, SimFeed, WsFeed
+from .feeds import WS_DEFAULTS, WS_MARK_PATH, Board, HybridFeed, RestFeed, SimFeed, WsFeed
 from .health import hosted_port
 from .hosted_dashboard import MIN_PASSWORD, make_hosted_app, settings_from_env
 from .live import LiveExecutor
@@ -131,11 +131,16 @@ def parse_args(argv=None) -> argparse.Namespace:
                    help="container-host mode (paper only): serve a READ-ONLY dashboard behind a login (DASHBOARD_PASSWORD) "
                         "plus /healthz on 0.0.0.0:$PORT instead of the local dashboard; the recorder stays off unless "
                         "ARBBOT_RECORD=1")
+    p.add_argument("--no-whales", action="store_true",
+                   help="do not stream Binance's big trades and liquidations for the terminal's whale panels")
     p.add_argument("--real-ticket", action="store_true",
                    help="MAINNET only (with --live): the dashboard's order ticket sends REAL-MONEY orders to your Binance "
                         "futures account instead of a paper account (capped by --real-ticket-max-usd)")
     p.add_argument("--real-ticket-max-usd", type=float, default=100.0,
                    help="largest value in USDT of one real-money ticket order (default 100); closing is never capped")
+    p.add_argument("--real-ticket-max-total-usd", type=float, default=None,
+                   help="largest value in USDT of all the real-money ticket's positions and open orders together "
+                        "(default 3x --real-ticket-max-usd); closing is never capped")
     p.add_argument("--swing-mirror", metavar="trend,swing,smc|all",
                    help="TESTNET only (with --swing --live --testnet): copy these swing accounts' new trades onto the "
                         "futures testnet as real testnet orders with exchange-side stops (one account, a comma "
@@ -263,6 +268,9 @@ async def amain(args: argparse.Namespace) -> None:
                  "bot's ticket already trades the testnet)")
     if args.real_ticket and not args.real_ticket_max_usd > 0:
         sys.exit("--real-ticket-max-usd must be above 0")
+    if args.real_ticket and args.real_ticket_max_total_usd is not None \
+            and not args.real_ticket_max_total_usd >= args.real_ticket_max_usd:
+        sys.exit("--real-ticket-max-total-usd must be at least --real-ticket-max-usd")
     if args.swing_mirror and not (args.swing and live and cfg.execution.env == "testnet"):
         sys.exit("--swing-mirror copies swing trades to the TESTNET only: it needs --swing --live --testnet")
     if args.swing_mirror:                # a typo fails here, before anything connects
@@ -328,7 +336,8 @@ async def amain(args: argparse.Namespace) -> None:
             if cfg.feed.mode == "ws":
                 fut_default, spot_default = WS_DEFAULTS[cfg.execution.env]
                 ws = WsFeed(session, board, cfg, cfg.feed.ws_futures_url or fut_default,
-                            cfg.feed.ws_spot_url or spot_default)
+                            cfg.feed.ws_spot_url or spot_default,
+                            mark_path="" if cfg.feed.ws_futures_url else WS_MARK_PATH[cfg.execution.env])
                 feed = HybridFeed(ws, rest, board, cfg)
         else:
             feed = SimFeed(board, cfg, seed=args.seed)
@@ -345,13 +354,14 @@ async def amain(args: argparse.Namespace) -> None:
                                    arb_symbols=lambda: set(portfolio.open), notify=alerts.send,
                                    taker_bps=cfg.fees.futures_taker_bps, real_money=args.real_ticket,
                                    max_order_usd=args.real_ticket_max_usd if args.real_ticket else None,
+                                   max_total_usd=args.real_ticket_max_total_usd if args.real_ticket else None,
                                    default_leverage=cfg.execution.leverage if args.real_ticket else 15,
                                    blocked=lambda: f"the kill file {kill} is present" if os.path.exists(kill) else "")
             risk.external = ticket.owned              # the arbitrage bot stays off the ticket's coins
             if args.real_ticket:
                 log.warning("REAL-MONEY order ticket ON: dashboard orders go to your Binance futures account (max %g "
-                            "USDT per order, default leverage %dx). Pausing the arbitrage bot does not pause the ticket.",
-                            args.real_ticket_max_usd, cfg.execution.leverage)
+                            "USDT per order, %g USDT in all, default leverage %dx). Pausing the arbitrage bot does not "
+                            "pause the ticket.", args.real_ticket_max_usd, ticket.max_total_usd, cfg.execution.leverage)
         else:
             # one paper futures account per bot state, so two bots (e.g. paper + testnet) never write the same file
             pf_name = "paper-futures.json" if db_path.stem == "paper-mainnet-real" else f"paper-futures-{db_path.stem}.json"
@@ -379,6 +389,7 @@ async def amain(args: argparse.Namespace) -> None:
             recorder = Recorder(cfg.recorder, cfg.feed.max_quote_age_s, root=ROOT, fees=cfg.fees)
         engine = Engine(cfg, board, scanner, portfolio, risk, executor, trading=not args.no_trade, alerts=alerts,
                         depth=depth, recorder=recorder)
+        engine.stuck |= getattr(executor, "mismatched", set())   # a saved size the exchange disputes is never auto-closed
         sampler = DepthSampler(recorder, depth, board, cfg.recorder.depth_every_s) if (recorder and depth) else None
         handler = CommandHandler(engine, label)
         swing, mirror = None, None
@@ -405,6 +416,7 @@ async def amain(args: argparse.Namespace) -> None:
                                           notify=alerts.send, copy_existing=args.swing_mirror_copy_open)
                               for name in parse_accounts(args.swing_mirror)]
                     swing.mirrors = mirror                 # the dashboard shows the testnet results next to the paper
+                    ticket.source = lambda sym: next((f"swing:{m.strategy}" for m in mirror if sym in m.s["open"]), "")
             except ImportError:
                 sys.exit("--swing needs the swingkit/ folder next to arbbot/.")
             except (ValueError, aiohttp.ClientError, asyncio.TimeoutError) as e:
@@ -416,7 +428,24 @@ async def amain(args: argparse.Namespace) -> None:
             from .server import lan_key
             phone_key = lan_key(ROOT / "data" / f"lan-key-{cfg.server.port}.txt")
             cfg.server.host = "0.0.0.0"
-        dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client), paper=ticket, lan_key=phone_key)
+        stats_client = None if cfg.execution.env == "mainnet" else BinanceClient(   # sentiment: mainnet only
+            session, "mainnet", timeout_s=cfg.feed.request_timeout_s)
+        from deskkit.report import desk_view      # research gates + promotion ladder, read-only (python desk.py research)
+        from deskkit.rules import DeskRules
+        desk_rules, desk_journal = DeskRules.load(ROOT / "desk_rules.toml"), ROOT / args.swing_journal_db
+        desk_view_fn = lambda: desk_view(ROOT / "data" / "desk", [desk_journal], desk_rules)  # noqa: E731
+        whales, alert_book = None, None
+        if not (args.hosted or args.no_whales):   # the terminal's whale tape: public mainnet streams, never traded on
+            from .price_alerts import AlertBook
+            from .whales import WhaleWatch
+            whales = WhaleWatch(session, stats_client or client)
+            # the terminal's alerts (price, funding, whale, liquidation) ride on the same streams; sent to Telegram
+            alert_book = AlertBook(ROOT / "data" / f"alerts-{db_path.stem}.json", send=alerts.send)
+            whales.on_marks, whales.on_event = alert_book.check_marks, alert_book.on_event
+        from .macro import MacroNews          # the terminal's MACRO / NEWS panel: public data, fetched only when asked
+        dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client, stats_client=stats_client), paper=ticket,
+                         lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
+                         macro=None if args.hosted else MacroNews(session))
         if args.hosted:  # public interface: the READ-ONLY page behind a login, never the dashboard with its controls
             hosted_password, hosted_user = settings_from_env()
             runner = web.AppRunner(make_hosted_app(engine, ROOT / "vercel-dashboard" / "views" / "dashboard.html",
@@ -448,6 +477,10 @@ async def amain(args: argparse.Namespace) -> None:
                 for ip in lan_addresses() or ["<this Mac's Wi-Fi address>"]:
                     log.info("phone: http://%s:%d/?key=%s   (same Wi-Fi; open it once, the phone remembers the key)",
                              ip, port, phone_key)
+                if live and cfg.execution.env == "mainnet":
+                    log.warning("phone access is plain HTTP: anyone who can watch this Wi-Fi's traffic can copy the key "
+                                "and use this REAL-MONEY dashboard. Use it only on a network you trust (never public "
+                                "Wi-Fi); delete data/lan-key-%d.txt and restart to revoke it", port)
         if portfolio.open:
             log.warning("resuming with %d open position(s): %s", len(portfolio.open), ", ".join(portfolio.open))
         if cfg.feed.mode == "sim":
@@ -485,6 +518,8 @@ async def amain(args: argparse.Namespace) -> None:
                      cfg.publisher.interval_s, url_fp, token_fp)
         coros = [feed.run(), engine.run(), dash.broadcast_loop(), alerts.run(), listener.run(), publisher.run(),
                  ticket.run()]
+        if whales is not None:
+            coros.append(whales.run())
         if sampler is not None:
             coros.append(sampler.run())
         if swing is not None:

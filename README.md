@@ -70,6 +70,10 @@ keys live only on this Mac, in `data/lan-key-8765.txt` (mainnet) and `data/lan-k
 never committed, so they are not in this README or on GitHub. Do not share a phone link: anyone with it can use that
 dashboard while on your Wi-Fi.
 
+* **Plain HTTP, so trust the network.** The page, the key and the key cookie travel unencrypted. On a home Wi-Fi with a
+  WPA2/WPA3 password that only you use, that is fine; on a shared, office or public Wi-Fi, another device that can watch
+  the traffic could copy the key and use the dashboard, including the mainnet order ticket. Do not use `--lan` there;
+  the mainnet bot also prints this warning at start.
 * **Revoke access** (lost phone, shared link): delete `data/lan-key-8765.txt` and/or `data/lan-key-8767.txt`, restart
   the bots (Stop, then Start); new keys are made and the old links and cookies stop working.
 * **The phone cannot connect:** check it is on the same Wi-Fi (not mobile data); NordVPN can block local network

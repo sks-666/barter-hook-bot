@@ -4,6 +4,8 @@ Halt sources (any one blocks new entries):
   manual  - dashboard / --no-trade; clearable from the dashboard
   kill    - KILL file exists; also flattens; clears when the file is removed
   loss    - UTC-day realised loss limit; also flattens; clears at the next UTC day
+  open    - the same limit counting open positions at what closing them now would realise; blocks entries only (no
+            flatten: a hedged book's mark-to-exit loss often recovers) and clears as soon as it is back above the limit
   fault   - repeated execution errors or an unhedged leg; needs a restart (fail closed). The one exception: a startup
             reconciliation that only found positions the bot has no record of can be dismissed from the dashboard
 """
@@ -31,6 +33,7 @@ class Risk:
         self.unknown: dict[str, float] = {}
         self.kill_active = False
         self.loss_active = False
+        self.open_loss_active = False
         self.consecutive_errors = 0
         self._cooldown: dict[str, float] = {}
         # coins another user of the same exchange account is working (the testnet order ticket): never entered here
@@ -38,7 +41,7 @@ class Risk:
 
     @property
     def halted(self) -> bool:
-        return bool(self.manual_halt or self.fault or self.kill_active or self.loss_active)
+        return bool(self.manual_halt or self.fault or self.kill_active or self.loss_active or self.open_loss_active)
 
     @property
     def halt_reason(self) -> str:
@@ -48,6 +51,8 @@ class Risk:
             return f"kill file '{self.cfg.kill_file}' present"
         if self.loss_active:
             return f"daily loss limit ${self.cfg.daily_loss_limit_usd:.2f} reached"
+        if self.open_loss_active:
+            return f"daily loss limit ${self.cfg.daily_loss_limit_usd:.2f} reached counting open positions"
         if self.manual_halt:
             return "paused manually"
         return ""
@@ -56,9 +61,13 @@ class Risk:
     def flatten_required(self) -> bool:
         return self.kill_active or self.loss_active
 
-    def refresh(self, now: float) -> None:
+    def refresh(self, now: float, unrealized: float = 0.0) -> None:
+        """`unrealized`: what closing every open position now would realise (portfolio.unrealized_usd, summed)."""
         self.kill_active = os.path.exists(self.cfg.kill_file)
-        self.loss_active = self.pf.day_pnl(now) <= -abs(self.cfg.daily_loss_limit_usd)
+        limit = -abs(self.cfg.daily_loss_limit_usd)
+        day = self.pf.day_pnl(now)
+        self.loss_active = day <= limit
+        self.open_loss_active = not self.loss_active and day + min(0.0, unrealized) <= limit
 
     def size_entry(self, sig: Signal, now: float) -> tuple[float, str]:
         """Return (notional_usd, reason). Notional 0 means blocked, and reason says why."""

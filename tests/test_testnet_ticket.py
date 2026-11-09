@@ -268,13 +268,19 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((last["side"], last["reduceOnly"], last["quantity"]), ("SELL", "true", "0.002"))
         self.assertEqual(out["status"], "filled")
 
-    async def test_view_reads_the_account_and_hides_the_arbitrage_coins(self):
+    async def test_view_reads_the_account_and_labels_who_opened_each_position(self):
         self.ex.positions = {"BTCUSDT": 0.002, "ETHUSDT": -0.5}
         await self.t.refresh()
         v = self.t.view()
         self.assertEqual(v["venue"], "testnet")
-        self.assertEqual([p["symbol"] for p in v["positions"]], ["BTCUSDT"])  # ETH is the arbitrage bot's
-        p = v["positions"][0]
+        src = {p["symbol"]: p["source"] for p in v["positions"]}
+        self.assertEqual(src, {"BTCUSDT": "external", "ETHUSDT": "arbitrage"})  # ETH is the arbitrage bot's
+        self.assertAlmostEqual(v["unrealized"], 0.2)              # the hedged arbitrage short is not counted
+        await self.order(side="buy", type="market", size_usdt=200)
+        self.assertEqual({p["symbol"]: p["source"] for p in self.t.view()["positions"]}["BTCUSDT"], "ticket")
+        self.t.source = lambda sym: "swing:trend" if sym == "BTCUSDT" else ""
+        self.assertEqual({p["symbol"]: p["source"] for p in self.t.view()["positions"]}["BTCUSDT"], "swing:trend")
+        p = next(p for p in v["positions"] if p["symbol"] == "BTCUSDT")
         self.assertEqual((p["side"], p["entry"], p["mark"], p["liq"], p["leverage"]), ("long", 80000.0, 80100.0, 75000.0, 15))
         self.assertEqual((v["balance"], v["available"]), (5000.0, 4800.0))
 

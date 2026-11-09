@@ -4,7 +4,9 @@ Bound to localhost by default. Guards against DNS-rebinding and cross-site reque
 must match the bound address, and control endpoints need the per-run token embedded in the page.
 """
 import asyncio
+import csv
 import hmac
+import io
 import ipaddress
 import json
 import logging
@@ -12,6 +14,7 @@ import os
 import secrets
 import subprocess
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 from aiohttp import WSMsgType, web
@@ -24,7 +27,8 @@ from .pnl_report import PERIODS, report as pnl_report
 log = logging.getLogger("server")
 ACTIONS = ("halt", "resume", "flatten", "dismiss")
 LOOPBACK = ("127.0.0.1", "::1")
-LAN_COOKIE = "arb_lan_key"
+LAN_COOKIE = "arb_lan_key"   # + "_<port>": a browser keeps ONE cookie per name for a host whatever the port, so a shared
+                             # name let one dashboard's key overwrite another's (open the paper link, mainnet locks)
 
 
 def lan_host_ok(host: str) -> bool:
@@ -34,9 +38,13 @@ def lan_host_ok(host: str) -> bool:
     if name.endswith(".local"):
         return True
     try:
-        return ipaddress.ip_address(name).is_private
+        ip = ipaddress.ip_address(name)
     except ValueError:
         return False
+    return ip.is_private or ip in TAILNET     # Python does not count Tailscale's 100.64.0.0/10 as private
+
+
+TAILNET = ipaddress.ip_network("100.64.0.0/10")   # Tailscale addresses: reachable only from your own devices
 
 
 def lan_key(path: Path) -> str:
@@ -89,7 +97,7 @@ def _private_ipv4(ip: str) -> bool:
         a = ipaddress.ip_address(ip)
     except ValueError:
         return False
-    return a.version == 4 and a.is_private and not a.is_loopback
+    return a.version == 4 and (a.is_private or a in TAILNET) and not a.is_loopback     # a Tailscale address is a phone link too
 
 
 LOCKED = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
@@ -99,8 +107,13 @@ LOCKED = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="
 
 
 class Dashboard:
-    def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None):
+    def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None,
+                 whales=None, alert_book=None, desk=None, macro=None):
         self.engine = engine
+        self.macro = macro                        # an arbbot.macro.MacroNews (the terminal's MACRO / NEWS panel), or None
+        self.desk = desk                          # a callable returning deskkit.report.desk_view(...), or None
+        self.alert_book = alert_book              # an arbbot.price_alerts.AlertBook (terminal alerts), or None
+        self.whales = whales                      # an arbbot.whales.WhaleWatch (big trades, liquidations), or None
         self.market = market                      # an arbbot.market.MarketData for the chart / order book panel, or None
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
@@ -129,11 +142,14 @@ class Dashboard:
             if origin and origin != f"http://{request.host}":
                 raise web.HTTPForbidden(text="bad origin")
             if self.lan_key and not self.is_local(request):
+                cookie = f"{LAN_COOKIE}_{self.cfg.server.port}"
                 if hmac.compare_digest(request.query.get("key", ""), self.lan_key):
                     resp = web.HTTPFound("/")          # remember the key, then drop it from the address bar
-                    resp.set_cookie(LAN_COOKIE, self.lan_key, max_age=180 * 86_400, httponly=True, samesite="Strict")
+                    resp.set_cookie(cookie, self.lan_key, max_age=180 * 86_400, httponly=True, samesite="Strict")
                     raise resp
-                if not hmac.compare_digest(request.cookies.get(LAN_COOKIE, ""), self.lan_key):
+                # the old shared cookie still opens the page it holds the key of (phones set up before the change)
+                if not (hmac.compare_digest(request.cookies.get(cookie, ""), self.lan_key)
+                        or hmac.compare_digest(request.cookies.get(LAN_COOKIE, ""), self.lan_key)):
                     log.warning("locked out %s (no or wrong LAN key) on %s", request.remote, request.path)
                     return web.Response(text=LOCKED, content_type="text/html", status=401)
             return await handler(request)
@@ -143,6 +159,8 @@ class Dashboard:
         for page in ("/arbitrage", "/swing", "/market"):    # the details: same page, another view (see pageView())
             app.router.add_get(page, self.index)
             app.router.add_get(page + "/", self.index)
+        app.router.add_get("/terminal", self.terminal)     # the read-only terminal view (web/terminal.html)
+        app.router.add_get("/terminal/", self.terminal)
         app.router.add_get("/ws", self.ws)
         app.router.add_get("/api/snapshot", self.snapshot)
         app.router.add_get("/api/pnl", self.pnl)
@@ -151,20 +169,58 @@ class Dashboard:
         app.router.add_post("/api/paper/{op}", self.paper_action)
         app.router.add_post("/api/swing-capital", self.swing_capital)      # before the generic /api/{action}
         app.router.add_post("/api/swing-power", self.swing_power)
+        app.router.add_get("/api/alerts", self.alerts_get)
+        app.router.add_post("/api/alerts", self.alerts_post)
         app.router.add_post("/api/{action}", self.action)
         return app
 
     async def market_data(self, request: web.Request) -> web.Response:
         """Public Binance futures market data for the market panel (read-only; see arbbot/market.py)."""
+        kind, q = request.match_info["kind"], request.query
+        if kind == "whales":
+            if self.whales is None:
+                return web.json_response({"error": "the whale watch is off in this bot"}, status=404)
+            if "window" not in q:
+                return web.json_response(self.whales.view(), headers={"Cache-Control": "no-store"})
+            try:                                  # the flow table's timeframe, in seconds (clamped to 1 s .. 1 week)
+                window = float(q["window"])
+            except ValueError:
+                return web.json_response({"error": "window must be a number of seconds"}, status=400)
+            return web.json_response(self.whales.view(window_s=window), headers={"Cache-Control": "no-store"})
+        if kind == "desk":
+            if self.desk is None:
+                return web.json_response({"error": "the desk panel is not available in this bot"}, status=404)
+            try:
+                return web.json_response(self.desk(), headers={"Cache-Control": "no-store"})
+            except Exception as e:                # a bad results file must not take the page down
+                log.warning("desk view failed: %s: %s", type(e).__name__, e)
+                return web.json_response({"error": f"could not read the desk results: {type(e).__name__}"}, status=500)
+        if kind == "whale-marks":
+            if self.whales is None:
+                return web.json_response({"error": "the whale watch is off in this bot"}, status=404)
+            sym = q.get("symbol", "").upper()
+            if not sym.endswith("USDT") or not sym.isalnum():
+                return web.json_response({"error": "symbol must look like BTCUSDT"}, status=400)
+            return web.json_response(self.whales.markers(sym), headers={"Cache-Control": "no-store"})
+        if kind in ("macro", "news"):
+            if self.macro is None:
+                return web.json_response({"error": "macro & news are not available in this bot"}, status=404)
+            try:
+                body = await (self.macro.macro() if kind == "macro" else self.macro.news())
+            except Exception as e:
+                return web.json_response({"error": f"{type(e).__name__}: {str(e)[:160]}"}, status=502)
+            return web.json_response(body, headers={"Cache-Control": "no-store"})
         if self.market is None:
             return web.json_response({"error": "market data is not available in this bot"}, status=404)
-        kind, q = request.match_info["kind"], request.query
-        calls = {"klines": lambda: self.market.klines(q.get("symbol", ""), q.get("interval", "1h")),
-                 "depth": lambda: self.market.depth(q.get("symbol", "")),
+        if kind == "history":
+            return await self.market_history(q)
+        calls = {"curve": lambda: self.market.curve(q.get("symbol", ""), q.get("period", "1d")),"klines": lambda: self.market.klines(q.get("symbol", ""), q.get("interval", "1h")),
+                 "depth": lambda: self.market.depth(q.get("symbol", ""), 100 if q.get("limit") == "100" else 20),
                  "trades": lambda: self.market.trades(q.get("symbol", "")),
                  "info": lambda: self.market.info(q.get("symbol", "")),
-                 "data": lambda: self.market.trading_data(q.get("symbol", "")),
-                 "movers": lambda: self.market.movers()}
+                 "data": lambda: self.market.trading_data(q.get("symbol", ""), q.get("period", "1h")),
+                 "movers": lambda: self.market.movers(),
+                 "symbols": lambda: self.market.symbols()}
         if kind not in calls:
             raise web.HTTPNotFound()
         try:
@@ -173,6 +229,31 @@ class Dashboard:
             return web.json_response({"error": str(e)}, status=400)
         except Exception as e:                    # Binance down, unknown symbol, rate limit: the panel shows it, nothing else
             return web.json_response({"error": f"{type(e).__name__}: {str(e)[:160]}"}, status=502)
+
+    async def market_history(self, q) -> web.Response:
+        """The terminal's EXPORT: candles for a basket of coins as one CSV file (or JSON with format=json)."""
+        try:
+            syms = [s for s in q.get("symbols", q.get("symbol", "")).upper().split(",") if s]
+            interval = q.get("interval", "1d")
+            years = int(q.get("years", "5")) if q.get("years", "5").isdigit() else -1
+            data = await self.market.history(syms, interval, years)
+        except ValueError as e:
+            return web.json_response({"error": str(e)}, status=400)
+        except Exception as e:
+            return web.json_response({"error": f"{type(e).__name__}: {str(e)[:160]}"}, status=502)
+        if q.get("format") == "json":
+            return web.json_response(data, headers={"Cache-Control": "no-store"})
+        out = io.StringIO()
+        w = csv.writer(out, lineterminator="\n")
+        w.writerow(["symbol", "date_utc", "open_time_ms", "open", "high", "low", "close", "volume_base", "volume_usdt",
+                    "taker_buy_usdt"])
+        for sym, rows in data.items():
+            for r in rows:
+                when = datetime.fromtimestamp(r[0] / 1000, tz=timezone.utc).strftime("%Y-%m-%d %H:%M")
+                w.writerow([sym, when, r[0], *(repr(v) for v in r[1:])])
+        name = f"{'-'.join(s.removesuffix('USDT') for s in data)}_{interval}_{years}y_binance-usdm-perp.csv"
+        return web.Response(text=out.getvalue(), content_type="text/csv",
+                            headers={"Content-Disposition": f'attachment; filename="{name}"', "Cache-Control": "no-store"})
 
     async def paper_state(self, request: web.Request) -> web.Response:
         if self.paper is None:
@@ -258,8 +339,45 @@ class Dashboard:
                                                             "it will retry on its own"}, status=500)
         return web.json_response({"ok": True, "message": message})
 
+    async def alerts_get(self, request: web.Request) -> web.Response:
+        if self.alert_book is None:
+            return web.json_response({"error": "alerts need the whale watch (it is off in this bot)"}, status=404)
+        return web.json_response(dict(self.alert_book.view(), telegram=self.engine.alerts.enabled),
+                                 headers={"Cache-Control": "no-store"})
+
+    async def alerts_post(self, request: web.Request) -> web.Response:
+        """Add or remove a terminal alert. No control token: an alert only sends a message, it can never trade. A page on
+        another site cannot call this: the guard refuses a foreign Origin, and a JSON body forces a CORS preflight."""
+        if self.alert_book is None:
+            return web.json_response({"ok": False, "error": "alerts need the whale watch (it is off in this bot)"},
+                                     status=404)
+        if request.content_type != "application/json":
+            return web.json_response({"ok": False, "error": "send JSON"}, status=415)
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError("expected a JSON object")
+            action = body.get("action")
+            if action == "add":
+                result = self.alert_book.add(body.get("rule"))
+            elif action == "remove":
+                result = self.alert_book.remove(body.get("id"))
+            elif action == "clear-fired":
+                result = self.alert_book.clear_fired()
+            else:
+                raise ValueError("action must be add, remove or clear-fired")
+        except ValueError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return web.json_response({"ok": True, "result": result, "state": self.alert_book.view()})
+
     async def index(self, request: web.Request) -> web.Response:
         html = (self.web_dir / "index.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+    async def terminal(self, request: web.Request) -> web.Response:
+        """A dense, keyboard-driven READ-ONLY view of the same data: it gets no control token, so it cannot pause,
+        flatten or place orders."""
+        html = (self.web_dir / "terminal.html").read_text(encoding="utf-8")
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def snapshot(self, request: web.Request) -> web.Response:

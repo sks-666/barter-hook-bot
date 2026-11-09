@@ -49,6 +49,20 @@ class BinanceClient:
 
     async def request(self, venue: str, method: str, path: str, params: dict | None = None, signed: bool = False,
                       timeout: float | None = None):
+        try:
+            return await self._request(venue, method, path, params, signed, timeout)
+        except BinanceError as e:
+            # -1021: the timestamp is outside recvWindow (this clock drifted). Binance rejected the request, so it is safe
+            # to re-sync and send it once more, orders included.
+            if not (signed and e.code == -1021) or isinstance(e, NotSentError):
+                raise
+            offset = await self.sync_time()
+            log.warning("Binance %s rejected a request's timestamp (-1021); clock re-synced (offset %d ms), retrying %s",
+                        self.env, offset, path)
+            return await self._request(venue, method, path, params, signed, timeout)
+
+    async def _request(self, venue: str, method: str, path: str, params: dict | None, signed: bool,
+                       timeout: float | None):
         if time.time() < self.backoff_until:
             raise NotSentError(self.backoff_status, None, self.backoff_text(), path)
         params = {k: v for k, v in (params or {}).items() if v is not None}
