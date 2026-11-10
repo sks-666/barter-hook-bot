@@ -70,3 +70,32 @@ def pivot_lows(lows: list[float], k: int) -> list[int]:
 def pivot_highs(highs: list[float], k: int) -> list[int]:
     return [j for j in range(k, len(highs) - k)
             if highs[j] > max(highs[j - k:j]) and highs[j] > max(highs[j + 1:j + k + 1])]
+
+
+def adx(highs: list[float], lows: list[float], closes: list[float], n: int = 14) -> list[float]:
+    """Wilder's ADX: how strongly the market trends, in either direction (0-100; under ~20 is usually a range).
+    First value at index 2n - 1."""
+    size = len(closes)
+    out = [NAN] * size
+    if size < 2 * n + 1:
+        return out
+    tr, pdm, mdm = [0.0], [0.0], [0.0]
+    for i in range(1, size):
+        up, down = highs[i] - highs[i - 1], lows[i - 1] - lows[i]
+        tr.append(max(highs[i] - lows[i], abs(highs[i] - closes[i - 1]), abs(lows[i] - closes[i - 1])))
+        pdm.append(up if up > down and up > 0 else 0.0)
+        mdm.append(down if down > up and down > 0 else 0.0)
+    s_tr, s_p, s_m = sum(tr[1:n + 1]), sum(pdm[1:n + 1]), sum(mdm[1:n + 1])
+    dx = []
+    for i in range(n, size):
+        if i > n:
+            s_tr = s_tr - s_tr / n + tr[i]
+            s_p = s_p - s_p / n + pdm[i]
+            s_m = s_m - s_m / n + mdm[i]
+        pdi, mdi = (100 * s_p / s_tr, 100 * s_m / s_tr) if s_tr else (0.0, 0.0)
+        dx.append(100 * abs(pdi - mdi) / (pdi + mdi) if pdi + mdi else 0.0)
+        if len(dx) == n:
+            out[i] = sum(dx) / n
+        elif len(dx) > n:
+            out[i] = (out[i - 1] * (n - 1) + dx[-1]) / n
+    return out
