@@ -188,6 +188,12 @@ class PaperExecutorTests(unittest.IsolatedAsyncioTestCase):
         trade = await ex.close(pos, m, Signal("ETHUSDT", 1.0), 1.0, "converged")
         self.assertAlmostEqual(trade.fees_usd, 1.505 + 1.0 + 0.501, places=6)
         self.assertAlmostEqual(trade.pnl_usd, 8.0 - 3.006, places=6)
+        # the split adds up: entry + exit = spot + futures = the total charged
+        self.assertAlmostEqual(trade.fee_entry_usd, 1.505, places=6)
+        self.assertAlmostEqual(trade.fee_exit_usd, 1.0 + 0.501, places=6)
+        self.assertAlmostEqual(trade.fee_spot_usd, 1.0 + 1.0, places=6)
+        self.assertAlmostEqual(trade.fee_fut_usd, 0.505 + 0.501, places=6)
+        self.assertAlmostEqual(trade.fee_spot_usd + trade.fee_fut_usd, trade.fees_usd, places=6)
 
     async def test_unrealized_matches_realized_when_closed_now(self):
         fees = FeesCfg(5.0, 10.0, 1.0)

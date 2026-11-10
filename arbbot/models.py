@@ -90,6 +90,8 @@ class Position:
     entry_basis_bps: float
     entry_z: float
     fees_paid: float = 0.0
+    fee_spot_in: float = 0.0         # entry fee on the spot leg, all-in USD (display only; fees_paid is what P&L charges)
+    fee_fut_in: float = 0.0          # entry fee on the futures leg, USD
     funding_acc: float = 0.0
     next_funding_ms: int = 0
     last_fresh: float = 0.0
@@ -122,3 +124,9 @@ class ClosedTrade:
     reason: str
     live: bool = False
     predicted_net_bps: float = 0.0   # what the model expected at entry (feeds the adaptive risk buffer)
+    # Fee breakdown for the dashboard (all-in USD, both legs). Trades saved before these existed read 0 here.
+    fee_entry_usd: float = 0.0
+    fee_exit_usd: float = 0.0
+    fee_spot_usd: float = 0.0
+    fee_fut_usd: float = 0.0
+    fee_estimated: bool = False      # the split was worked out afterwards from the fee rates, not recorded at the fills

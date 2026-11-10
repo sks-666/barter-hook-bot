@@ -273,7 +273,7 @@
       </section>
       <section class="card" aria-labelledby="h-tr">
         <div class="card-h"><h2 id="h-tr">Recent trades</h2></div>
-        <div class="scroll mid"><table><thead><tr><th>Market</th><th>Closed</th><th>P&amp;L</th><th>bps</th><th>Held</th><th>Reason</th></tr></thead><tbody id="tr-body"></tbody></table></div>
+        <div class="scroll mid"><table><thead><tr><th>Market</th><th>Closed</th><th>P&amp;L</th><th>bps</th><th title="Total fees paid on this trade: entry + exit, spot + futures">Fees</th><th>Fee split (in / out · spot / futures)</th><th>Held</th><th>Reason</th></tr></thead><tbody id="tr-body"></tbody></table></div>
       </section>
       <section class="card" aria-labelledby="h-ev">
         <div class="card-h"><h2 id="h-ev">Event log</h2></div>
@@ -462,6 +462,16 @@ function renderSwing() {
     : `Paper only: nothing here places an order. They decide`) + ` on closed ${w.interval} candles and fill at the next open, so most of the time they simply wait.` + (w.symbols.length > 8 ? ` Markets: ${w.symbols.map(s => s.replace(/USDT$/, "")).join(" ")}.` : "") + (Object.keys(w.unavailable || {}).length ? ` Skipped (no usable candles): ${Object.keys(w.unavailable).map(s => s.replace(/USDT$/, "")).join(" ")}.` : "") + (w.error ? ` The last refresh failed: ${w.error}` : "");
 }
 
+// Fees of one closed trade: the total, then where it went. All-in USD, both legs, entry and exit.
+const fee$ = v => "$" + (v || 0).toFixed(3);
+function feeCells(t) {
+  const split = t.fee_in || t.fee_out || t.fee_spot || t.fee_fut;      // trades saved before the split existed show only the total
+  const e = t.fee_est ? "≈ " : "", note = t.fee_est ? " (estimated from the fee rates; recorded after the trade closed)" : "";
+  return `<td class="n">${fee$(t.fees)}</td>` + (split
+    ? `<td class="n mut" title="entry ${fee$(t.fee_in)} + exit ${fee$(t.fee_out)} = ${fee$(t.fees)}; spot ${fee$(t.fee_spot)} + futures ${fee$(t.fee_fut)}${note}">${e}in ${fee$(t.fee_in)} / out ${fee$(t.fee_out)} · spot ${fee$(t.fee_spot)} / fut ${fee$(t.fee_fut)}</td>`
+    : `<td class="n mut">–</td>`);
+}
+
 function renderAll() {
   const s = snap.stats, f = snap.feed, h = snap.halt, m = snap.model;
   const mode = $("b-mode");
@@ -483,7 +493,7 @@ function renderAll() {
   $("k-open").textContent = `${s.open}/${s.max_open}`;
   $("k-open-s").textContent = `$${s.open_notional.toFixed(0)} deployed`;
   const real = $("k-real"); real.textContent = money(s.realized); real.className = "v " + cls(s.realized);
-  $("k-real-s").textContent = `unrealised ${money(s.unrealized)}`;
+  $("k-real-s").textContent = `unrealised ${money(s.unrealized)} · fees paid ${fee$(s.fees)}`;
   const day = $("k-day"); day.textContent = money(s.day); day.className = "v " + cls(s.day);
   $("k-day-s").textContent = `limit −$${s.day_limit.toFixed(0)}`;
   const n = s.wins + s.losses;
@@ -510,8 +520,8 @@ function renderAll() {
   ).join("") : `<tr><td colspan="7" class="empty">No open positions.</td></tr>`;
 
   $("tr-body").innerHTML = snap.trades.length ? snap.trades.map(t =>
-    `<tr title="opened ${dtm((t.opened_at || t.closed_at - t.held_s) * 1000)}"><td class="sym">${esc(t.sym)}</td><td class="n mut">${dtm(t.closed_at * 1000)}</td><td class="n ${cls(t.pnl)}">${money(t.pnl)}</td><td class="n ${cls(t.bps)}">${sg(t.bps, 1)}</td><td class="n">${dur(t.held_s)}</td><td class="mut">${esc(t.reason)}</td></tr>`
-  ).join("") : `<tr><td colspan="6" class="empty">No closed trades yet.</td></tr>`;
+    `<tr title="opened ${dtm((t.opened_at || t.closed_at - t.held_s) * 1000)}"><td class="sym">${esc(t.sym)}</td><td class="n mut">${dtm(t.closed_at * 1000)}</td><td class="n ${cls(t.pnl)}">${money(t.pnl)}</td><td class="n ${cls(t.bps)}">${sg(t.bps, 1)}</td>${feeCells(t)}<td class="n">${dur(t.held_s)}</td><td class="mut">${esc(t.reason)}</td></tr>`
+  ).join("") : `<tr><td colspan="8" class="empty">No closed trades yet.</td></tr>`;
 
   $("ev-body").innerHTML = snap.events.length ? snap.events.map(e =>
     `<div class="ev ${esc(e.lvl)}"><time>${new Date(e.ts * 1000).toLocaleTimeString([], { hour12: false })}</time><span>${esc(e.msg)}</span></div>`

@@ -392,6 +392,7 @@ class LiveExecutor:
         spot_cost = sr["quote"]                      # total quote paid for the spot
         perp_proceeds = perp_avg * perp_qty          # total quote received for the short
         extra_fees = 0.0
+        extra_spot = extra_fut = 0.0
         excess = hedge_excess(_d(perp_qty), _d(spot_net), m.mult, ff.step, sf.step)
         if excess is not None:
             side, q = excess
@@ -402,12 +403,14 @@ class LiveExecutor:
                     spot_net -= r["qty"]
                     spot_cost -= r["quote"]
                     extra_fees += r["quote"] * self.fees.spot_taker_bps / BPS
+                    extra_spot += r["quote"] * self.fees.spot_taker_bps / BPS
                 else:                # short too large: buy the surplus back
                     r = await self._retry(lambda: self._drain(
                         lambda x: self._fut_market(m.symbol, "BUY", x, reduce_only=True), q, _d(ff.step), ff.min_qty))
                     perp_qty -= r["qty"]
                     perp_proceeds -= r["quote"]
                     extra_fees += r["quote"] * self.fees.futures_taker_bps / BPS
+                    extra_fut += r["quote"] * self.fees.futures_taker_bps / BPS
             except Exception as e:
                 raise UnhedgedError(f"{m.symbol}: legs filled unequally (spot {spot_net:g}, perp {perp_qty:g} x{m.mult:g}) "
                                     f"and rebalancing the {side} leg failed ({e})")
@@ -424,7 +427,10 @@ class LiveExecutor:
             perp_entry=perp_proceeds / perp_qty,
             # the basis actually obtained, from the fill prices (as the paper executor does), not the signal's quote
             entry_basis_bps=(perp_avg - spot_px * m.mult) / (spot_px * m.mult) * BPS, entry_z=sig.z,
-            fees_paid=quote_fee + fut_fee + extra_fees, next_funding_ms=m.next_funding_ms, last_fresh=now, live=True,
+            fees_paid=quote_fee + fut_fee + extra_fees,
+            # all-in display split: the spot buy's fee taken in the base asset counts here, at the fill price
+            fee_spot_in=quote_fee + base_fee * spot_px + extra_spot, fee_fut_in=fut_fee + extra_fut,
+            next_funding_ms=m.next_funding_ms, last_fresh=now, live=True,
             mu_entry=sig.mean_bps, sigma_entry=sig.std_bps, entry_mid_bps=sig.basis_mid_bps,
             predicted_net_bps=sig.net_edge_bps, funding_interval_h=m.funding_interval_h,
         )
@@ -467,7 +473,8 @@ class LiveExecutor:
             raise UnhedgedError(f"{m.symbol}: partial close, {spot_left:g} spot units STILL HELD (futures leg closed)")
 
         _, quote_fee = self._commission_split(sr["fills"], m.base_asset, sr["quote"])
-        exit_fees = quote_fee + fr["quote"] * self.fees.futures_taker_bps / BPS
+        exit_fut = fr["quote"] * self.fees.futures_taker_bps / BPS
+        exit_fees = quote_fee + exit_fut
         fees_total = pos.fees_paid + exit_fees
         pnl = (
             sr["quote"] - sr["qty"] * pos.spot_entry
@@ -480,4 +487,6 @@ class LiveExecutor:
             pnl_bps=pnl / pos.notional * BPS, entry_basis_bps=pos.entry_basis_bps, exit_basis_bps=sig.basis_out_bps,
             fees_usd=fees_total, funding_usd=pos.funding_acc, reason=reason, live=True,
             predicted_net_bps=pos.predicted_net_bps,
+            fee_entry_usd=pos.fee_spot_in + pos.fee_fut_in, fee_exit_usd=exit_fees,
+            fee_spot_usd=pos.fee_spot_in + quote_fee, fee_fut_usd=pos.fee_fut_in + exit_fut,
         )

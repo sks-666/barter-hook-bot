@@ -279,7 +279,8 @@ class Engine:
         self._update_buffer()
         self.event(
             "win" if trade.pnl_usd > 0 else "loss",
-            f"EXIT {pos.symbol} [{reason}] pnl {trade.pnl_usd:+.3f} USD ({trade.pnl_bps:+.1f} bps), held {now - pos.opened_at:.0f}s",
+            f"EXIT {pos.symbol} [{reason}] pnl {trade.pnl_usd:+.3f} USD ({trade.pnl_bps:+.1f} bps), held {now - pos.opened_at:.0f}s, "
+            f"fees ${trade.fees_usd:.3f} (in {trade.fee_entry_usd:.3f} + out {trade.fee_exit_usd:.3f}; spot {trade.fee_spot_usd:.3f}, futures {trade.fee_fut_usd:.3f})",
             now,
         )
 
@@ -477,7 +478,9 @@ class Engine:
             })
         trades = [
             {"sym": t.symbol, "opened_at": t.opened_at, "closed_at": t.closed_at, "pnl": t.pnl_usd, "bps": t.pnl_bps, "reason": t.reason,
-             "held_s": t.closed_at - t.opened_at, "fees": t.fees_usd}
+             "held_s": t.closed_at - t.opened_at, "fees": t.fees_usd,
+             "fee_in": t.fee_entry_usd, "fee_out": t.fee_exit_usd, "fee_spot": t.fee_spot_usd, "fee_fut": t.fee_fut_usd,
+             "fee_est": t.fee_estimated}
             for t in reversed(list(pf.closed)[-25:])
         ]
         return {
@@ -498,7 +501,7 @@ class Engine:
                 "scanned": len(rows), "fresh": sum(1 for r in rows if r["status"] != "stale"),
                 "signals": sum(1 for r in rows if r["status"] == "signal"), "open": len(pf.open),
                 "max_open": cfg.risk.max_open_positions, "open_notional": pf.open_notional(),
-                "realized": pf.realized_usd, "day": pf.day_pnl(now), "day_limit": cfg.risk.daily_loss_limit_usd,
+                "realized": pf.realized_usd, "fees": pf.fees_usd, "day": pf.day_pnl(now), "day_limit": cfg.risk.daily_loss_limit_usd,
                 "unrealized": unreal, "wins": pf.wins, "losses": pf.losses, "win_rate": pf.win_rate,
                 "tick_ms": self.tick_ms, "ticks": self.tick_count, "uptime_s": now - self.started,
             },

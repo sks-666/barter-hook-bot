@@ -70,6 +70,11 @@ class Store:
         ).fetchone()
         return float(row[0]), int(row[1]), int(row[2])
 
+    def fees_total(self) -> float:
+        """All fees charged on every closed trade (both legs, entry and exit)."""
+        row = self.db.execute("SELECT COALESCE(SUM(json_extract(json, '$.fees_usd')), 0) FROM trades").fetchone()
+        return float(row[0])
+
     def pnl_events(self, since: float = 0.0) -> list[tuple[float, float, bool]]:
         """Every closed trade since `since` as (closed_at, pnl_usd, True), for the P&L reports (arbbot/pnl_report.py)."""
         rows = self.db.execute("SELECT closed_at, pnl_usd FROM trades WHERE closed_at >= ? ORDER BY closed_at", (since,))
@@ -86,6 +91,7 @@ class Portfolio:
         self.open: dict[str, Position] = {p.symbol: p for p in store.load_positions()}
         self.closed: deque[ClosedTrade] = deque(store.recent_trades(200), maxlen=200)
         self.realized_usd, self.wins, self.losses = store.totals()
+        self.fees_usd = store.fees_total()
         self._day_start = utc_midnight(now)
         self._day_pnl = store.pnl_since(self._day_start)
 
@@ -113,6 +119,7 @@ class Portfolio:
         self.day_pnl(trade.closed_at)  # roll the day first
         self._day_pnl += trade.pnl_usd
         self.realized_usd += trade.pnl_usd
+        self.fees_usd += trade.fees_usd
         if trade.pnl_usd > 0:
             self.wins += 1
         else:

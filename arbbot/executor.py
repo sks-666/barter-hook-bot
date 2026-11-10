@@ -33,11 +33,14 @@ class PaperExecutor:
         perp_px *= 1 - s
         perp_qty = notional / perp_px
         spot_qty = perp_qty * m.mult
-        fees = spot_qty * spot_px * f.spot_taker_bps / BPS + perp_qty * perp_px * f.futures_taker_bps / BPS
+        fee_spot = spot_qty * spot_px * f.spot_taker_bps / BPS
+        fee_fut = perp_qty * perp_px * f.futures_taker_bps / BPS
+        fees = fee_spot + fee_fut
         return Position(
             symbol=m.symbol, spot_symbol=m.spot_symbol, mult=m.mult, opened_at=now, notional=notional,
             spot_qty=spot_qty, perp_qty=perp_qty, spot_entry=spot_px, perp_entry=perp_px,
             entry_basis_bps=entry_basis, entry_z=sig.z, fees_paid=fees,
+            fee_spot_in=fee_spot, fee_fut_in=fee_fut,
             next_funding_ms=m.next_funding_ms, last_fresh=now, live=False,
             mu_entry=sig.mean_bps, sigma_entry=sig.std_bps, entry_mid_bps=sig.basis_mid_bps,
             predicted_net_bps=sig.net_edge_bps, funding_interval_h=m.funding_interval_h,
@@ -48,7 +51,9 @@ class PaperExecutor:
         s = f.slippage_bps / BPS
         spot_px = m.spot.bid * (1 - s)   # sell spot at the bid
         perp_px = m.perp.ask * (1 + s)   # buy back perp at the ask
-        exit_fees = pos.spot_qty * spot_px * f.spot_taker_bps / BPS + pos.perp_qty * perp_px * f.futures_taker_bps / BPS
+        exit_spot = pos.spot_qty * spot_px * f.spot_taker_bps / BPS
+        exit_fut = pos.perp_qty * perp_px * f.futures_taker_bps / BPS
+        exit_fees = exit_spot + exit_fut
         fees_total = pos.fees_paid + exit_fees
         pnl = (
             pos.spot_qty * (spot_px - pos.spot_entry)
@@ -61,4 +66,6 @@ class PaperExecutor:
             pnl_bps=pnl / pos.notional * BPS, entry_basis_bps=pos.entry_basis_bps,
             exit_basis_bps=sig.basis_out_bps, fees_usd=fees_total, funding_usd=pos.funding_acc,
             reason=reason, live=False, predicted_net_bps=pos.predicted_net_bps,
+            fee_entry_usd=pos.fees_paid, fee_exit_usd=exit_fees,
+            fee_spot_usd=pos.fee_spot_in + exit_spot, fee_fut_usd=pos.fee_fut_in + exit_fut,
         )
