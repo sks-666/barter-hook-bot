@@ -94,3 +94,16 @@ feed_debounce_s = 10.0            # feed problem must persist this long before a
 min_interval_s = 1.1              # Telegram allows ~1 message/second per chat
 queue_size = 50
 api_base = "https://api.telegram.org"
+
+[freqtrade]                       # the Freqtrade trading bot (docs/FREQTRADE.md): the /trading page, freqkit/
+enabled = true                    # false = no /api/freqtrade routes, the page explains how to turn it on
+runner = "local"                  # "local" = the executable below (pip venv) | "docker" = deploy/docker-compose.freqtrade.yml
+executable = ".venv-freqtrade/bin/freqtrade"
+compose_file = "deploy/docker-compose.freqtrade.yml"
+user_data = "ft_user_data"        # strategies/, data/, logs/, the generated config.json, the trade databases
+api_host = "127.0.0.1"            # Freqtrade's REST API stays on this machine
+api_port = 8080                   # the trading bot's API ("freqtrade trade")
+webserver_port = 8081             # the backtesting / data API ("freqtrade webserver")
+poll_s = 5.0                      # status, open trades and profit are read this often
+autostart_webserver = true        # the backtesting webserver starts with the dashboard (it never trades)
+start_timeout_s = 90.0            # a launch that has not answered by then counts as failed

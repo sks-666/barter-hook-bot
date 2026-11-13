@@ -249,7 +249,7 @@
   <!--NAV--><nav class="nav" aria-label="Pages">
     <a href="/" data-view="reports">P&amp;L reports</a><a href="/arbitrage" data-view="arb">Arbitrage</a>
     <a href="/swing" data-view="swing">Swing kit</a><a href="/market" data-view="market">Market &amp; ticket</a>
-    <a href="/terminal">Terminal ↗</a>
+    <a href="/trading">Trading bot</a><a href="/terminal">Terminal ↗</a>
   </nav><!--/NAV-->
 
   <div id="banner" class="banner" role="status"></div>
@@ -266,6 +266,10 @@
     <section class="card" aria-labelledby="h-r-tk">
       <div class="card-h"><h2 id="h-r-tk">Futures account</h2><a class="more" href="/market">Chart, order book, order ticket →</a></div>
       <div class="pnl" data-panel="ticket" data-title="Order ticket account"></div>
+    </section>
+    <section class="card" aria-labelledby="h-r-ft">
+      <div class="card-h"><h2 id="h-r-ft">Trading bot · Freqtrade</h2><a class="more" href="/trading">Status, trades, backtests, settings →</a></div>
+      <div class="empty" id="ft-summary">Loading…</div>
     </section>
   </div><!--/PNL-->
 
@@ -1418,6 +1422,24 @@ document.querySelectorAll(".pnl").forEach(pnlInit);
 setInterval(() => document.querySelectorAll(".pnl").forEach(el => { if (el.offsetParent !== null) pnlLoad(el); }), 60_000);
 let pnlResize;
 window.addEventListener("resize", () => { clearTimeout(pnlResize); pnlResize = setTimeout(() => document.querySelectorAll(".pnl").forEach(pnlRender), 200); });
+
+// ---- the Freqtrade card on the reports page: one read of /api/freqtrade/overview (absent when the subsystem is off) ----
+async function ftSummary() {
+  const el = $("ft-summary");
+  if (!el || el.offsetParent === null) return;
+  try {
+    const r = await fetch("/api/freqtrade/overview", { cache: "no-store" });
+    if (r.status === 404) { el.textContent = "Not enabled in this bot: set [freqtrade] enabled = true in its config (see docs/FREQTRADE.md)."; return; }
+    const d = await r.json(), e = d.engine, p = d.profit, b = d.balance, cur = (d.bot && d.bot.stake_currency) || d.config.stake_currency;
+    const mode = e.state === "running" ? (e.dry_run === false ? "LIVE · real orders" : "DRY-RUN · simulated") : "not running";
+    const pnl = p ? `${p.profit_all_coin >= 0 ? "+" : "−"}${Math.abs(p.profit_all_coin).toFixed(2)} ${cur} all time (${p.closed_trade_count} closed, ${p.trade_count - p.closed_trade_count} open, win rate ${(p.winrate * 100).toFixed(0)}%)` : "no trades yet";
+    el.innerHTML = `<b>${esc(d.config.strategy)}</b> on ${esc(d.config.exchange)} ${esc(d.config.trading_mode)} · <span class="${e.state === "running" ? (e.dry_run === false ? "neg" : "warn") : "mut"}">${esc(mode)}</span>` +
+      (e.state === "running" ? ` · bot ${esc((d.bot && d.bot.state) || "–")} · P&amp;L ${esc(pnl)}` + (b ? ` · balance ${Number(b.total_bot || b.total).toFixed(2)} ${esc(b.stake)}` : "") : "") +
+      (e.error ? ` · <span class="neg">${esc(e.error)}</span>` : "");
+  } catch (_) { el.textContent = "Could not read the trading bot's status."; }
+}
+ftSummary();
+setInterval(ftSummary, 15_000);
 
 function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);

@@ -1,0 +1,685 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Trading bot · Freqtrade</title>
+<style>
+  /* The Freqtrade page: the same design tokens and components as index.html (one page, served at /trading). */
+  :root {
+    --bg: #0b0f14; --panel: #121821; --panel-2: #172030; --line: #243044; --text: #e6edf6; --muted: #8394ab;
+    --accent: #4cc9f0; --pos: #2fd18b; --neg: #ff6b6b; --warn: #f5b942; --sim: #b58cff;
+    --shadow: 0 1px 0 rgba(255,255,255,.03) inset;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f4f6fa; --panel: #ffffff; --panel-2: #eef2f8; --line: #d8e0ec; --text: #142033; --muted: #5d6f88;
+      --accent: #0a7fb0; --pos: #0e9d63; --neg: #d6403f; --warn: #b87a00; --sim: #7a4fd6;
+      --shadow: none; color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6fa; --panel: #ffffff; --panel-2: #eef2f8; --line: #d8e0ec; --text: #142033; --muted: #5d6f88;
+    --accent: #0a7fb0; --pos: #0e9d63; --neg: #d6403f; --warn: #b87a00; --sim: #7a4fd6;
+    --shadow: none; color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { margin: 0; }
+  body { background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  .num, td.n, .kpi .v { font-variant-numeric: tabular-nums; font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
+  .wrap { max-width: 1680px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px 20px; align-items: center; justify-content: space-between; margin-bottom: 14px; }
+  h1 { font-size: 17px; margin: 0; letter-spacing: .2px; }
+  h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .9px; color: var(--muted); margin: 0; font-weight: 600; }
+  h3 { font-size: 12px; text-transform: uppercase; letter-spacing: .8px; color: var(--muted); margin: 0 0 6px; font-weight: 600; }
+  .hdr-left, .hdr-right { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .badge { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 999px; border: 1px solid var(--line); font-size: 12px; font-weight: 600; background: var(--panel); }
+  .badge.paper { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+  .badge.live { color: #fff; background: var(--neg); border-color: var(--neg); }
+  .badge.off { color: var(--muted); }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .dot.ok { background: var(--pos); box-shadow: 0 0 0 3px color-mix(in srgb, var(--pos) 25%, transparent); }
+  .dot.bad { background: var(--neg); }
+  .dot.warn { background: var(--warn); }
+  button { font: inherit; font-size: 13px; font-weight: 600; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; min-height: 32px; }
+  button:hover { border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+  button:focus-visible, select:focus-visible, input:focus-visible, textarea:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  button.danger { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 45%, var(--line)); }
+  button.primary { background: var(--accent); color: #031219; border-color: var(--accent); }
+  button.mini { min-height: 24px; padding: 1px 8px; font-size: 12px; }
+  .banner { display: none; margin-bottom: 12px; padding: 10px 14px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--warn) 50%, transparent); background: color-mix(in srgb, var(--warn) 12%, var(--panel)); color: var(--text); }
+  .banner.show { display: block; }
+  .banner.err { border-color: color-mix(in srgb, var(--neg) 55%, transparent); background: color-mix(in srgb, var(--neg) 12%, var(--panel)); }
+  .banner.live { border-color: var(--neg); background: color-mix(in srgb, var(--neg) 22%, var(--panel)); font-weight: 600; }
+  .kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin-bottom: 14px; }
+  .kpi { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; box-shadow: var(--shadow); min-width: 0; }
+  .kpi .l { color: var(--muted); font-size: 11.5px; text-transform: uppercase; letter-spacing: .7px; }
+  .kpi .v { font-size: 20px; font-weight: 650; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .kpi .s { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .grid { display: grid; grid-template-columns: minmax(0, 1.9fr) minmax(340px, 1fr); gap: 14px; align-items: start; }
+  @media (max-width: 1100px) { .grid { grid-template-columns: minmax(0, 1fr); } }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+  .card + .card { margin-top: 14px; }
+  .card-h { display: flex; justify-content: space-between; align-items: center; padding: 10px 14px; border-bottom: 1px solid var(--line); gap: 10px; flex-wrap: wrap; }
+  .card-h .hint { color: var(--muted); font-size: 12px; }
+  .card-h .tools { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-left: auto; }
+  .scroll { overflow: auto; }
+  .scroll.mid { max-height: 300px; }
+  .scroll.tall { max-height: 60vh; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { padding: 6px 10px; text-align: right; white-space: nowrap; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); }
+  th:first-child, td:first-child { text-align: left; }
+  th { position: sticky; top: 0; background: var(--panel-2); color: var(--muted); font-size: 11.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .6px; z-index: 1; }
+  td.sym { font-weight: 600; text-align: left; }
+  td.l, th.l { text-align: left; }
+  td.why { white-space: normal; min-width: 200px; text-align: left; color: var(--muted); font-size: 12.5px; }
+  .pos { color: var(--pos); } .neg { color: var(--neg); } .mut { color: var(--muted); } .warn { color: var(--warn); }
+  .chip { display: inline-block; min-width: 52px; text-align: center; padding: 1px 8px; border-radius: 999px; font-size: 11.5px; font-weight: 650; border: 1px solid var(--line); color: var(--muted); }
+  .chip.sim { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+  .chip.real { background: var(--neg); border-color: var(--neg); color: #fff; }
+  .chip.long { color: var(--pos); border-color: color-mix(in srgb, var(--pos) 55%, transparent); }
+  .chip.short { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 55%, transparent); }
+  .chip.ok { color: var(--pos); border-color: color-mix(in srgb, var(--pos) 55%, transparent); }
+  .chip.bad { color: var(--neg); border-color: color-mix(in srgb, var(--neg) 55%, transparent); }
+  .chip.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 55%, transparent); }
+  .empty { padding: 18px 14px; color: var(--muted); }
+  .ev { padding: 6px 14px; border-bottom: 1px solid color-mix(in srgb, var(--line) 60%, transparent); display: flex; gap: 10px; font-size: 12.5px; }
+  .ev time { color: var(--muted); font-family: ui-monospace, Menlo, monospace; flex: none; }
+  .ev.error { color: var(--neg); } .ev.warn { color: var(--warn); } .ev.info { color: var(--text); }
+  footer { margin-top: 14px; color: var(--muted); font-size: 12px; line-height: 1.6; }
+  .nav { position: sticky; top: 0; z-index: 6; display: flex; gap: 6px; overflow-x: auto; padding: 8px 0; margin: -6px 0 10px;
+         background: color-mix(in srgb, var(--bg) 92%, transparent); backdrop-filter: blur(6px); scrollbar-width: none; }
+  .nav a { color: var(--muted); text-decoration: none; font-size: 13px; font-weight: 600; padding: 5px 12px; border-radius: 999px;
+           border: 1px solid var(--line); background: var(--panel); white-space: nowrap; }
+  .nav a:hover, .nav a:focus-visible { color: var(--text); border-color: var(--accent); outline: none; }
+  .nav a[aria-current="page"] { color: var(--text); border-color: var(--accent); background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+  .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+  .seg button { border: 0; border-radius: 0; min-height: 30px; padding: 4px 12px; background: none; color: var(--muted); }
+  .seg button + button { border-left: 1px solid var(--line); }
+  .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+  .pad { padding: 12px 14px; }
+  .note { color: var(--muted); font-size: 12px; line-height: 1.5; }
+  .form { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 12px; }
+  .form label, .f1 label { display: grid; gap: 3px; font-size: 12px; color: var(--muted); min-width: 0; }
+  .form label.wide { grid-column: 1 / -1; }
+  input, select, textarea { font: inherit; font-size: 13px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; min-height: 32px; width: 100%; min-width: 0; }
+  textarea { min-height: 64px; resize: vertical; font-family: ui-monospace, Menlo, monospace; font-size: 12.5px; }
+  input[type="checkbox"] { width: auto; min-height: 0; accent-color: var(--accent); }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .row.end { justify-content: flex-end; }
+  .msg { font-size: 12.5px; min-height: 18px; margin-top: 6px; }
+  .kv { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 1px; background: var(--line); border-top: 1px solid var(--line); }
+  .kv > div { background: var(--panel); padding: 8px 12px; min-width: 0; }
+  .kv .l { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .6px; }
+  .kv .v { font: 600 14px/1.4 ui-monospace, "SF Mono", Menlo, monospace; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .bar { height: 8px; border-radius: 999px; background: var(--panel-2); border: 1px solid var(--line); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .chart { width: 100%; height: 180px; display: block; }
+  .chart text { fill: var(--muted); font: 10.5px ui-sans-serif, -apple-system, sans-serif; }
+  pre.log { margin: 0; padding: 10px 14px; font: 11.5px/1.5 ui-monospace, "SF Mono", Menlo, monospace; color: var(--text); white-space: pre-wrap; word-break: break-word; max-height: 360px; overflow: auto; }
+  pre.log .e { color: var(--neg); } pre.log .w { color: var(--warn); }
+  pre.code { margin: 0; padding: 10px 14px; font: 11.5px/1.5 ui-monospace, Menlo, monospace; white-space: pre; overflow: auto; max-height: 420px; }
+  details summary { cursor: pointer; color: var(--accent); font-weight: 600; font-size: 12.5px; padding: 6px 14px; }
+  .mode-box { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; background: var(--panel-2); }
+  .mode-box.armed { border-color: var(--neg); background: color-mix(in srgb, var(--neg) 14%, var(--panel)); }
+  .pager { display: flex; gap: 8px; align-items: center; padding: 8px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  @media (max-width: 640px) { .wrap { padding: 12px 16px; } .kpi .v { font-size: 18px; } .card-h { flex-wrap: wrap; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="hdr-left">
+      <h1>Trading bot · Freqtrade</h1>
+      <span id="b-mode" class="badge off">OFF</span>
+      <span class="badge"><span id="dot" class="dot"></span><span id="enginetxt">connecting…</span></span>
+      <span id="b-bot" class="badge off" hidden></span>
+    </div>
+    <div class="hdr-right">
+      <button id="btn-theme" type="button" title="Theme: follows the system" aria-label="Switch theme">◐ Auto</button>
+      <button id="btn-bot-pause" type="button" hidden>Pause entries</button>
+      <button id="btn-bot-stop" type="button" hidden title="Stop the trading loop (the process keeps running: Start resumes it)">Stop trading</button>
+      <button id="btn-engine" type="button" class="primary">Launch bot</button>
+    </div>
+  </header>
+
+  <nav class="nav" aria-label="Pages">
+    <a href="/">P&amp;L reports</a><a href="/arbitrage">Arbitrage</a><a href="/swing">Swing kit</a>
+    <a href="/market">Market &amp; ticket</a><a href="/trading" aria-current="page">Trading bot</a><a href="/terminal">Terminal ↗</a>
+  </nav>
+
+  <div id="banner" class="banner" role="status"></div>
+  <div id="disabled" class="card" hidden><div class="empty">The Freqtrade subsystem is off in this bot. Turn it on with <code>[freqtrade] enabled = true</code> in the bot's config file (the paper bot's <code>config.paper.toml</code> has it on), install Freqtrade as described in <code>docs/FREQTRADE.md</code>, and restart the dashboard.</div></div>
+
+  <section class="kpis" aria-label="Summary" id="kpis">
+    <div class="kpi"><div class="l">Engine</div><div class="v" id="k-engine">–</div><div class="s" id="k-engine-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Bot</div><div class="v" id="k-bot">–</div><div class="s" id="k-bot-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Open trades</div><div class="v" id="k-open">–</div><div class="s" id="k-open-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Closed trades</div><div class="v" id="k-closed">–</div><div class="s" id="k-closed-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Total profit</div><div class="v" id="k-profit">–</div><div class="s" id="k-profit-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Win rate</div><div class="v" id="k-win">–</div><div class="s" id="k-win-s">&nbsp;</div></div>
+    <div class="kpi"><div class="l">Balance</div><div class="v" id="k-bal">–</div><div class="s" id="k-bal-s">&nbsp;</div></div>
+  </section>
+
+  <div class="grid">
+    <div>
+      <section class="card" aria-labelledby="h-open">
+        <div class="card-h"><h2 id="h-open">Open trades</h2><span class="hint" id="open-hint"></span>
+          <div class="tools"><button type="button" class="mini danger" id="btn-exit-all" hidden>Exit all</button></div></div>
+        <div class="scroll mid"><table><thead><tr><th>#</th><th class="l">Pair</th><th>Side</th><th>Opened</th><th>Entry</th><th>Now</th><th>Stake</th><th>Profit</th><th>Stop</th><th class="l">Tag</th><th></th></tr></thead><tbody id="open-body"></tbody></table></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-hist">
+        <div class="card-h"><h2 id="h-hist">Trade history</h2><span class="hint" id="hist-hint"></span>
+          <div class="tools"><button type="button" class="mini" id="btn-hist-refresh">Refresh</button></div></div>
+        <div class="scroll mid"><table><thead><tr><th>#</th><th class="l">Pair</th><th>Side</th><th>Opened → closed</th><th>In → out</th><th>Stake</th><th>Profit</th><th>%</th><th class="l">Exit reason</th><th class="l">Tag</th></tr></thead><tbody id="hist-body"></tbody></table></div>
+        <div class="pager"><button type="button" class="mini" id="hist-prev">‹ newer</button><span id="hist-page"></span><button type="button" class="mini" id="hist-next">older ›</button></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-pnl">
+        <div class="card-h"><h2 id="h-pnl">Profit &amp; loss</h2>
+          <div class="tools"><div class="seg" role="group" aria-label="Period"><button type="button" data-per="day" aria-pressed="true">Daily</button><button type="button" data-per="week">Weekly</button><button type="button" data-per="month">Monthly</button></div></div></div>
+        <div class="pad">
+          <div class="kpis" id="pnl-sum" style="margin-bottom:10px"></div>
+          <svg class="chart" id="pnl-chart" role="img" aria-label="Profit per period, with the running total"></svg>
+          <div class="scroll mid"><table><thead><tr><th>Period (UTC)</th><th>Profit</th><th>%</th><th>Trades</th><th>Start balance</th><th>Running total</th></tr></thead><tbody id="pnl-body"></tbody></table></div>
+          <div class="note" id="pnl-note" style="margin-top:6px"></div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-perf">
+        <div class="card-h"><h2 id="h-perf">Performance by pair</h2><span class="hint">closed trades</span></div>
+        <div class="scroll mid"><table><thead><tr><th class="l">Pair</th><th>Trades</th><th>Profit</th><th>%</th></tr></thead><tbody id="perf-body"></tbody></table></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-equity">
+        <div class="card-h"><h2 id="h-equity">Equity &amp; profit history</h2><span class="hint" id="eq-hint">from the dashboard's own snapshots (every minute while the bot runs)</span>
+          <div class="tools"><div class="seg" role="group" aria-label="Window"><button type="button" data-hours="24">24h</button><button type="button" data-hours="168" aria-pressed="true">7d</button><button type="button" data-hours="720">30d</button></div></div></div>
+        <div class="pad"><svg class="chart" id="eq-chart" role="img" aria-label="Bot balance and total profit over time"></svg></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-bt">
+        <div class="card-h"><h2 id="h-bt">Backtesting</h2><span class="hint" id="bt-hint">runs on the webserver instance, never touches the trading bot</span></div>
+        <div class="pad">
+          <div class="form">
+            <label>Strategy <select id="bt-strategy"></select></label>
+            <label>Timeframe <select id="bt-tf"><option value="">strategy's own</option></select></label>
+            <label>From (UTC) <input type="date" id="bt-from"></label>
+            <label>To (UTC) <input type="date" id="bt-to"></label>
+            <label>Max open trades <input type="number" id="bt-mot" min="-1" step="1"></label>
+            <label>Stake per trade <input id="bt-stake" inputmode="decimal"></label>
+            <label>Starting wallet <input type="number" id="bt-wallet" min="1" step="any"></label>
+            <label class="wide">Pairs (one per line or comma-separated) <textarea id="bt-pairs" spellcheck="false"></textarea></label>
+          </div>
+          <div class="row" style="margin-top:10px">
+            <label class="row" style="font-size:12.5px"><input type="checkbox" id="bt-download" checked> Download the candles first</label>
+            <label class="row" style="font-size:12.5px"><input type="checkbox" id="bt-prot"> Enable protections</label>
+            <span style="flex:1"></span>
+            <button type="button" id="bt-abort" class="danger" hidden>Abort</button>
+            <button type="button" id="bt-run" class="primary">Run backtest</button>
+          </div>
+          <div class="row" style="margin-top:10px"><div class="bar" style="flex:1"><i id="bt-bar" style="width:0%"></i></div><span class="note" id="bt-status"></span></div>
+          <div class="msg" id="bt-msg"></div>
+        </div>
+        <div id="bt-result" hidden>
+          <div class="kv" id="bt-kv"></div>
+          <div class="pad"><svg class="chart" id="bt-chart" role="img" aria-label="Backtest cumulative profit by day"></svg></div>
+          <div class="pad" style="padding-top:0"><h3>Per pair</h3><div class="scroll mid"><table><thead><tr><th class="l">Pair</th><th>Trades</th><th>Avg %</th><th>Total profit</th><th>Total %</th><th>W / D / L</th><th>Win rate</th><th>Avg duration</th></tr></thead><tbody id="bt-pairs-body"></tbody></table></div></div>
+          <div class="pad" style="padding-top:0"><h3>Exit reasons</h3><div class="scroll mid"><table><thead><tr><th class="l">Reason</th><th>Trades</th><th>Profit</th><th>%</th><th>W / D / L</th></tr></thead><tbody id="bt-exits-body"></tbody></table></div></div>
+          <div class="pad" style="padding-top:0"><h3>Trades <span class="note" id="bt-trades-note"></span></h3><div class="scroll mid"><table><thead><tr><th class="l">Pair</th><th>Side</th><th>Opened → closed</th><th>In → out</th><th>Stake</th><th>Profit</th><th>%</th><th class="l">Exit</th><th class="l">Tag</th></tr></thead><tbody id="bt-trades-body"></tbody></table></div></div>
+        </div>
+        <details><summary>Previous backtests</summary><div class="scroll mid"><table><thead><tr><th class="l">When</th><th class="l">Strategy</th><th class="l">Range</th><th>TF</th><th>Trades</th><th>Profit</th><th>Drawdown</th><th></th></tr></thead><tbody id="bt-hist-body"></tbody></table></div></details>
+      </section>
+    </div>
+
+    <div>
+      <section class="card" aria-labelledby="h-setup">
+        <div class="card-h"><h2 id="h-setup">Mode &amp; engine</h2><span class="hint" id="setup-hint"></span></div>
+        <div class="pad">
+          <div class="mode-box" id="mode-box">
+            <div class="row" style="justify-content:space-between"><b id="mode-title">Dry-run</b><span id="mode-chip" class="chip sim">SIMULATED</span></div>
+            <div class="note" id="mode-note" style="margin:6px 0 8px"></div>
+            <div class="row">
+              <button type="button" id="btn-mode-dry" class="mini">Use dry-run</button>
+              <button type="button" id="btn-mode-live" class="mini danger">Arm LIVE trading…</button>
+            </div>
+          </div>
+          <div class="kv" style="margin-top:10px;border:1px solid var(--line);border-radius:10px;overflow:hidden" id="engine-kv"></div>
+          <div class="row" style="margin-top:10px">
+            <button type="button" class="mini" id="btn-engine-restart">Relaunch with saved settings</button>
+            <button type="button" class="mini" id="btn-bot-reload" title="Freqtrade's reload_config: re-reads its config file without stopping">Reload config</button>
+            <button type="button" class="mini" id="btn-ws-restart" title="The backtesting webserver">Restart webserver</button>
+          </div>
+          <div class="msg" id="engine-msg"></div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-cfg">
+        <div class="card-h"><h2 id="h-cfg">Settings</h2><span class="hint">applied at the next launch</span></div>
+        <div class="pad">
+          <div class="form" id="cfg-form">
+            <label>Exchange <input id="cfg-exchange" list="exchanges" placeholder="binance" autocomplete="off" spellcheck="false"><datalist id="exchanges"></datalist></label>
+            <label>Market <select id="cfg-trading_mode"><option value="spot">Spot</option><option value="futures">Futures (isolated)</option></select></label>
+            <label>Stake currency <input id="cfg-stake_currency" placeholder="USDT" spellcheck="false"></label>
+            <label>Stake per trade <input id="cfg-stake_amount" inputmode="decimal" placeholder="100 or unlimited"></label>
+            <label>Max open trades <input type="number" id="cfg-max_open_trades" min="-1" step="1"></label>
+            <label>Dry-run wallet <input type="number" id="cfg-dry_run_wallet" min="1" step="any"></label>
+            <label>Strategy <select id="cfg-strategy"></select></label>
+            <label>Timeframe <select id="cfg-timeframe"><option value="">strategy's own</option></select></label>
+            <label>Pair list <select id="cfg-pairlist"><option value="static">Static (the pairs below)</option><option value="volume">Top by 24h volume</option></select></label>
+            <label>Volume pairs <input type="number" id="cfg-volume_assets" min="1" max="300" step="1"></label>
+            <label class="wide">Pairs <textarea id="cfg-pairs" spellcheck="false" placeholder="BTC/USDT&#10;ETH/USDT"></textarea></label>
+            <label class="wide">Blacklist <input id="cfg-blacklist" placeholder="DOGE/USDT, BNB/.*" spellcheck="false"></label>
+          </div>
+          <div class="row end" style="margin-top:10px"><button type="button" class="mini" id="btn-pairs-pick">Show exchange markets</button><button type="button" class="mini" id="btn-strategy-view">View strategy code</button><button type="button" class="primary" id="btn-cfg-save">Save settings</button></div>
+          <div class="msg" id="cfg-msg"></div>
+          <div id="markets-box" hidden><div class="note" style="margin-top:6px">Markets quoted in the stake currency (click to add):</div><div id="markets-list" class="row" style="max-height:140px;overflow:auto;margin-top:4px;gap:4px"></div></div>
+        </div>
+        <details id="strategy-details" hidden><summary id="strategy-summary">Strategy code</summary><pre class="code" id="strategy-code"></pre></details>
+      </section>
+
+      <section class="card" aria-labelledby="h-keys">
+        <div class="card-h"><h2 id="h-keys">Exchange API keys</h2><span class="hint">stored on this machine only</span></div>
+        <div class="pad">
+          <div class="note" id="keys-have" style="margin-bottom:8px"></div>
+          <div class="form">
+            <label>Exchange <input id="key-exchange" placeholder="binance" spellcheck="false" autocomplete="off"></label>
+            <label>API key <input id="key-key" type="password" autocomplete="off"></label>
+            <label>API secret <input id="key-secret" type="password" autocomplete="off"></label>
+            <label>Passphrase (OKX, KuCoin…) <input id="key-password" type="password" autocomplete="off"></label>
+          </div>
+          <div class="row end" style="margin-top:10px"><button type="button" class="mini danger" id="btn-key-delete">Delete keys</button><button type="button" id="btn-key-save">Save keys</button></div>
+          <div class="msg" id="key-msg"></div>
+          <div class="note">Create a key with trading permission only, never withdrawals, restricted to this machine's IP. The dashboard never shows a saved key again; it only goes into Freqtrade's config file (mode 0600) when a LIVE bot is launched. Dry-run needs no keys.</div>
+        </div>
+      </section>
+
+      <section class="card" aria-labelledby="h-wallet">
+        <div class="card-h"><h2 id="h-wallet">Wallet</h2><span class="hint" id="wallet-hint"></span></div>
+        <div class="scroll mid"><table><thead><tr><th class="l">Currency</th><th>Free</th><th>In trades</th><th>Total</th><th>Value</th></tr></thead><tbody id="wallet-body"></tbody></table></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-act">
+        <div class="card-h"><h2 id="h-act">Recent activity</h2></div>
+        <div class="scroll mid" id="ev-body"></div>
+      </section>
+
+      <section class="card" aria-labelledby="h-logs">
+        <div class="card-h"><h2 id="h-logs">Logs</h2>
+          <div class="tools"><div class="seg" role="group" aria-label="Which log"><button type="button" data-log="trade" aria-pressed="true">Bot</button><button type="button" data-log="webserver">Webserver</button></div><button type="button" class="mini" id="btn-log-refresh">Refresh</button></div></div>
+        <pre class="log" id="log-body">—</pre>
+      </section>
+    </div>
+  </div>
+  <footer id="foot">Freqtrade runs as its own process and is driven only through its REST API on this machine. Dry-run trades are simulated by Freqtrade against live exchange prices; nothing is sent to the exchange until LIVE mode is armed with the typed confirmation and the environment acknowledgement.</footer>
+</div>
+
+<script>
+const TOKEN = "__TOKEN__", ENABLED = __FREQ_ENABLED__;
+const TIMEFRAMES = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h", "12h", "1d", "3d", "1w"];
+const $ = id => document.getElementById(id);
+const esc = s => String(s == null ? "" : s).replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+const lsGet = k => { try { return localStorage.getItem(k); } catch (_) { return null; } };
+const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch (_) { } };
+let OV = null, CUR = "USDT", HIST = { offset: 0, limit: 50, total: 0 }, PNL_PER = lsGet("ft-pnl-per") || "day", EQ_H = 168, LOG = "trade";
+const cls = v => v > 0 ? "pos" : v < 0 ? "neg" : "mut";
+const sg = (v, d) => v == null || isNaN(v) ? "–" : (v > 0 ? "+" : v < 0 ? "−" : "") + Math.abs(v).toFixed(d);
+const money = (v, cur, d) => v == null || isNaN(v) ? "–" : `${v < 0 ? "−" : v > 0 ? "+" : ""}${Math.abs(v).toFixed(d == null ? (Math.abs(v) >= 100 ? 2 : 4) : d)} ${cur || CUR}`;
+const pct = (r, d) => r == null || isNaN(r) ? "–" : sg(r * 100, d == null ? 2 : d) + "%";
+const px = p => p == null ? "–" : p >= 1000 ? p.toFixed(2) : p >= 1 ? p.toFixed(4) : p.toPrecision(4);
+function dtm(ms) { if (!ms) return "–"; const d = new Date(ms), p = n => String(n).padStart(2, "0"); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; }
+function dur(s) { s = Math.max(0, Math.round(s)); return s < 90 ? s + "s" : s < 5400 ? Math.round(s / 60) + "m" : s < 172800 ? (s / 3600).toFixed(1) + "h" : (s / 86400).toFixed(1) + "d"; }
+const side = t => `<span class="chip ${t.is_short ? "short" : "long"}">${t.is_short ? "SHORT" : "LONG"}</span>`;
+const realChip = dry => dry === false ? `<span class="chip real" title="A real order on the exchange">REAL</span>` : `<span class="chip sim" title="Simulated by Freqtrade (dry-run)">SIM</span>`;
+
+async function get(path) {
+  const r = await fetch(path, { cache: "no-store" });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+async function post(path, body) {
+  const r = await fetch(path, { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body || {}) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+  return d;
+}
+function say(id, text, bad) { const el = $(id); el.textContent = text || ""; el.className = "msg " + (bad ? "neg" : "pos"); }
+async function run(btn, msgId, fn, okText) {
+  if (btn) btn.disabled = true;
+  try { const r = await fn(); if (msgId) say(msgId, typeof okText === "function" ? okText(r) : (okText || "done")); refresh(); return r; }
+  catch (e) { if (msgId) say(msgId, e.message, true); else alert(e.message); }
+  finally { if (btn) btn.disabled = false; }
+}
+
+// ---- overview: header, KPIs, open trades, wallet, activity, mode box --------------------------------------------
+async function refresh() {
+  if (!ENABLED) { $("disabled").hidden = false; $("kpis").hidden = true; document.querySelector(".grid").hidden = true; $("btn-engine").hidden = true; $("enginetxt").textContent = "off"; return; }
+  try { OV = await get("/api/freqtrade/overview"); } catch (e) { $("dot").className = "dot bad"; $("enginetxt").textContent = "dashboard unreachable"; return; }
+  render();
+}
+function render() {
+  const o = OV, e = o.engine, b = o.bot, p = o.profit, bal = o.balance, c = o.config, running = e.state === "running";
+  CUR = (b && b.stake_currency) || c.stake_currency;
+  const live = running ? e.dry_run === false : (o.mode === "live" && !o.next_launch_dry_run);
+  const modeEl = $("b-mode");
+  modeEl.textContent = running ? (e.dry_run === false ? `LIVE · ${(b && b.exchange || c.exchange).toUpperCase()}` : "DRY-RUN") : (o.mode === "live" ? "LIVE ARMED" : "DRY-RUN");
+  modeEl.className = "badge " + (live || (o.mode === "live" && !running) ? "live" : "paper");
+  $("dot").className = "dot " + (running && e.api_ok ? "ok" : e.state === "starting" ? "warn" : e.state === "error" ? "bad" : "");
+  $("enginetxt").textContent = running ? (e.api_ok ? `engine running${e.version ? " · v" + e.version : ""} · up ${dur(e.uptime_s)}` : "engine running · API not answering") : e.state === "starting" ? "engine starting…" : e.state === "error" ? "engine error" : "engine stopped";
+  document.title = `${modeEl.textContent} · Trading bot · Freqtrade`;
+  const bb = $("b-bot");
+  bb.hidden = !(running && b); if (b) { bb.textContent = `bot ${b.state || "–"} · ${b.strategy} · ${b.timeframe || ""}`; bb.className = "badge " + (b.state === "running" ? "paper" : "off"); }
+  const eng = $("btn-engine");
+  eng.textContent = running || e.state === "starting" ? "Shut down bot" : "Launch bot";
+  eng.className = running || e.state === "starting" ? "danger" : "primary";
+  eng.disabled = !!o.runner_error && !running;
+  $("btn-bot-pause").hidden = $("btn-bot-stop").hidden = !(running && b);
+  if (b) { $("btn-bot-pause").textContent = b.state === "running" ? "Pause entries" : "Start trading"; $("btn-bot-pause").dataset.act = b.state === "running" ? "pause" : "start"; $("btn-bot-stop").hidden = b.state === "stopped" || !running; }
+
+  const banner = $("banner");
+  if (o.runner_error) { banner.className = "banner err show"; banner.textContent = o.runner_error; }
+  else if (e.state === "error") { banner.className = "banner err show"; banner.textContent = `The Freqtrade process failed: ${e.error}. See the log below.`; }
+  else if (running && e.dry_run === false) { banner.className = "banner live show"; banner.textContent = `LIVE TRADING: ${b ? b.strategy : ""} is sending REAL orders to ${b ? b.exchange : c.exchange}. Every trade on this page is real money.`; }
+  else if (!running && o.mode === "live") { banner.className = "banner err show"; banner.textContent = o.next_launch_dry_run ? `Live is armed but ${o.mode_note}.` : "LIVE mode is ARMED: the next launch sends real orders. Use dry-run unless you mean it."; }
+  else if (running && b && b.state !== "running") { banner.className = "banner show"; banner.textContent = b.state === "paused" ? "Entries are paused: open trades are still managed, no new positions are opened." : "The trading loop is stopped: nothing is managed until you press Start trading."; }
+  else if (Object.keys(o.errors || {}).length) { banner.className = "banner show"; banner.textContent = "Some data could not be read from Freqtrade: " + Object.entries(o.errors).map(([k, v]) => `${k}: ${v}`).join(" · "); }
+  else banner.className = "banner";
+
+  $("k-engine").textContent = e.state; $("k-engine-s").textContent = running ? `${o.runner} · port ${e.port}${e.adopted ? " · adopted" : ""}` : (e.error ? e.error.slice(0, 60) : `${o.runner} runner`);
+  $("k-bot").textContent = b ? b.state : "–"; $("k-bot-s").textContent = b ? `${b.strategy} · ${b.exchange} ${b.trading_mode}` : `${c.strategy} · ${c.exchange} ${c.trading_mode}`;
+  const open = o.open_trades || [], unreal = open.reduce((t, x) => t + (x.total_profit_abs || x.profit_abs || 0), 0);
+  $("k-open").textContent = o.count ? `${o.count.current}/${o.count.max}` : open.length; $("k-open-s").textContent = o.count ? `${o.count.total_stake.toFixed(2)} ${CUR} in trades · unrealised ${money(unreal)}` : "";
+  $("k-closed").textContent = p ? p.closed_trade_count : "–"; $("k-closed-s").textContent = p && p.closed_trade_count ? `avg ${p.avg_duration} · profit factor ${p.profit_factor == null ? "–" : Number(p.profit_factor).toFixed(2)}` : "";
+  const kp = $("k-profit"); kp.textContent = p ? money(p.profit_all_coin) : "–"; kp.className = "v " + (p ? cls(p.profit_all_coin) : "");
+  $("k-profit-s").textContent = p ? `closed ${money(p.profit_closed_coin)} (${pct(p.profit_closed_ratio)}) · all ${pct(p.profit_all_ratio)}` : "";
+  $("k-win").textContent = p && p.closed_trade_count ? (p.winrate * 100).toFixed(0) + "%" : "–"; $("k-win-s").textContent = p ? `${p.winning_trades}W / ${p.losing_trades}L · expectancy ${p.expectancy == null ? "–" : Number(p.expectancy).toFixed(2)}` : "";
+  $("k-bal").textContent = bal ? `${Number(bal.total_bot != null ? bal.total_bot : bal.total).toFixed(2)} ${bal.stake}` : "–";
+  $("k-bal-s").textContent = bal ? `started ${Number(bal.starting_capital).toFixed(2)} · ${pct(bal.starting_capital_ratio)}${e.dry_run ? " · simulated wallet" : ""}` : (running ? "reading…" : "");
+
+  $("open-hint").innerHTML = running ? `${open.length} open · ${realChip(e.dry_run)}` : "";
+  $("btn-exit-all").hidden = !open.length;
+  $("open-body").innerHTML = open.length ? open.map(t => {
+    const pr = t.total_profit_abs != null ? t.total_profit_abs : t.profit_abs, pr_r = t.total_profit_ratio != null ? t.total_profit_ratio : t.profit_ratio;
+    return `<tr><td class="n mut">${t.trade_id}</td><td class="sym">${esc(t.pair)}${t.leverage && t.leverage > 1 ? ` <span class="mut">${t.leverage}x</span>` : ""}</td><td>${side(t)}</td><td class="n mut" title="${esc(t.open_date)}">${dtm(t.open_timestamp)}</td><td class="n">${px(t.open_rate)}</td><td class="n">${px(t.current_rate)}</td><td class="n">${Number(t.stake_amount).toFixed(2)}</td><td class="n ${cls(pr)}">${money(pr)} <span class="mut">${pct(pr_r)}</span></td><td class="n mut" title="stop loss">${px(t.stop_loss_abs)}${t.stop_loss_pct != null ? ` (${Number(t.stop_loss_pct).toFixed(1)}%)` : ""}</td><td class="l mut">${esc(t.enter_tag || "")}${t.has_open_orders ? ' <span class="chip warn">order open</span>' : ""}</td><td><button type="button" class="mini danger" data-exit="${t.trade_id}">Exit</button></td></tr>`;
+  }).join("") : `<tr><td colspan="11" class="empty">${running ? "No open trades." : "The bot is not running."}</td></tr>`;
+
+  $("wallet-hint").textContent = bal ? `${bal.note || ""} · value ${Number(bal.value).toFixed(2)} ${bal.symbol}` : "";
+  $("wallet-body").innerHTML = bal && bal.currencies && bal.currencies.length ? bal.currencies.map(w =>
+    `<tr><td class="sym">${esc(w.currency)}${w.is_bot_managed === false ? ' <span class="mut">(not the bot\'s)</span>' : ""}</td><td class="n">${Number(w.free).toFixed(4)}</td><td class="n">${Number(w.used).toFixed(4)}</td><td class="n">${Number(w.total).toFixed(4)}</td><td class="n mut">${w.est_stake != null ? Number(w.est_stake).toFixed(2) + " " + esc(bal.stake) : "–"}</td></tr>`).join("")
+    : `<tr><td colspan="5" class="empty">${running ? "Reading the wallet…" : "The bot is not running."}</td></tr>`;
+
+  $("ev-body").innerHTML = (o.events || []).length ? o.events.map(ev => `<div class="ev ${esc(ev.lvl)}"><time>${new Date(ev.ts * 1000).toLocaleTimeString([], { hour12: false })}</time><span>${esc(ev.msg)}</span></div>`).join("") : `<div class="empty">No events yet.</div>`;
+
+  // mode box + engine facts
+  const box = $("mode-box"), armed = o.mode === "live";
+  box.className = "mode-box" + (armed ? " armed" : "");
+  $("mode-title").textContent = armed ? "LIVE trading armed" : "Dry-run (simulated)";
+  $("mode-chip").textContent = armed ? "REAL MONEY" : "SIMULATED"; $("mode-chip").className = "chip " + (armed ? "real" : "sim");
+  $("mode-note").textContent = `${o.mode_note}. ${o.live_ack_env ? "" : `Live also needs ${o.live_ack_var} in .env (see docs/FREQTRADE.md).`}${running ? " Shut the bot down before changing the mode." : ""}`;
+  $("btn-mode-dry").disabled = !armed || running; $("btn-mode-live").disabled = armed || running;
+  const keys = Object.keys(o.keys || {});
+  $("engine-kv").innerHTML = [["Runner", o.runner], ["Freqtrade", e.version || (o.webserver.version || "–")], ["API", o.api_url], ["Webserver", `${o.webserver.state}${o.webserver.api_ok ? " · ok" : ""}`], ["Keys stored", keys.length ? keys.join(", ") : "none"], ["user_data", o.user_data]]
+    .map(([l, v]) => `<div><div class="l">${l}</div><div class="v" title="${esc(v)}">${esc(v)}</div></div>`).join("");
+  $("btn-bot-reload").disabled = !running; $("btn-engine-restart").disabled = !running && e.state !== "error";
+  $("keys-have").innerHTML = keys.length ? "Stored: " + keys.map(k => `<b>${esc(k)}</b> (${esc(o.keys[k].key_hint)}, ${new Date(o.keys[k].updated_at * 1000).toLocaleDateString()})`).join(", ") : "No exchange keys stored. Dry-run does not need any.";
+  if (!$("key-exchange").value) $("key-exchange").value = c.exchange;
+  fillConfig(c, o.strategies);
+}
+
+// ---- settings form -----------------------------------------------------------------------------------------------
+let CFG_DIRTY = false, CFG_FILLED = false;
+function fillConfig(c, strategies) {
+  const fill = (sel, list, cur) => { const s = $(sel); const want = list.includes(cur) || !cur ? list : [cur, ...list]; if (s.dataset.k !== want.join(",")) { s.innerHTML = want.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join(""); s.dataset.k = want.join(","); } };
+  fill("cfg-strategy", strategies.length ? strategies : [c.strategy], c.strategy);
+  fill("bt-strategy", strategies.length ? strategies : [c.strategy], c.strategy);
+  if (CFG_DIRTY || CFG_FILLED) return;
+  CFG_FILLED = true;
+  for (const k of ["exchange", "trading_mode", "stake_currency", "stake_amount", "max_open_trades", "dry_run_wallet", "strategy", "timeframe", "pairlist", "volume_assets"]) $("cfg-" + k).value = c[k];
+  $("cfg-pairs").value = c.pairs.join("\n"); $("cfg-blacklist").value = c.blacklist.join(", ");
+  $("bt-strategy").value = c.strategy; $("bt-mot").value = c.max_open_trades; $("bt-stake").value = c.stake_amount; $("bt-wallet").value = c.dry_run_wallet; $("bt-pairs").value = c.pairs.join("\n");
+  const to = new Date(), from = new Date(Date.now() - 30 * 86400e3), iso = d => d.toISOString().slice(0, 10);
+  $("bt-from").value = iso(from); $("bt-to").value = iso(to);
+}
+$("cfg-form").addEventListener("input", () => { CFG_DIRTY = true; });
+$("btn-cfg-save").addEventListener("click", e => run(e.currentTarget, "cfg-msg", async () => {
+  const body = {};
+  for (const k of ["exchange", "trading_mode", "stake_currency", "stake_amount", "max_open_trades", "dry_run_wallet", "strategy", "timeframe", "pairlist", "volume_assets"]) body[k] = $("cfg-" + k).value;
+  body.pairs = $("cfg-pairs").value; body.blacklist = $("cfg-blacklist").value;
+  const d = await post("/api/freqtrade/config", body);
+  CFG_DIRTY = false; CFG_FILLED = false;
+  $("bt-pairs").value = d.config.pairs.join("\n"); $("bt-strategy").value = d.config.strategy;
+  return d;
+}, d => `Saved. ${OV && OV.engine.state === "running" ? "Relaunch the bot to apply." : ""}`));
+$("btn-pairs-pick").addEventListener("click", e => run(e.currentTarget, "cfg-msg", async () => {
+  const d = await get("/api/freqtrade/pairs?markets=1");
+  $("markets-box").hidden = false;
+  $("markets-list").innerHTML = (d.markets || []).slice(0, 600).map(m => `<button type="button" class="mini" data-pair="${esc(m)}">${esc(m)}</button>`).join("") || `<span class="mut">none</span>`;
+  return d;
+}, d => `${(d.markets || []).length} markets on the exchange quoted in ${d.stake}; ${(d.downloaded || []).length} pair/timeframe sets have downloaded candles.`));
+$("markets-list").addEventListener("click", e => { const p = e.target.dataset && e.target.dataset.pair; if (!p) return; const ta = $("cfg-pairs"); const have = ta.value.split(/[\s,;]+/).filter(Boolean); if (!have.includes(p)) { ta.value = [...have, p].join("\n"); CFG_DIRTY = true; } });
+$("btn-strategy-view").addEventListener("click", e => run(e.currentTarget, "cfg-msg", async () => {
+  const d = await get("/api/freqtrade/strategy?name=" + encodeURIComponent($("cfg-strategy").value));
+  $("strategy-details").hidden = false; $("strategy-details").open = true;
+  $("strategy-summary").textContent = `${d.strategy} · timeframe ${d.timeframe || "?"} · ${(d.params || []).length} parameters`;
+  $("strategy-code").textContent = d.code;
+  return d;
+}, d => `Loaded ${d.strategy} (${d.code.split("\n").length} lines).`));
+
+// ---- keys --------------------------------------------------------------------------------------------------------
+$("btn-key-save").addEventListener("click", e => run(e.currentTarget, "key-msg", async () => {
+  const d = await post("/api/freqtrade/exchange", { exchange: $("key-exchange").value, key: $("key-key").value, secret: $("key-secret").value, password: $("key-password").value });
+  $("key-key").value = $("key-secret").value = $("key-password").value = "";
+  return d;
+}, "Keys saved. They are never shown again."));
+$("btn-key-delete").addEventListener("click", e => { const ex = $("key-exchange").value; if (!confirm(`Delete the stored keys for ${ex}?`)) return; run(e.currentTarget, "key-msg", () => post("/api/freqtrade/exchange", { exchange: ex, delete: true }), d => d.deleted ? "Keys deleted." : "There were no keys for that exchange."); });
+
+// ---- mode & engine -----------------------------------------------------------------------------------------------
+$("btn-mode-dry").addEventListener("click", e => run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/mode", { mode: "dry_run" }), "Dry-run set."));
+$("btn-mode-live").addEventListener("click", e => {
+  const phrase = OV ? OV.live_confirm_phrase : "TRADE REAL MONEY";
+  const typed = prompt(`Arm LIVE trading on ${OV.config.exchange}?\n\nThe next launch will send REAL orders with your stored API keys, sized ${OV.config.stake_amount} ${OV.config.stake_currency} per trade, up to ${OV.config.max_open_trades} open trades.\n\nType exactly:  ${phrase}`);
+  if (typed == null) return;
+  run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/mode", { mode: "live", confirm: typed }), "LIVE mode armed. Launch the bot to start; shut it down to disarm.");
+});
+$("btn-engine").addEventListener("click", e => {
+  const running = OV && (OV.engine.state === "running" || OV.engine.state === "starting");
+  if (running) { if (!confirm("Shut down the Freqtrade process?\n\nOpen trades stay in Freqtrade's database (and on the exchange in live mode) and are picked up again at the next launch.")) return; return run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/engine", { action: "stop" }), "Shut down."); }
+  if (OV && !OV.next_launch_dry_run) {
+    const typed = prompt(`LAUNCH LIVE: ${OV.config.strategy} on ${OV.config.exchange} will trade REAL money.\n\nType exactly:  ${OV.live_confirm_phrase}`);
+    if (typed !== OV.live_confirm_phrase) { say("engine-msg", "Not launched: the confirmation did not match.", true); return; }
+  }
+  run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/engine", { action: "start" }), d => `Launching (${d.status.next_launch_dry_run ? "dry-run" : "LIVE"})…`);
+});
+$("btn-engine-restart").addEventListener("click", e => { if (!confirm("Relaunch Freqtrade with the saved settings?")) return; run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/engine", { action: "restart" }), "Relaunching…"); });
+$("btn-ws-restart").addEventListener("click", e => run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/webserver", { action: "restart" }), "Webserver restarting…"));
+$("btn-bot-reload").addEventListener("click", e => run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/bot", { action: "reload" }), d => d.result.status));
+$("btn-bot-pause").addEventListener("click", e => run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/bot", { action: e.currentTarget.dataset.act || "pause" }), d => d.result.status));
+$("btn-bot-stop").addEventListener("click", e => { if (!confirm("Stop the trading loop?\n\nOpen trades are then no longer managed (no stop-loss, no exits) until you press Start trading again. To close them use Exit.")) return; run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/bot", { action: "stop" }), d => d.result.status); });
+$("open-body").addEventListener("click", e => {
+  const id = e.target.dataset && e.target.dataset.exit; if (!id) return;
+  const real = OV && OV.engine.dry_run === false;
+  if (!confirm(`Close trade #${id} at market now?${real ? "\n\nThis sends a REAL exit order." : ""}`)) return;
+  run(e.target, null, () => post("/api/freqtrade/forceexit", { tradeid: id }));
+});
+$("btn-exit-all").addEventListener("click", e => { if (!confirm(`Close ALL open trades at market?${OV && OV.engine.dry_run === false ? "\n\nThese are REAL exit orders." : ""}`)) return; run(e.currentTarget, "engine-msg", () => post("/api/freqtrade/forceexit", { tradeid: "all" }), "Exit requested for all trades."); });
+
+// ---- trade history -----------------------------------------------------------------------------------------------
+async function loadHist() {
+  if (!OV || OV.engine.state !== "running") { $("hist-body").innerHTML = `<tr><td colspan="10" class="empty">The bot is not running.</td></tr>`; $("hist-page").textContent = ""; return; }
+  try {
+    const d = await get(`/api/freqtrade/trades?limit=${HIST.limit}&offset=${HIST.offset}`);
+    HIST.total = d.total_trades || 0;
+    const rows = d.trades.filter(t => !t.is_open).sort((a, b) => (b.close_timestamp || 0) - (a.close_timestamp || 0));
+    $("hist-hint").innerHTML = `${HIST.total} trades in Freqtrade's database · ${realChip(d.dry_run)}`;
+    $("hist-body").innerHTML = rows.length ? rows.map(t => `<tr><td class="n mut">${t.trade_id}</td><td class="sym">${esc(t.pair)}</td><td>${side(t)}</td><td class="n mut">${dtm(t.open_timestamp)} → ${dtm(t.close_timestamp)}</td><td class="n">${px(t.open_rate)} → ${px(t.close_rate)}</td><td class="n">${Number(t.stake_amount).toFixed(2)}</td><td class="n ${cls(t.profit_abs)}">${money(t.profit_abs)}</td><td class="n ${cls(t.profit_ratio)}">${pct(t.profit_ratio)}</td><td class="l mut">${esc(t.exit_reason || "")}</td><td class="l mut">${esc(t.enter_tag || "")}</td></tr>`).join("") : `<tr><td colspan="10" class="empty">No closed trades${HIST.offset ? " on this page" : " yet"}.</td></tr>`;
+    $("hist-page").textContent = HIST.total ? `${HIST.offset + 1}–${Math.min(HIST.total, HIST.offset + HIST.limit)} of ${HIST.total}` : "";
+    $("hist-prev").disabled = HIST.offset === 0; $("hist-next").disabled = HIST.offset + HIST.limit >= HIST.total;
+  } catch (e) { $("hist-body").innerHTML = `<tr><td colspan="10" class="empty neg">${esc(e.message)}</td></tr>`; }
+}
+$("hist-prev").addEventListener("click", () => { HIST.offset = Math.max(0, HIST.offset - HIST.limit); loadHist(); });
+$("hist-next").addEventListener("click", () => { HIST.offset += HIST.limit; loadHist(); });
+$("btn-hist-refresh").addEventListener("click", loadHist);
+
+// ---- P&L by period + performance ----------------------------------------------------------------------------------
+function drawBars(svg, rows, valueOf, labelOf) {
+  const W = svg.clientWidth || 600, H = svg.clientHeight || 180, padL = 54, padR = 10, padT = 10, padB = 22;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.innerHTML = "";
+  if (!rows.length) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">no data</text>`; return; }
+  const vals = rows.map(valueOf), cum = []; let run = 0; for (const v of vals) { run += v; cum.push(run); }
+  const lo = Math.min(0, ...vals, ...cum), hi = Math.max(0, ...vals, ...cum), span = (hi - lo) || 1;
+  const y = v => padT + (hi - v) / span * (H - padT - padB), x = i => padL + i * (W - padL - padR) / rows.length, bw = Math.max(2, (W - padL - padR) / rows.length - 3);
+  const col = getComputedStyle(document.documentElement);
+  let out = `<line x1="${padL}" x2="${W - padR}" y1="${y(0)}" y2="${y(0)}" stroke="${col.getPropertyValue("--line")}"/>`;
+  for (const v of [hi, lo]) out += `<text x="${padL - 6}" y="${y(v) + 4}" text-anchor="end">${v.toFixed(Math.abs(v) >= 100 ? 0 : 2)}</text>`;
+  rows.forEach((r, i) => { const v = vals[i]; out += `<rect x="${x(i)}" y="${Math.min(y(v), y(0))}" width="${bw}" height="${Math.max(1, Math.abs(y(v) - y(0)))}" fill="${col.getPropertyValue(v >= 0 ? "--pos" : "--neg")}" opacity=".85"><title>${esc(labelOf(r))}: ${v.toFixed(4)}</title></rect>`; });
+  out += `<polyline fill="none" stroke="${col.getPropertyValue("--accent")}" stroke-width="1.6" points="${cum.map((v, i) => `${x(i) + bw / 2},${y(v)}`).join(" ")}"/>`;
+  const step = Math.ceil(rows.length / 8);
+  rows.forEach((r, i) => { if (i % step === 0) out += `<text x="${x(i) + bw / 2}" y="${H - 6}" text-anchor="middle">${esc(labelOf(r)).slice(5)}</text>`; });
+  svg.innerHTML = out;
+}
+async function loadPnl() {
+  document.querySelectorAll("[data-per]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.per === PNL_PER)));
+  if (!OV || OV.engine.state !== "running") { $("pnl-body").innerHTML = `<tr><td colspan="6" class="empty">The bot is not running.</td></tr>`; $("pnl-sum").innerHTML = ""; drawBars($("pnl-chart"), [], () => 0, () => ""); return; }
+  try {
+    const d = await get(`/api/freqtrade/pnl?period=${PNL_PER}`), rows = (d.data || []).slice().sort((a, b) => a.date < b.date ? -1 : 1);
+    const total = rows.reduce((t, r) => t + r.abs_profit, 0), trades = rows.reduce((t, r) => t + r.trade_count, 0), best = rows.reduce((m, r) => r.abs_profit > (m ? m.abs_profit : -Infinity) ? r : m, null), worst = rows.reduce((m, r) => r.abs_profit < (m ? m.abs_profit : Infinity) ? r : m, null);
+    const kpi = (l, v, c, s) => `<div class="kpi"><div class="l">${l}</div><div class="v ${c || ""}">${v}</div><div class="s">${s || ""}</div></div>`;
+    $("pnl-sum").innerHTML = kpi("Total", money(total, d.stake_currency), cls(total), `${rows.length} ${PNL_PER}s`) + kpi("Trades", trades, "", `${trades && rows.length ? (trades / rows.length).toFixed(1) : 0} per ${PNL_PER}`) + kpi("Best", best ? money(best.abs_profit, d.stake_currency) : "–", best ? cls(best.abs_profit) : "", best ? best.date : "") + kpi("Worst", worst ? money(worst.abs_profit, d.stake_currency) : "–", worst ? cls(worst.abs_profit) : "", worst ? worst.date : "");
+    drawBars($("pnl-chart"), rows, r => r.abs_profit, r => r.date);
+    let run = 0;
+    $("pnl-body").innerHTML = rows.slice().reverse().map(r => "").join("") && "";
+    const out = []; for (const r of rows) { run += r.abs_profit; out.push({ r, run }); }
+    $("pnl-body").innerHTML = out.reverse().map(({ r, run }) => `<tr class="${r.trade_count ? "" : "mut"}"><td>${esc(r.date)}</td><td class="n ${cls(r.abs_profit)}">${money(r.abs_profit, d.stake_currency)}</td><td class="n ${cls(r.rel_profit)}">${pct(r.rel_profit)}</td><td class="n">${r.trade_count}</td><td class="n mut">${Number(r.starting_balance).toFixed(2)}</td><td class="n ${cls(run)}">${money(run, d.stake_currency)}</td></tr>`).join("") || `<tr><td colspan="6" class="empty">No data.</td></tr>`;
+    $("pnl-note").innerHTML = `Closed-trade profit per ${PNL_PER} in ${esc(d.stake_currency)}, from Freqtrade's /${PNL_PER === "day" ? "daily" : PNL_PER + "ly"} report · ${realChip(d.dry_run)}`;
+  } catch (e) { $("pnl-body").innerHTML = `<tr><td colspan="6" class="empty neg">${esc(e.message)}</td></tr>`; }
+}
+document.querySelector(".card [data-per]").parentElement.addEventListener("click", e => { const b = e.target.closest("[data-per]"); if (!b) return; PNL_PER = b.dataset.per; lsSet("ft-pnl-per", PNL_PER); loadPnl(); });
+async function loadPerf() {
+  if (!OV || OV.engine.state !== "running") { $("perf-body").innerHTML = `<tr><td colspan="4" class="empty">The bot is not running.</td></tr>`; return; }
+  try {
+    const d = await get("/api/freqtrade/performance");
+    $("perf-body").innerHTML = d.performance.length ? d.performance.map(r => `<tr><td class="sym">${esc(r.pair)}</td><td class="n">${r.count}</td><td class="n ${cls(r.profit_abs)}">${money(r.profit_abs)}</td><td class="n ${cls(r.profit_ratio)}">${pct(r.profit_ratio)}</td></tr>`).join("") : `<tr><td colspan="4" class="empty">No closed trades yet.</td></tr>`;
+  } catch (e) { $("perf-body").innerHTML = `<tr><td colspan="4" class="empty neg">${esc(e.message)}</td></tr>`; }
+}
+
+// ---- equity history (the dashboard's snapshots) --------------------------------------------------------------------
+async function loadEquity() {
+  document.querySelectorAll("[data-hours]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.hours) === EQ_H)));
+  try {
+    const d = await get(`/api/freqtrade/history?hours=${EQ_H}`), svg = $("eq-chart"), rows = d.snapshots || [];
+    const W = svg.clientWidth || 600, H = svg.clientHeight || 180, padL = 60, padR = 60, padT = 10, padB = 22;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    if (rows.length < 2) { svg.innerHTML = `<text x="${W / 2}" y="${H / 2}" text-anchor="middle">${rows.length ? "one snapshot so far" : "no snapshots yet: they are recorded every minute while the bot runs"}</text>`; return; }
+    const col = getComputedStyle(document.documentElement), t0 = rows[0].ts, t1 = rows[rows.length - 1].ts, x = t => padL + (t - t0) / ((t1 - t0) || 1) * (W - padL - padR);
+    const line = (key, color, sideX, anchor) => {
+      const vals = rows.map(r => Number(r[key] || 0)), lo = Math.min(...vals), hi = Math.max(...vals), span = (hi - lo) || 1, y = v => padT + (hi - v) / span * (H - padT - padB);
+      return `<polyline fill="none" stroke="${color}" stroke-width="1.6" points="${rows.map((r, i) => `${x(r.ts)},${y(vals[i])}`).join(" ")}"/><text x="${sideX}" y="${padT + 8}" text-anchor="${anchor}" fill="${color}">${hi.toFixed(2)}</text><text x="${sideX}" y="${H - padB}" text-anchor="${anchor}">${lo.toFixed(2)}</text>`;
+    };
+    svg.innerHTML = line("balance", col.getPropertyValue("--accent"), padL - 6, "end") + line("profit_all", col.getPropertyValue("--pos"), W - padR + 6, "start") +
+      `<text x="${padL}" y="${H - 6}">${dtm(t0 * 1000)}</text><text x="${W - padR}" y="${H - 6}" text-anchor="end">${dtm(t1 * 1000)}</text>` +
+      `<text x="${W / 2}" y="${H - 6}" text-anchor="middle">balance (left, ${esc(rows[rows.length - 1].stake)}) · total profit (right) · ${rows.length} snapshots · ${esc(rows[rows.length - 1].mode)}</text>`;
+  } catch (e) { $("eq-hint").textContent = e.message; }
+}
+document.querySelector("[data-hours]").parentElement.addEventListener("click", e => { const b = e.target.closest("[data-hours]"); if (!b) return; EQ_H = Number(b.dataset.hours); loadEquity(); });
+
+// ---- logs ----------------------------------------------------------------------------------------------------------
+async function loadLogs() {
+  document.querySelectorAll("[data-log]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.log === LOG)));
+  try {
+    const d = await get(`/api/freqtrade/logs?kind=${LOG}&limit=200`), el = $("log-body"), atEnd = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+    const lines = d.api ? d.api.map(l => `${l[0]} ${l[3] || ""} ${l[2]}: ${l[4]}`) : d.file;
+    el.innerHTML = lines.length ? lines.map(l => `<span class="${/ERROR|Traceback|Exception/.test(l) ? "e" : /WARNING/.test(l) ? "w" : ""}">${esc(l)}</span>`).join("\n") : `— no log yet (process ${d.state}) —`;
+    if (atEnd) el.scrollTop = el.scrollHeight;
+  } catch (e) { $("log-body").textContent = e.message; }
+}
+document.querySelector("[data-log]").parentElement.addEventListener("click", e => { const b = e.target.closest("[data-log]"); if (!b) return; LOG = b.dataset.log; loadLogs(); });
+$("btn-log-refresh").addEventListener("click", loadLogs);
+
+// ---- backtesting ------------------------------------------------------------------------------------------------------
+let BT_TIMER = null;
+for (const sel of ["bt-tf", "cfg-timeframe"]) for (const tf of TIMEFRAMES) { const o = document.createElement("option"); o.value = o.textContent = tf; $(sel).appendChild(o); }
+const ymd = s => s ? s.replace(/-/g, "") : "";
+$("bt-run").addEventListener("click", e => run(e.currentTarget, "bt-msg", async () => {
+  const body = { strategy: $("bt-strategy").value, timeframe: $("bt-tf").value, timerange: `${ymd($("bt-from").value)}-${ymd($("bt-to").value)}`, pairs: $("bt-pairs").value, max_open_trades: $("bt-mot").value, stake_amount: $("bt-stake").value, dry_run_wallet: $("bt-wallet").value, download: $("bt-download").checked, enable_protections: $("bt-prot").checked };
+  const d = await post("/api/freqtrade/backtest", body);
+  renderBt(d.backtest); pollBt();
+  return d;
+}, "Backtest started."));
+$("bt-abort").addEventListener("click", e => run(e.currentTarget, "bt-msg", () => post("/api/freqtrade/backtest", { action: "abort" }), "Abort requested."));
+function pollBt() { clearTimeout(BT_TIMER); BT_TIMER = setTimeout(async () => { try { const d = await get("/api/freqtrade/backtest"); renderBt(d); if (d.running) pollBt(); else loadBtHistory(); } catch (_) { pollBt(); } }, 1500); }
+function renderBt(bt) {
+  $("bt-abort").hidden = !bt.running; $("bt-run").disabled = bt.running;
+  $("bt-bar").style.width = `${Math.round((bt.progress || 0) * 100)}%`;
+  $("bt-status").textContent = bt.state === "idle" ? "" : `${bt.state}${bt.message ? " · " + bt.message : ""}${bt.running ? ` · ${dur((Date.now() / 1000) - bt.started_at)}` : ""}`;
+  $("bt-status").className = "note " + (bt.state === "error" ? "neg" : "");
+  if (bt.state === "done" && bt.result) renderBtResult(bt.result, bt.request);
+  else if (bt.running || bt.state === "error") $("bt-result").hidden = true;
+}
+function renderBtResult(r, req) {
+  $("bt-result").hidden = false;
+  const cur = r.stake_currency || CUR, kv = (l, v, c) => `<div><div class="l">${l}</div><div class="v ${c || ""}" title="${esc(v)}">${v}</div></div>`;
+  $("bt-kv").innerHTML = kv("Strategy", esc(r.strategy)) + kv("Period", `${esc((r.backtest_start || "").slice(0, 10))} → ${esc((r.backtest_end || "").slice(0, 10))}`) + kv("Timeframe", esc(r.timeframe || (req && req.timeframe) || "")) +
+    kv("Trades", `${r.total_trades} (${r.trades_per_day}/day)`) + kv("Total profit", money(r.profit_total_abs, cur, 2), cls(r.profit_total_abs)) + kv("Return", pct(r.profit_total), cls(r.profit_total)) +
+    kv("Win rate", r.total_trades ? `${(r.winrate * 100).toFixed(0)}% (${r.wins}W ${r.draws}D ${r.losses}L)` : "–") + kv("Avg trade", pct(r.profit_mean), cls(r.profit_mean)) + kv("Max drawdown", `${pct(r.max_drawdown_account)} (${money(-Math.abs(r.max_drawdown_abs || 0), cur, 2)})`, "neg") +
+    kv("Sharpe / Sortino", `${Number(r.sharpe || 0).toFixed(2)} / ${Number(r.sortino || 0).toFixed(2)}`) + kv("Profit factor", r.profit_factor == null ? "–" : Number(r.profit_factor).toFixed(2)) + kv("CAGR", pct(r.cagr)) +
+    kv("Market change", pct(r.market_change), cls(r.market_change)) + kv("Balance", `${Number(r.starting_balance).toFixed(0)} → ${Number(r.final_balance).toFixed(2)} ${esc(cur)}`) + kv("Avg hold", esc(r.holding_avg || "–")) +
+    kv("Best / worst pair", `${esc(r.best_pair && r.best_pair.key || "–")} / ${esc(r.worst_pair && r.worst_pair.key || "–")}`);
+  const daily = (r.daily_profit || []).map(d => ({ date: Array.isArray(d) ? d[0] : d.date, abs: Array.isArray(d) ? d[1] : d.abs_profit }));
+  drawBars($("bt-chart"), daily, d => Number(d.abs || 0), d => String(d.date));
+  const wdl = x => `${x.wins}/${x.draws}/${x.losses}`;
+  $("bt-pairs-body").innerHTML = (r.per_pair || []).map(p => `<tr class="${p.key === "TOTAL" ? "sym" : ""}"><td class="sym">${esc(p.key)}</td><td class="n">${p.trades}</td><td class="n ${cls(p.profit_mean)}">${pct(p.profit_mean)}</td><td class="n ${cls(p.profit_total_abs)}">${money(p.profit_total_abs, cur, 2)}</td><td class="n ${cls(p.profit_total)}">${pct(p.profit_total)}</td><td class="n">${wdl(p)}</td><td class="n">${p.trades ? (p.winrate * 100).toFixed(0) + "%" : "–"}</td><td class="n mut">${esc(p.duration_avg || "")}</td></tr>`).join("") || `<tr><td colspan="8" class="empty">No trades.</td></tr>`;
+  $("bt-exits-body").innerHTML = (r.exit_reasons || []).map(x => `<tr><td class="l">${esc(x.exit_reason)}</td><td class="n">${x.trades}</td><td class="n ${cls(x.profit_total_abs)}">${money(x.profit_total_abs, cur, 2)}</td><td class="n ${cls(x.profit_total)}">${pct(x.profit_total)}</td><td class="n">${wdl(x)}</td></tr>`).join("") || `<tr><td colspan="5" class="empty">No trades.</td></tr>`;
+  $("bt-trades-note").textContent = r.trades_truncated ? "(first 1000 shown)" : `(${(r.trades || []).length})`;
+  $("bt-trades-body").innerHTML = (r.trades || []).slice(0, 300).map(t => `<tr><td class="sym">${esc(t.pair)}</td><td>${side(t)}</td><td class="n mut">${dtm(t.open_timestamp)} → ${dtm(t.close_timestamp)}</td><td class="n">${px(t.open_rate)} → ${px(t.close_rate)}</td><td class="n">${Number(t.stake_amount).toFixed(2)}</td><td class="n ${cls(t.profit_abs)}">${money(t.profit_abs, cur, 2)}</td><td class="n ${cls(t.profit_ratio)}">${pct(t.profit_ratio)}</td><td class="l mut">${esc(t.exit_reason)}</td><td class="l mut">${esc(t.enter_tag || "")}</td></tr>`).join("") || `<tr><td colspan="9" class="empty">No trades.</td></tr>`;
+}
+async function loadBtHistory() {
+  try {
+    const d = await get("/api/freqtrade/backtest/history");
+    const saved = {}; for (const s of d.saved || []) saved[`${s.strategy}|${s.timerange}`] = s;
+    $("bt-hist-body").innerHTML = (d.history || []).length ? d.history.map(h => `<tr><td class="l mut">${dtm(h.backtest_start_time * 1000)}</td><td class="l">${esc(h.strategy)}</td><td class="l mut">${h.backtest_start_ts ? dtm(h.backtest_start_ts * 1000).slice(0, 10) + " → " + dtm(h.backtest_end_ts * 1000).slice(0, 10) : ""}</td><td class="n">${esc(h.timeframe || "")}</td><td class="n mut" colspan="3">${esc(h.notes || "")}</td><td><button type="button" class="mini" data-file="${esc(h.filename)}" data-strategy="${esc(h.strategy)}">Open</button></td></tr>`).join("")
+      : `<tr><td colspan="8" class="empty">No saved backtests${d.history ? "" : " (the webserver is not running)"}.</td></tr>`;
+  } catch (e) { $("bt-hist-body").innerHTML = `<tr><td colspan="8" class="empty mut">${esc(e.message)}</td></tr>`; }
+}
+$("bt-hist-body").addEventListener("click", e => { const b = e.target.closest("[data-file]"); if (!b) return; run(b, "bt-msg", async () => { const r = await get(`/api/freqtrade/backtest/result?filename=${encodeURIComponent(b.dataset.file)}&strategy=${encodeURIComponent(b.dataset.strategy)}`); renderBtResult(r, null); $("bt-result").scrollIntoView({ behavior: "smooth" }); return r; }, "Loaded."); });
+async function loadExchanges() {
+  try { const d = await get("/api/freqtrade/exchanges"); $("exchanges").innerHTML = d.exchanges.filter(x => x.valid !== false).map(x => `<option value="${esc(x.name)}">${esc(x.label)}${x.supported ? " · supported" : ""}${(x.trade_modes || []).length ? " · " + x.trade_modes.map(m => m.trading_mode).join("/") : ""}</option>`).join(""); }
+  catch (_) { setTimeout(loadExchanges, 15000); }
+}
+
+// ---- theme + loops ---------------------------------------------------------------------------------------------------
+const THEMES = [["auto", "◐ Auto", "follows the system"], ["light", "☀ Light", "light"], ["dark", "☾ Dark", "dark"]];
+function applyTheme(t) {
+  const i = Math.max(0, THEMES.findIndex(x => x[0] === t));
+  if (THEMES[i][0] === "auto") delete document.documentElement.dataset.theme; else document.documentElement.dataset.theme = THEMES[i][0];
+  $("btn-theme").textContent = THEMES[i][1]; $("btn-theme").title = `Theme: ${THEMES[i][2]} (click to change)`;
+  requestAnimationFrame(() => { loadPnl(); loadEquity(); });
+}
+$("btn-theme").addEventListener("click", () => { const cur = document.documentElement.dataset.theme || "auto", next = THEMES[(THEMES.findIndex(x => x[0] === cur) + 1) % THEMES.length][0]; lsSet("theme", next); applyTheme(next); });
+applyTheme(lsGet("theme") || "auto");
+
+let lastEngine = null;
+async function tick() {
+  if (document.hidden) return;
+  await refresh();
+  if (!OV) return;
+  const key = `${OV.engine.state}:${OV.engine.api_ok}`;
+  if (key !== lastEngine) { lastEngine = key; loadHist(); loadPnl(); loadPerf(); loadLogs(); loadEquity(); loadBtHistory(); if (OV.webserver.state === "running") loadExchanges(); }
+  if (OV.backtest && OV.backtest.running && !BT_TIMER) pollBt();
+  else if (OV.backtest && !OV.backtest.running && OV.backtest.state !== "idle") renderBt(OV.backtest);
+}
+if (ENABLED) {
+  tick();
+  setInterval(tick, 3000);
+  setInterval(() => { if (!document.hidden && OV && OV.engine.state === "running") { loadHist(); loadPnl(); loadPerf(); } }, 30000);
+  setInterval(() => { if (!document.hidden) { loadLogs(); loadEquity(); } }, 15000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) tick(); });
+  window.addEventListener("resize", () => { loadPnl(); loadEquity(); });
+} else refresh();
+</script>
+</body>
+</html>

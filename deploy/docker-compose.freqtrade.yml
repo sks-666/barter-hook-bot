@@ -1,0 +1,39 @@
+# Freqtrade as a separate service, from the official image (https://github.com/freqtrade/freqtrade, docs/docker_quickstart.md).
+# Used when config.toml says `freqtrade.runner = "docker"`: the dashboard's manager (freqkit/manager.py) runs
+#   docker compose -f deploy/docker-compose.freqtrade.yml up -d freqtrade             (the trading bot)
+#   docker compose -f deploy/docker-compose.freqtrade.yml up -d freqtrade-webserver   (backtesting / data / strategies)
+# and writes the two config files into ft_user_data/ first (config.json carries the exchange keys: mode 0600).
+# Both APIs are published on 127.0.0.1 only, as the Freqtrade docs insist: never expose them to the internet.
+#
+# Manual use (without the dashboard) works too, e.g.:
+#   FT_USER_DATA=$PWD/ft_user_data docker compose -f deploy/docker-compose.freqtrade.yml run --rm freqtrade \
+#       backtesting --config /freqtrade/user_data/config.webserver.json --strategy SampleStrategy --timerange 20250101-20250201
+services:
+  freqtrade:
+    image: freqtradeorg/freqtrade:stable
+    container_name: arbbot-freqtrade
+    restart: unless-stopped
+    volumes:
+      - "${FT_USER_DATA:-../ft_user_data}:/freqtrade/user_data"
+    ports:
+      - "127.0.0.1:${FT_API_PORT:-8080}:8080"
+    # strategy and db_url come from config.json (written by the manager: dry-run and live use different databases)
+    command: >
+      trade
+      --userdir /freqtrade/user_data
+      --config /freqtrade/user_data/config.json
+      --logfile /freqtrade/user_data/logs/freqtrade-trade.log
+
+  freqtrade-webserver:
+    image: freqtradeorg/freqtrade:stable
+    container_name: arbbot-freqtrade-webserver
+    restart: unless-stopped
+    volumes:
+      - "${FT_USER_DATA:-../ft_user_data}:/freqtrade/user_data"
+    ports:
+      - "127.0.0.1:${FT_WEBSERVER_PORT:-8081}:8080"
+    command: >
+      webserver
+      --userdir /freqtrade/user_data
+      --config /freqtrade/user_data/config.webserver.json
+      --logfile /freqtrade/user_data/logs/freqtrade-webserver.log

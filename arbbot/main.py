@@ -443,9 +443,14 @@ async def amain(args: argparse.Namespace) -> None:
             alert_book = AlertBook(ROOT / "data" / f"alerts-{db_path.stem}.json", send=alerts.send)
             whales.on_marks, whales.on_event = alert_book.check_marks, alert_book.on_event
         from .macro import MacroNews          # the terminal's MACRO / NEWS panel: public data, fetched only when asked
+        freq = None
+        if cfg.freqtrade.enabled and not args.hosted:   # the Freqtrade subsystem: never on an unattended host
+            from freqkit.manager import FreqtradeManager
+            from freqkit.store import FreqStore
+            freq = FreqtradeManager(ROOT, cfg.freqtrade, FreqStore(ROOT / "data" / "freqtrade.db"), session)
         dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client, stats_client=stats_client), paper=ticket,
                          lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
-                         macro=None if args.hosted else MacroNews(session))
+                         macro=None if args.hosted else MacroNews(session), freq=freq)
         if args.hosted:  # public interface: the READ-ONLY page behind a login, never the dashboard with its controls
             hosted_password, hosted_user = settings_from_env()
             runner = web.AppRunner(make_hosted_app(engine, ROOT / "vercel-dashboard" / "views" / "dashboard.html",
@@ -524,6 +529,10 @@ async def amain(args: argparse.Namespace) -> None:
             coros.append(sampler.run())
         if swing is not None:
             coros.append(swing.run())
+        if freq is not None:
+            coros.append(freq.run())
+            log.info("freqtrade: ON (%s runner) -> http://127.0.0.1:%d/trading | API %s | user_data %s | mode: %s",
+                     cfg.freqtrade.runner, cfg.server.port, freq.trade.api.base_url, freq.user_data, freq.store.mode())
         if mirror:
             from .swing_mirror import run_all
             coros.append(run_all(mirror))

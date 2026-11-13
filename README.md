@@ -451,6 +451,22 @@ and opens nothing. Send `/confirm` within 60 s to open it, or `/cancel`. Then `/
   (no model forecast exists for it).
 * **Paper only.** In `--live` mode `/open` and `/close` refuse; real orders are never placed from a chat message.
 
+## Trading bot: Freqtrade (`/trading`, `freqkit/`)
+
+[Freqtrade](https://github.com/freqtrade/freqtrade) runs as a **separate process** (a dedicated venv or the official
+Docker image) and is managed from the dashboard's `/trading` page through Freqtrade's REST API: exchange and pair
+setup, strategy choice, **dry-run by default**, live only after an explicit typed confirmation plus
+`FREQTRADE_LIVE_ACK` in `.env`, start / pause / stop, open trades and history, profit & loss, wallet, performance,
+backtesting with data download, logs and events. Install it once:
+
+```bash
+python3 -m venv .venv-freqtrade && .venv-freqtrade/bin/pip install freqtrade
+```
+
+The paper bot (`config.paper.toml`) has `[freqtrade] enabled = true`; the other configs keep it off because only one
+dashboard may manage the processes. Everything else, including the safety rules and the API list, is in
+[docs/FREQTRADE.md](docs/FREQTRADE.md). Tests: `.venv/bin/python -m unittest tests.test_freqkit`.
+
 ## Hosted read-only dashboard (Vercel)
 
 The bot itself can't run on Vercel (it needs an always-on process, local storage, and Binance blocks many cloud

@@ -125,6 +125,23 @@ class AlertsCfg:
 
 
 @dataclass
+class FreqtradeCfg:
+    """The Freqtrade trading subsystem (freqkit/): a separate Freqtrade process managed from the dashboard's
+    /trading page over Freqtrade's own REST API. Off by default on hosted copies; dry-run is the only start-up mode."""
+    enabled: bool = False
+    runner: str = "local"             # "local" = run the executable below | "docker" = deploy/docker-compose.freqtrade.yml
+    executable: str = ".venv-freqtrade/bin/freqtrade"   # local runner: the freqtrade binary (pip install freqtrade)
+    compose_file: str = "deploy/docker-compose.freqtrade.yml"
+    user_data: str = "ft_user_data"   # strategies, data, logs, the generated config.json and the trade databases
+    api_host: str = "127.0.0.1"       # where Freqtrade's REST API listens; keep it on this machine
+    api_port: int = 8080              # the trading bot's API ("freqtrade trade")
+    webserver_port: int = 8081        # the backtesting / data API ("freqtrade webserver"), started with the dashboard
+    poll_s: float = 5.0               # how often the manager reads status, open trades and profit
+    autostart_webserver: bool = True  # start the backtesting webserver with the dashboard (it never trades)
+    start_timeout_s: float = 90.0     # how long a start may take before it counts as failed
+
+
+@dataclass
 class Config:
     universe: UniverseCfg = field(default_factory=UniverseCfg)
     feed: FeedCfg = field(default_factory=FeedCfg)
@@ -136,6 +153,7 @@ class Config:
     alerts: AlertsCfg = field(default_factory=AlertsCfg)
     recorder: RecorderCfg = field(default_factory=RecorderCfg)
     publisher: PublisherCfg = field(default_factory=PublisherCfg)
+    freqtrade: FreqtradeCfg = field(default_factory=FreqtradeCfg)
 
     def validate(self) -> None:
         if self.feed.mode not in ("ws", "rest", "sim"):
@@ -154,12 +172,20 @@ class Config:
             raise ValueError("strategy.min_samples cannot exceed strategy.lookback")
         if self.risk.trade_notional_usd > self.risk.max_total_notional_usd:
             raise ValueError("risk.trade_notional_usd cannot exceed risk.max_total_notional_usd")
+        if self.freqtrade.runner not in ("local", "docker"):
+            raise ValueError(f"freqtrade.runner must be 'local' or 'docker', got {self.freqtrade.runner!r}")
+        if self.freqtrade.enabled and self.freqtrade.api_port == self.freqtrade.webserver_port:
+            raise ValueError("freqtrade.api_port and freqtrade.webserver_port must differ")
+        if self.freqtrade.enabled and self.server.port in (self.freqtrade.api_port, self.freqtrade.webserver_port):
+            raise ValueError("freqtrade ports must differ from server.port")
+        if self.freqtrade.poll_s < 1:
+            raise ValueError("freqtrade.poll_s must be >= 1")
 
 
 _SECTIONS = {
     "universe": UniverseCfg, "feed": FeedCfg, "fees": FeesCfg, "strategy": StrategyCfg,
     "risk": RiskCfg, "execution": ExecutionCfg, "server": ServerCfg, "alerts": AlertsCfg,
-    "recorder": RecorderCfg, "publisher": PublisherCfg,
+    "recorder": RecorderCfg, "publisher": PublisherCfg, "freqtrade": FreqtradeCfg,
 }
 
 

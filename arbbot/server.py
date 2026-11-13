@@ -108,8 +108,9 @@ LOCKED = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="
 
 class Dashboard:
     def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None,
-                 whales=None, alert_book=None, desk=None, macro=None):
+                 whales=None, alert_book=None, desk=None, macro=None, freq=None):
         self.engine = engine
+        self.freq = freq                          # a freqkit.manager.FreqtradeManager (the /trading page), or None
         self.macro = macro                        # an arbbot.macro.MacroNews (the terminal's MACRO / NEWS panel), or None
         self.desk = desk                          # a callable returning deskkit.report.desk_view(...), or None
         self.alert_book = alert_book              # an arbbot.price_alerts.AlertBook (terminal alerts), or None
@@ -161,6 +162,11 @@ class Dashboard:
             app.router.add_get(page + "/", self.index)
         app.router.add_get("/terminal", self.terminal)     # the read-only terminal view (web/terminal.html)
         app.router.add_get("/terminal/", self.terminal)
+        app.router.add_get("/trading", self.trading)       # the Freqtrade trading bot (web/freqtrade.html, freqkit/)
+        app.router.add_get("/trading/", self.trading)
+        if self.freq is not None:                           # /api/freqtrade/*: reads open, writes need the token
+            from freqkit.routes import add_routes
+            add_routes(app, self, self.freq)
         app.router.add_get("/ws", self.ws)
         app.router.add_get("/api/snapshot", self.snapshot)
         app.router.add_get("/api/pnl", self.pnl)
@@ -372,6 +378,12 @@ class Dashboard:
 
     async def index(self, request: web.Request) -> web.Response:
         html = (self.web_dir / "index.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+    async def trading(self, request: web.Request) -> web.Response:
+        """The Freqtrade page: same control token as the main page; without the subsystem it explains how to enable it."""
+        html = (self.web_dir / "freqtrade.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
+        html = html.replace("__FREQ_ENABLED__", "true" if self.freq is not None else "false")
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def terminal(self, request: web.Request) -> web.Response:
