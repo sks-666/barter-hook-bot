@@ -1,21 +1,59 @@
 #!/bin/bash
 # Double-click to run backtests from a menu. Research only: nothing here places an order or touches your account
-# (the swing backtests download public candles and funding history from Binance; the replays read data/recordings).
-# Every run is also saved to logs/backtests/ (the report as .txt, swing trades as .csv).
+# (the swing backtests download public candles and funding history from Binance; the replays read the chosen bot's
+# recordings, data/recordings-paper or data/recordings-mainnet).
+# Every run is also saved to logs/backtests/<swing|paper|mainnet>/ (the report as .txt, swing trades as .csv).
 cd "$(dirname "$0")" || exit 1
 PY=.venv/bin/python
 OUT=logs/backtests
 mkdir -p "$OUT"
 export PYTHONUNBUFFERED=1            # so the report shows up as it runs, not all at the end
 
+# Each bot keeps its own data, and so do the backtests:
+#   replays     read the chosen bot's recordings with that bot's config; saved to logs/backtests/<bot>/
+#   swing tests use public candles (no bot's data); saved to logs/backtests/swing/, journal data/swing-journal-backtest.db
+BOT=paper                            # whose recordings the replays use: paper | mainnet (testnet records nothing)
+BACKTEST_JOURNAL=data/swing-journal-backtest.db
+set_bot() {   # $1 = paper | mainnet; sets REC (recordings folder) and CFG (that bot's config)
+    case "$1" in
+        paper)   BOT=paper;   REC=data/recordings-paper;   CFG=config.paper.toml ;;
+        mainnet) BOT=mainnet; REC=data/recordings-mainnet; CFG=config.toml ;;
+        *) return 1 ;;
+    esac
+}
+set_bot "$BOT"
+
+choose_bot() {
+    ask "Replay whose recordings: paper or mainnet (testnet does not record)" "$BOT"
+    if [[ "$REPLY" == "testnet" ]]; then
+        echo "  The testnet bot does not record the market (recorder off in config.testnet.toml)."
+    elif ! set_bot "$REPLY"; then
+        echo "  Type paper or mainnet."
+    fi
+    echo "  Replays now use: $BOT ($REC, $CFG)"
+}
+
+choose_journal() {   # sets JOURNAL to the chosen swing journal
+    ask "Which journal: paper, testnet, mainnet or backtest" paper
+    case "$REPLY" in
+        paper)    JOURNAL=data/swing-journal.db ;;
+        testnet)  JOURNAL=data/swing-journal-testnet.db ;;
+        mainnet)  JOURNAL=data/swing-journal-live-mainnet.db ;;
+        backtest) JOURNAL=$BACKTEST_JOURNAL ;;
+        *) echo "  Type paper, testnet, mainnet or backtest."; return 1 ;;
+    esac
+    if [[ ! -f "$JOURNAL" ]]; then echo "  No journal yet: $JOURNAL"; return 1; fi
+}
+
 ask() {   # $1 = question, $2 = default; the answer goes to $REPLY
     read -r -p "  $1 [$2]: " REPLY
     REPLY=${REPLY:-$2}
 }
 
-run() {   # $1 = short name for the saved file, then the command; shows the output and saves it
-    local name=$1; shift
-    local file="$OUT/$(date +%Y-%m-%d_%H%M%S)-$name.txt"
+run() {   # $1 = subfolder of logs/backtests (swing | paper | mainnet), $2 = short name, then the command
+    local dir="$OUT/$1" name=$2; shift 2
+    mkdir -p "$dir"
+    local file="$dir/$(date +%Y-%m-%d_%H%M%S)-$name.txt"
     echo
     echo "  > $*"
     echo
@@ -31,14 +69,14 @@ run() {   # $1 = short name for the saved file, then the command; shows the outp
 }
 
 recordings() {   # the replay tools need recorded days; say so instead of failing
-    if ! ls data/recordings/quotes-*.jsonl.gz >/dev/null 2>&1; then
+    if ! ls "$REC"/quotes-*.jsonl.gz >/dev/null 2>&1; then
         echo
-        echo "  No recordings yet in data/recordings. The bot records the market while it runs on a real feed;"
-        echo "  start it, let it run for a few days, then come back."
+        echo "  No recordings yet in $REC. The $BOT bot records the market while it runs on a real feed;"
+        echo "  let it run for a few days, or switch bots with b)."
         return 1
     fi
     echo
-    echo "  Recorded days: $(ls data/recordings/quotes-*.jsonl.gz | sed 's/.*quotes-//; s/.jsonl.gz//' | tr '\n' ' ')"
+    echo "  $BOT bot, recorded days: $(ls "$REC"/quotes-*.jsonl.gz | sed 's/.*quotes-//; s/.jsonl.gz//' | tr '\n' ' ')"
     echo "  (each day is up to ~100 MB, so this can take a few minutes)"
 }
 
@@ -55,11 +93,12 @@ swing_custom() {
     ask "Save the trades to the journal too? y/n" n; local journal=$REPLY
     if ! [[ "$days" =~ ^[0-9]+$ ]]; then echo "  Days must be a whole number."; return; fi
     local stamp; stamp=$(date +%Y-%m-%d_%H%M%S)
+    mkdir -p "$OUT/swing"
     local cmd=("$PY" swing.py backtest --strategy "$strategy" --symbols "$symbols" --interval "$interval"
-               --days "$days" --risk-pct "$risk" --capital "$capital" --csv "$OUT/$stamp-trades.csv")
+               --days "$days" --risk-pct "$risk" --capital "$capital" --csv "$OUT/swing/$stamp-trades.csv")
     [[ "$short" == "n" || "$short" == "N" ]] && cmd+=(--no-short)
-    [[ "$journal" == "y" || "$journal" == "Y" ]] && cmd+=(--journal)
-    run "swing-$strategy-$interval" "${cmd[@]}"
+    [[ "$journal" == "y" || "$journal" == "Y" ]] && cmd+=(--journal --journal-db "$BACKTEST_JOURNAL")
+    run swing "swing-$strategy-$interval" "${cmd[@]}"
 }
 
 while true; do
@@ -70,9 +109,10 @@ while true; do
     echo "    1) All three strategies, 2 years of 4h candles, BTC ETH SOL BNB XRP"
     echo "    2) All three strategies, 4 years of daily candles"
     echo "    3) Choose: strategy, coins, candle size, days, risk, shorts"
-    echo "    4) Journal summary (backtests you saved to the journal, and paper trades)"
+    echo "    4) Journal summary (choose: paper, testnet, mainnet or saved backtests)"
     echo
-    echo "  Arbitrage bot: replay the days it recorded (data/recordings)"
+    echo "  Arbitrage bot: replay the days the $BOT bot recorded ($REC, $CFG)"
+    echo "    b) Switch bot: paper or mainnet"
     echo "    5) What has been recorded"
     echo "    6) Replay the strategy over the recorded days"
     echo "    7) Compare settings (sweep), e.g. strategy.z_entry=2.5,3,4,5"
@@ -82,20 +122,23 @@ while true; do
     echo
     read -r -p "Choose: " choice
     case "$choice" in
-        1) run swing-all-4h "$PY" swing.py backtest --csv "$OUT/$(date +%Y-%m-%d_%H%M%S)-trades.csv" ;;
-        2) run swing-all-1d "$PY" swing.py backtest --interval 1d --days 1460 \
-               --csv "$OUT/$(date +%Y-%m-%d_%H%M%S)-trades.csv" ;;
+        1) mkdir -p "$OUT/swing"
+           run swing swing-all-4h "$PY" swing.py backtest --csv "$OUT/swing/$(date +%Y-%m-%d_%H%M%S)-trades.csv" ;;
+        2) mkdir -p "$OUT/swing"
+           run swing swing-all-1d "$PY" swing.py backtest --interval 1d --days 1460 \
+               --csv "$OUT/swing/$(date +%Y-%m-%d_%H%M%S)-trades.csv" ;;
         3) swing_custom ;;
-        4) run journal "$PY" swing.py journal --summary ;;
-        5) recordings && run replay-info "$PY" backtest.py info ;;
-        6) recordings && run replay "$PY" backtest.py replay ;;
+        4) choose_journal && run swing "journal-$(basename "$JOURNAL" .db)" "$PY" swing.py journal --db "$JOURNAL" --summary ;;
+        b|B) choose_bot ;;
+        5) recordings && run "$BOT" replay-info "$PY" backtest.py info "$REC" --config "$CFG" ;;
+        6) recordings && run "$BOT" replay "$PY" backtest.py replay "$REC" --config "$CFG" ;;
         7) if recordings; then
                ask "Setting and values to compare" strategy.z_entry=2.5,3,4,5
-               run replay-sweep "$PY" backtest.py replay --sweep "$REPLY"
+               run "$BOT" replay-sweep "$PY" backtest.py replay "$REC" --config "$CFG" --sweep "$REPLY"
            fi ;;
         8) if recordings; then
                ask "Order sizes in USDT" 200,1000,5000,25000
-               run slippage "$PY" backtest.py slippage --sizes "$REPLY"
+               run "$BOT" slippage "$PY" backtest.py slippage "$REC" --config "$CFG" --sizes "$REPLY"
            fi ;;
         q|Q) break ;;
         *) echo "  Type a number from the menu, or q." ;;

@@ -19,3 +19,9 @@ ft_user_data/config*.json
 ft_user_data/*.pid
 ft_user_data/api_credentials.json
 ft_user_data/hyperopts/
+
+# local-only folders (backups, old desk snapshots, JS deps, bytecode)
+backups/
+backup-before-desk-*/
+node_modules/
+*.pyc

@@ -404,8 +404,12 @@ async def amain(args: argparse.Namespace) -> None:
                 # swing signals always come from real (mainnet) candles: on testnet a key-less public mainnet client
                 swing_client = client if cfg.execution.env == "mainnet" else BinanceClient(
                     session, "mainnet", timeout_s=cfg.feed.request_timeout_s)
-                if cfg.execution.env != "mainnet" and args.swing_journal_db == "data/swing-journal.db":
-                    args.swing_journal_db = "data/swing-journal-testnet.db"   # never mix with the paper bot's journal
+                if args.swing_journal_db == "data/swing-journal.db":   # the default: one journal per bot, never mixed
+                    if cfg.execution.env != "mainnet":
+                        args.swing_journal_db = "data/swing-journal-testnet.db"
+                    elif mode == "live":
+                        args.swing_journal_db = "data/swing-journal-live-mainnet.db"
+                    # paper on mainnet keeps data/swing-journal.db (the paper bot's journal)
                 # "arb" = the very markets the arbitrage bot scans (same universe, same volume ranking)
                 symbols, auto = await resolve_spec(spec, swing_client, list(board.markets))
                 swing = SwingRunner(paper_cfg_from(args, "swing-", symbols, auto), swing_client,
