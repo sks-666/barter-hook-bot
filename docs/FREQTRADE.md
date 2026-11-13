@@ -91,6 +91,12 @@ Environment (`.env`, all optional):
   (daily / weekly / monthly), **Performance by pair**, **Wallet** (`/balance`), **Equity & profit history** (the
   dashboard's own minute snapshots, kept in `data/freqtrade.db`), **Recent activity** (manager events), **Logs**
   (the process output; Freqtrade's in-memory log when the API answers).
+* **Strategies**: every `.py` file in `ft_user_data/strategies/` with a class extending `IStrategy`. *New strategy…*
+  creates one from a working RSI + EMA template (name, timeframe, stop loss, ROI table); *Edit* opens the file in
+  the page; *Validate & save* writes it, asks the Freqtrade webserver to load the class, and restores the previous
+  version if Freqtrade refuses (syntax errors are caught before that). *Duplicate* copies a file under a new class
+  name; *Delete* is refused for the configured strategy and for the one a running bot uses. Files you edit by hand
+  are picked up the same way. A running bot keeps the strategy it loaded until you relaunch it.
 * **Backtesting** runs on the webserver instance and never touches the trading bot: pick strategy, timeframe, date
   range, pairs, sizes; *Download the candles first* fetches the data from the exchange (into `ft_user_data/data/`).
   Results (summary, per pair, exit reasons, trades, daily profit) are shown and kept in Freqtrade's
@@ -124,6 +130,7 @@ Freqtrade's own documentation on risk applies in full: https://www.freqtrade.io/
 | REST client | `freqkit/client.py` (HTTP Basic auth, every endpoint used) |
 | Process manager, config generation, safety rules, backtest runner | `freqkit/manager.py` |
 | Settings, keys, events, snapshots, backtest summaries | `freqkit/store.py` → `data/freqtrade.db` |
+| Strategy files: list, template, validated save, duplicate, delete | `freqkit/strategies.py` + `FreqtradeManager` |
 | Dashboard routes | `freqkit/routes.py`, mounted by `arbbot/server.py` under `/api/freqtrade/` |
 | Page | `web/freqtrade.html` (served at `/trading`), link + summary card in `web/index.html` |
 | Config section | `arbbot/config.py` (`FreqtradeCfg`), `config*.toml` `[freqtrade]` |
@@ -136,12 +143,13 @@ Freqtrade's own documentation on risk applies in full: https://www.freqtrade.io/
 Reads (GET, no token): `/api/freqtrade/overview`, `trades?limit&offset`, `performance`, `pnl?period=day|week|month`,
 `balance`, `logs?kind=trade|webserver`, `events`, `strategy?name=`, `exchanges`, `pairs[?markets=1]`, `whitelist`,
 `locks`, `candles?pair&timeframe&limit`, `history?hours=`, `backtest`, `backtest/history`,
-`backtest/result?filename&strategy`.
+`backtest/result?filename&strategy`, `strategies`, `strategy/file?file=`.
 
 Writes (POST, JSON, `X-Token` header): `engine {action: start|stop|restart}`, `webserver {action}`,
 `bot {action: start|stop|pause|reload}`, `config {...settings}`, `exchange {exchange,key,secret,password} | {exchange, delete:true}`,
 `mode {mode: dry_run|live, confirm}`, `forceexit {tradeid|"all", ordertype?}`, `backtest {strategy,timeframe,timerange,pairs,...} | {action: abort}`,
-`blacklist {action: add|remove, pair}`, `lock {action: delete, id}`.
+`blacklist {action: add|remove, pair}`, `lock {action: delete, id}`,
+`strategy {action: create, name, timeframe, stoploss, roi, description, from_file?} | {action: save, file, code, name} | {action: delete, file}`.
 
 Errors come back as `{"ok": false, "error": "..."}`: 400 for a bad request, 503 when Freqtrade is not reachable,
 Freqtrade's own status when it refused something. The hosted (Render) mode never mounts these routes.

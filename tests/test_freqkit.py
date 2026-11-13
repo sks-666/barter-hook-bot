@@ -391,3 +391,99 @@ class ConfigFileTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StrategyFileTests(unittest.IsolatedAsyncioTestCase):
+    """Strategy files: template, static checks, create / save / duplicate / delete with the in-use guards."""
+    async def asyncSetUp(self):
+        self.dir = tempfile.TemporaryDirectory()
+        root = Path(self.dir.name)
+        self.session = aiohttp.ClientSession()
+        cfg = FreqtradeCfg(enabled=True, executable="missing", user_data="ud", api_port=18090, webserver_port=18091)
+        self.fm = FreqtradeManager(root, cfg, FreqStore(root / "f.db"), self.session, environ={})
+        self.files = self.fm.strategy_files
+
+    async def asyncTearDown(self):
+        await self.session.close()
+        self.dir.cleanup()
+
+    async def test_create_edit_duplicate_delete(self):
+        from freqkit.strategies import strategy_classes
+        res = await self.fm.create_strategy("MyTrend", "15m", -0.08, {"0": 0.03, "60": 0.01}, "test")
+        self.assertEqual((res["name"], res["file"], res["validated"]), ("MyTrend", "my_trend.py", False))
+        code = self.files.read("my_trend.py")
+        self.assertIn("class MyTrend(IStrategy)", code)
+        self.assertIn('timeframe = "15m"', code)
+        self.assertIn('"60": 0.01', code)
+        self.assertEqual(strategy_classes(code), ["MyTrend"])
+        rows = self.fm.list_strategies()["strategies"]
+        self.assertEqual([r["name"] for r in rows], ["MyTrend"])
+        self.assertEqual(rows[0]["timeframe"], "15m")
+        # edit keeps working; the class must stay
+        await self.fm.save_strategy("my_trend.py", code.replace("stoploss = -0.08", "stoploss = -0.05"), "MyTrend")
+        self.assertIn("stoploss = -0.05", self.files.read("my_trend.py"))
+        with self.assertRaises(ValueError) as cm:
+            await self.fm.save_strategy("my_trend.py", code.replace("class MyTrend(", "class Other("), "MyTrend")
+        self.assertIn("keep a class named MyTrend", str(cm.exception))
+        with self.assertRaises(ValueError) as cm:
+            await self.fm.save_strategy("my_trend.py", code + "\nthis is not python(", "MyTrend")
+        self.assertIn("syntax error", str(cm.exception))
+        self.assertIn("stoploss = -0.05", self.files.read("my_trend.py"))     # the bad save changed nothing
+        # duplicate renames the class
+        dup = await self.fm.create_strategy("MyTrendCopy", "5m", from_file="my_trend.py")
+        self.assertIn("class MyTrendCopy(IStrategy)", self.files.read(dup["file"]))
+        with self.assertRaises(ValueError):
+            await self.fm.create_strategy("MyTrend", "5m")                    # a name may exist once
+        # delete, with the guards
+        self.fm.store.save_bot_config(dict(DEFAULT_BOT_CONFIG, strategy="MyTrend"))
+        with self.assertRaises(ValueError) as cm:
+            self.fm.delete_strategy("my_trend.py")
+        self.assertIn("configured", str(cm.exception))
+        self.fm.trade.state, self.fm.cache["config"] = "running", {"strategy": "MyTrendCopy"}
+        with self.assertRaises(ValueError) as cm:
+            self.fm.delete_strategy(dup["file"])
+        self.assertIn("running bot", str(cm.exception))
+        self.fm.trade.state = "stopped"
+        self.fm.delete_strategy(dup["file"])
+        self.assertEqual([r["name"] for r in self.fm.list_strategies()["strategies"]], ["MyTrend"])
+
+    async def test_paths_and_names_are_checked(self):
+        for bad in ("../x.py", "a/b.py", "x.txt", ".hidden.py", ""):
+            with self.assertRaises(ValueError, msg=bad):
+                self.files.path_of(bad)
+        for bad in ("lower", "1Abc", "Has Space", "A" * 70):
+            with self.assertRaises(ValueError, msg=bad):
+                await self.fm.create_strategy(bad, "5m")
+        with self.assertRaises(ValueError):
+            await self.fm.create_strategy("Ok", "7m")
+        with self.assertRaises(ValueError):
+            self.files.render_template("Ok", stoploss=0.5)
+        with self.assertRaises(ValueError):
+            self.fm.read_strategy_file("nope.py")
+
+    async def test_routes(self):
+        from arbbot.server import Dashboard
+        dcfg = SimpleNamespace(server=SimpleNamespace(host="127.0.0.1", port=1), feed=SimpleNamespace(interval_s=1.0))
+        dash = Dashboard(SimpleNamespace(swing=None, snapshot=lambda: {}), dcfg, Path("web"), freq=self.fm)
+        server = TestServer(dash.make_app())
+        await server.start_server()
+        dash.allowed_hosts.add(f"127.0.0.1:{server.port}")
+        client = TestClient(server)
+        await client.start_server()
+        try:
+            tok = {"X-Token": dash.token, "Content-Type": "application/json"}
+            r = await client.post("/api/freqtrade/strategy", json={"action": "create", "name": "RouteStrat"})
+            self.assertEqual(r.status, 403)
+            r = await client.post("/api/freqtrade/strategy", json={"action": "create", "name": "RouteStrat"}, headers=tok)
+            d = await r.json()
+            self.assertEqual((r.status, d["name"], d["strategies"][0]["file"]), (200, "RouteStrat", "route_strat.py"))
+            d = await (await client.get("/api/freqtrade/strategy/file?file=route_strat.py")).json()
+            self.assertIn("class RouteStrat(IStrategy)", d["code"])
+            self.assertEqual((await client.get("/api/freqtrade/strategy/file?file=../etc/passwd")).status, 400)
+            r = await client.post("/api/freqtrade/strategy", json={"action": "save", "file": "route_strat.py", "code": "oops(", "name": "RouteStrat"}, headers=tok)
+            self.assertEqual(r.status, 400)
+            r = await client.post("/api/freqtrade/strategy", json={"action": "delete", "file": "route_strat.py"}, headers=tok)
+            self.assertEqual((r.status, (await r.json())["deleted"]), (200, "route_strat.py"))
+            self.assertEqual((await (await client.get("/api/freqtrade/strategies")).json())["strategies"], [])
+        finally:
+            await client.close()

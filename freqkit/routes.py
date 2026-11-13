@@ -48,6 +48,8 @@ class FreqtradeRoutes:
         g("/api/freqtrade/logs", self.logs)
         g("/api/freqtrade/events", self.events)
         g("/api/freqtrade/strategy", self.strategy)
+        g("/api/freqtrade/strategies", self.strategies)
+        g("/api/freqtrade/strategy/file", self.strategy_file)
         g("/api/freqtrade/exchanges", self.exchanges)
         g("/api/freqtrade/pairs", self.pairs)
         g("/api/freqtrade/whitelist", self.whitelist)
@@ -67,6 +69,7 @@ class FreqtradeRoutes:
         p("/api/freqtrade/backtest", self.backtest_post)
         p("/api/freqtrade/blacklist", self.blacklist)
         p("/api/freqtrade/lock", self.lock)
+        p("/api/freqtrade/strategy", self.strategy_post)
 
     # ---- plumbing ---------------------------------------------------------------------------------------------------
     def _check_token(self, request: web.Request) -> None:
@@ -185,6 +188,36 @@ class FreqtradeRoutes:
             return _json({"strategy": data.get("strategy"), "timeframe": data.get("timeframe"),
                           "code": data.get("code", ""), "params": data.get("params", [])})
         return await self._guarded(go)
+
+    async def strategies(self, request: web.Request) -> web.Response:
+        return _json(self.fm.list_strategies())
+
+    async def strategy_file(self, request: web.Request) -> web.Response:
+        async def go():
+            return _json(self.fm.read_strategy_file(request.query.get("file", "")))
+        return await self._guarded(go)
+
+    async def strategy_post(self, request: web.Request) -> web.Response:
+        """Create, save, duplicate or delete a strategy file (validated by Freqtrade before a save counts)."""
+        async def go():
+            body = await self._body(request)
+            action = body.get("action")
+            if action == "create":
+                roi = body.get("roi")
+                if roi is not None and not isinstance(roi, dict):
+                    raise ValueError("roi must be an object of minutes -> ratio")
+                res = await self.fm.create_strategy(str(body.get("name", "")), str(body.get("timeframe") or "5m"),
+                                                    body.get("stoploss", -0.10), roi, str(body.get("description") or ""),
+                                                    str(body["from_file"]) if body.get("from_file") else None)
+            elif action == "save":
+                res = await self.fm.save_strategy(str(body.get("file", "")), body.get("code"),
+                                                  str(body["name"]) if body.get("name") else None)
+            elif action == "delete":
+                res = self.fm.delete_strategy(str(body.get("file", "")))
+            else:
+                raise ValueError("action must be create, save or delete")
+            return _json(dict({"ok": True}, **res, strategies=self.fm.list_strategies()["strategies"]))
+        return await self._guarded(go, write=True)
 
     async def exchanges(self, request: web.Request) -> web.Response:
         async def go():

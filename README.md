@@ -455,7 +455,8 @@ and opens nothing. Send `/confirm` within 60 s to open it, or `/cancel`. Then `/
 
 [Freqtrade](https://github.com/freqtrade/freqtrade) runs as a **separate process** (a dedicated venv or the official
 Docker image) and is managed from the dashboard's `/trading` page through Freqtrade's REST API: exchange and pair
-setup, strategy choice, **dry-run by default**, live only after an explicit typed confirmation plus
+setup, strategy choice and an in-page strategy editor (create, edit, duplicate, delete, validated by Freqtrade),
+**dry-run by default**, live only after an explicit typed confirmation plus
 `FREQTRADE_LIVE_ACK` in `.env`, start / pause / stop, open trades and history, profit & loss, wallet, performance,
 backtesting with data download, logs and events. Install it once:
 

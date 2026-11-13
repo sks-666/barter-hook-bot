@@ -35,6 +35,7 @@ from typing import Any
 
 from .client import FreqtradeApiError, FreqtradeClient, FreqtradeError, FreqtradeUnavailable
 from .store import DEFAULT_BOT_CONFIG, MODES, FreqStore
+from .strategies import StrategyFiles
 
 log = logging.getLogger("freqkit")
 
@@ -486,6 +487,7 @@ class FreqtradeManager:
                                     self.user_data / ("config.json" if kind == "trade" else "config.webserver.json"),
                                     self.user_data / "logs" / f"{kind}.out")
         self.trade, self.webserver = self.procs["trade"], self.procs["webserver"]
+        self.strategy_files = StrategyFiles(self.user_data / "strategies")
         self.cache: dict[str, Any] = {"status": [], "profit": None, "balance": None, "count": None, "health": None,
                                       "config": None, "strategies": [], "strategies_at": 0.0, "balance_at": 0.0,
                                       "snapshot_at": 0.0, "errors": {}}
@@ -888,6 +890,106 @@ class FreqtradeManager:
         if kind not in KINDS:
             raise ValueError("kind must be trade or webserver")
         return tail_lines(self.procs[kind].out_path, limit)
+
+    # ---- strategy files (ft_user_data/strategies) ---------------------------------------------------------------------
+    def strategy_in_use(self) -> str | None:
+        """The class the running bot was launched with (it must not be deleted under it)."""
+        if self.trade.state in ("starting", "running"):
+            cfg = self.cache.get("config") or {}
+            return cfg.get("strategy") or self.store.bot_config()["strategy"]
+        return None
+
+    def list_strategies(self) -> dict:
+        rows = self.strategy_files.list()
+        in_use = self.strategy_in_use()
+        for r in rows:
+            r["in_use"] = bool(in_use and in_use in r["classes"])
+            r["configured"] = self.store.bot_config()["strategy"] in r["classes"]
+        return {"strategies": rows, "in_use": in_use, "folder": str(self.strategy_files.folder),
+                "loaded": self.cache["strategies"]}
+
+    def read_strategy_file(self, filename: str) -> dict:
+        code = self.strategy_files.read(filename)
+        from .strategies import strategy_classes
+        return {"file": filename, "code": code, "classes": strategy_classes(code)}
+
+    async def _validate_with_freqtrade(self, name: str) -> str | None:
+        """Ask the webserver to load the class from disk; None when it loads, else Freqtrade's complaint."""
+        if self.webserver.state != "running" or not self.webserver.api_ok:
+            return None                      # no webserver: the static checks are all we have (the save still happens)
+        try:
+            await self.webserver.api.strategy(name)
+            self.cache["strategies_at"] = 0.0
+            return None
+        except FreqtradeApiError as e:
+            return e.detail
+        except FreqtradeUnavailable:
+            return None
+
+    async def save_strategy(self, filename: str, code: str, expect_name: str | None = None, new: bool = False) -> dict:
+        files = self.strategy_files
+        path = files.path_of(filename)
+        if new and path.exists():
+            raise ValueError(f"{filename} already exists")
+        if not new and not path.exists():
+            raise ValueError(f"{filename} does not exist (use create)")
+        name = files.check_code(code, expect_name)
+        other = files.file_for(name)
+        if other and other != filename:
+            raise ValueError(f"a strategy class named {name} already exists in {other}")
+        previous = path.read_text(encoding="utf-8") if path.exists() else None
+        files.write(filename, code)
+        problem = await self._validate_with_freqtrade(name)
+        if problem:
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                files.write(filename, previous)
+            raise ValueError(f"Freqtrade could not load {name}, nothing was changed: {problem}. "
+                             f"(Details in Logs → Webserver.)")
+        self.event("info", f"strategy {name} {'created' if new else 'saved'} ({filename})"
+                   + (" · the running bot keeps its loaded copy until you relaunch" if name == self.strategy_in_use() else ""))
+        self.cache["strategies_at"] = 0.0
+        return {"file": filename, "name": name, "validated": self.webserver.state == "running" and self.webserver.api_ok}
+
+    async def create_strategy(self, name: str, timeframe: str = "5m", stoploss=-0.10, roi: dict | None = None,
+                              description: str = "", from_file: str | None = None) -> dict:
+        files = self.strategy_files
+        if not re.match(r"^[A-Z][A-Za-z0-9_]{0,63}$", str(name)):
+            raise ValueError("the strategy name must be a Python class name starting with a capital letter, e.g. MyTrend")
+        if timeframe not in TIMEFRAMES:
+            raise ValueError("timeframe must be one of " + " ".join(TIMEFRAMES))
+        if files.file_for(name):
+            raise ValueError(f"a strategy named {name} already exists ({files.file_for(name)})")
+        if from_file:                        # duplicate: the same code with the class renamed
+            src = files.read(from_file)
+            from .strategies import strategy_classes
+            classes = strategy_classes(src)
+            if not classes:
+                raise ValueError(f"{from_file} holds no strategy class to copy")
+            code = re.sub(rf"\bclass\s+{re.escape(classes[0])}\s*\(", f"class {name}(", src, count=1)
+        else:
+            code = files.render_template(name, timeframe, stoploss, roi, description)
+        filename = files.filename_for(name)
+        if files.path_of(filename).exists():
+            filename = f"{filename[:-3]}_{int(time.time())}.py"
+        return await self.save_strategy(filename, code, expect_name=name, new=True)
+
+    def delete_strategy(self, filename: str) -> dict:
+        files = self.strategy_files
+        code = files.read(filename)
+        from .strategies import strategy_classes
+        classes = strategy_classes(code)
+        in_use = self.strategy_in_use()
+        if in_use and in_use in classes:
+            raise ValueError(f"{in_use} is the strategy of the running bot: relaunch on another strategy first")
+        if self.store.bot_config()["strategy"] in classes:
+            raise ValueError(f"{self.store.bot_config()['strategy']} is the configured strategy: pick another one in "
+                             f"Settings first")
+        files.delete(filename)
+        self.cache["strategies_at"] = 0.0
+        self.event("warn", f"strategy file {filename} deleted ({', '.join(classes) or 'no class'})")
+        return {"deleted": filename}
 
     # ---- backtesting (through the webserver) ----------------------------------------------------------------------------
     def backtest_view(self) -> dict:

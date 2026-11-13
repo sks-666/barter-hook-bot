@@ -127,6 +127,8 @@
   .mode-box.armed { border-color: var(--neg); background: color-mix(in srgb, var(--neg) 14%, var(--panel)); }
   .pager { display: flex; gap: 8px; align-items: center; padding: 8px 14px; color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); }
   .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  textarea.editor { min-height: 420px; font-size: 12.5px; line-height: 1.45; tab-size: 4; white-space: pre; overflow: auto; border-radius: 0; border-left: 0; border-right: 0; }
+  .st-flag { font-size: 11px; }
   @media (max-width: 640px) { .wrap { padding: 12px 16px; } .kpi .v { font-size: 18px; } .card-h { flex-wrap: wrap; } }
 </style>
 </head>
@@ -233,6 +235,32 @@
           <div class="pad" style="padding-top:0"><h3>Trades <span class="note" id="bt-trades-note"></span></h3><div class="scroll mid"><table><thead><tr><th class="l">Pair</th><th>Side</th><th>Opened → closed</th><th>In → out</th><th>Stake</th><th>Profit</th><th>%</th><th class="l">Exit</th><th class="l">Tag</th></tr></thead><tbody id="bt-trades-body"></tbody></table></div></div>
         </div>
         <details><summary>Previous backtests</summary><div class="scroll mid"><table><thead><tr><th class="l">When</th><th class="l">Strategy</th><th class="l">Range</th><th>TF</th><th>Trades</th><th>Profit</th><th>Drawdown</th><th></th></tr></thead><tbody id="bt-hist-body"></tbody></table></div></details>
+      </section>
+
+      <section class="card" aria-labelledby="h-st">
+        <div class="card-h"><h2 id="h-st">Strategies</h2><span class="hint" id="st-hint"></span>
+          <div class="tools"><button type="button" class="mini" id="st-refresh">Refresh</button><button type="button" class="mini primary" id="st-new-btn">New strategy…</button></div></div>
+        <div class="scroll mid"><table><thead><tr><th class="l">Strategy</th><th class="l">File</th><th>Timeframe</th><th>Lines</th><th>Modified</th><th class="l">Status</th><th></th></tr></thead><tbody id="st-body"></tbody></table></div>
+        <div class="pad" id="st-new" hidden style="border-top:1px solid var(--line)">
+          <h3>New strategy</h3>
+          <div class="form">
+            <label>Class name <input id="st-name" placeholder="MyTrend" spellcheck="false" autocomplete="off"></label>
+            <label>Timeframe <select id="st-tf"></select></label>
+            <label>Stop loss (ratio) <input id="st-sl" value="-0.10" inputmode="decimal"></label>
+            <label>ROI at 0 min <input id="st-roi0" value="0.04" inputmode="decimal"></label>
+            <label>ROI after 30 min <input id="st-roi30" value="0.02" inputmode="decimal"></label>
+            <label>ROI after 120 min <input id="st-roi120" value="0.01" inputmode="decimal"></label>
+            <label class="wide">Description <input id="st-desc" placeholder="what this strategy does"></label>
+          </div>
+          <div class="row end" style="margin-top:10px"><span class="note" style="margin-right:auto">Starts from a working RSI + EMA template (long only); edit the code afterwards. Freqtrade loads the class before the file counts as created.</span><button type="button" class="mini" id="st-new-cancel">Cancel</button><button type="button" class="primary" id="st-create">Create</button></div>
+          <div class="msg" id="st-new-msg"></div>
+        </div>
+        <div id="st-edit" hidden style="border-top:1px solid var(--line)">
+          <div class="card-h"><h2 id="st-edit-title">Edit</h2><span class="hint" id="st-edit-hint"></span>
+            <div class="tools"><button type="button" class="mini" id="st-revert">Revert</button><button type="button" class="mini" id="st-close">Close</button><button type="button" class="primary" id="st-save">Validate &amp; save</button></div></div>
+          <textarea class="editor" id="st-code" spellcheck="false" autocapitalize="off" autocomplete="off" aria-label="Strategy source code"></textarea>
+          <div class="pad" style="padding-top:8px"><div class="msg" id="st-edit-msg"></div><div class="note">Saving writes the file, asks the Freqtrade webserver to load the class, and restores the previous version if it refuses. A running bot keeps the strategy it loaded until you relaunch it.</div></div>
+        </div>
       </section>
     </div>
 
@@ -651,6 +679,67 @@ async function loadExchanges() {
   catch (_) { setTimeout(loadExchanges, 15000); }
 }
 
+// ---- strategies: list, create from template, edit with validation, duplicate, delete -------------------------------
+let ST = { file: null, name: null, original: "", rows: [] };
+for (const tf of TIMEFRAMES) { const o = document.createElement("option"); o.value = o.textContent = tf; if (tf === "5m") o.selected = true; $("st-tf").appendChild(o); }
+async function loadStrategies() {
+  try {
+    const d = await get("/api/freqtrade/strategies");
+    ST.rows = d.strategies;
+    $("st-hint").textContent = `${d.strategies.length} file(s) in ${d.folder}` + (d.in_use ? ` · running: ${d.in_use}` : "");
+    $("st-body").innerHTML = d.strategies.length ? d.strategies.map(r => `<tr><td class="sym">${esc(r.name || "–")}${r.classes.length > 1 ? ` <span class="mut">+${r.classes.length - 1}</span>` : ""}</td><td class="l mut">${esc(r.file)}</td><td class="n">${esc(r.timeframe || "–")}</td><td class="n">${r.lines}</td><td class="n mut">${dtm(r.mtime * 1000)}</td><td class="l">${r.in_use ? '<span class="chip ok st-flag">running</span> ' : ""}${r.configured ? '<span class="chip warn st-flag">configured</span> ' : ""}${r.syntax_error ? `<span class="chip bad st-flag" title="${esc(r.syntax_error)}">syntax error</span>` : (!r.name ? '<span class="chip bad st-flag">no IStrategy class</span>' : "")}</td><td><span class="row" style="justify-content:flex-end;gap:4px"><button type="button" class="mini" data-st-edit="${esc(r.file)}">Edit</button><button type="button" class="mini" data-st-dup="${esc(r.file)}" ${r.name ? "" : "disabled"}>Duplicate</button><button type="button" class="mini danger" data-st-del="${esc(r.file)}" ${r.in_use || r.configured ? "disabled title=\"in use or configured\"" : ""}>Delete</button></span></td></tr>`).join("")
+      : `<tr><td colspan="7" class="empty">No strategy files yet.</td></tr>`;
+  } catch (e) { $("st-body").innerHTML = `<tr><td colspan="7" class="empty neg">${esc(e.message)}</td></tr>`; }
+}
+async function openStrategy(file) {
+  try {
+    const d = await get("/api/freqtrade/strategy/file?file=" + encodeURIComponent(file));
+    ST.file = file; ST.name = d.classes[0] || null; ST.original = d.code;
+    $("st-code").value = d.code; $("st-edit").hidden = false; $("st-new").hidden = true;
+    $("st-edit-title").textContent = `Edit ${d.classes[0] || file}`; $("st-edit-hint").textContent = `${file} · ${d.code.split("\n").length} lines`;
+    say("st-edit-msg", "");
+    $("st-edit").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (e) { alert(e.message); }
+}
+$("st-body").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  if (b.dataset.stEdit) return openStrategy(b.dataset.stEdit);
+  if (b.dataset.stDup) {
+    const row = ST.rows.find(r => r.file === b.dataset.stDup), name = prompt(`Duplicate ${row.name} as (class name):`, row.name + "Copy");
+    if (!name) return;
+    return run(b, null, async () => { const d = await post("/api/freqtrade/strategy", { action: "create", name: name.trim(), from_file: row.file, timeframe: row.timeframe || "5m" }); await loadStrategies(); openStrategy(d.file); });
+  }
+  if (b.dataset.stDel) {
+    if (!confirm(`Delete ${b.dataset.stDel}?\n\nThe file is removed from ft_user_data/strategies. Backtest results of it stay.`)) return;
+    return run(b, null, async () => { await post("/api/freqtrade/strategy", { action: "delete", file: b.dataset.stDel }); if (ST.file === b.dataset.stDel) $("st-edit").hidden = true; await loadStrategies(); });
+  }
+});
+$("st-refresh").addEventListener("click", loadStrategies);
+$("st-new-btn").addEventListener("click", () => { $("st-new").hidden = false; $("st-edit").hidden = true; $("st-name").focus(); });
+$("st-new-cancel").addEventListener("click", () => { $("st-new").hidden = true; });
+$("st-create").addEventListener("click", e => run(e.currentTarget, "st-new-msg", async () => {
+  const d = await post("/api/freqtrade/strategy", { action: "create", name: $("st-name").value.trim(), timeframe: $("st-tf").value, stoploss: $("st-sl").value, description: $("st-desc").value,
+    roi: { "0": Number($("st-roi0").value), "30": Number($("st-roi30").value), "120": Number($("st-roi120").value) } });
+  $("st-new").hidden = true; $("st-name").value = "";
+  await loadStrategies(); openStrategy(d.file);
+  return d;
+}, d => `Created ${d.name} in ${d.file}${d.validated ? " (loaded by Freqtrade)" : ""}.`));
+$("st-save").addEventListener("click", e => run(e.currentTarget, "st-edit-msg", async () => {
+  const d = await post("/api/freqtrade/strategy", { action: "save", file: ST.file, code: $("st-code").value, name: ST.name });
+  ST.original = $("st-code").value; ST.name = d.name;
+  await loadStrategies();
+  return d;
+}, d => `Saved ${d.file}${d.validated ? ": Freqtrade loaded " + d.name + " without complaint" : " (static checks only: the webserver is not running)"}.`));
+$("st-revert").addEventListener("click", () => { $("st-code").value = ST.original; say("st-edit-msg", "Reverted to the saved file."); });
+$("st-close").addEventListener("click", () => { if ($("st-code").value !== ST.original && !confirm("Discard the unsaved changes?")) return; $("st-edit").hidden = true; });
+$("st-code").addEventListener("keydown", e => {   // Tab inserts four spaces instead of leaving the editor
+  if (e.key !== "Tab") return;
+  e.preventDefault();
+  const t = e.target, a = t.selectionStart, b = t.selectionEnd;
+  t.value = t.value.slice(0, a) + "    " + t.value.slice(b); t.selectionStart = t.selectionEnd = a + 4;
+});
+window.addEventListener("beforeunload", e => { if (!$("st-edit").hidden && $("st-code").value !== ST.original) e.preventDefault(); });
+
 // ---- theme + loops ---------------------------------------------------------------------------------------------------
 const THEMES = [["auto", "◐ Auto", "follows the system"], ["light", "☀ Light", "light"], ["dark", "☾ Dark", "dark"]];
 function applyTheme(t) {
@@ -668,7 +757,7 @@ async function tick() {
   await refresh();
   if (!OV) return;
   const key = `${OV.engine.state}:${OV.engine.api_ok}`;
-  if (key !== lastEngine) { lastEngine = key; loadHist(); loadPnl(); loadPerf(); loadLogs(); loadEquity(); loadBtHistory(); if (OV.webserver.state === "running") loadExchanges(); }
+  if (key !== lastEngine) { lastEngine = key; loadHist(); loadPnl(); loadPerf(); loadLogs(); loadEquity(); loadBtHistory(); loadStrategies(); if (OV.webserver.state === "running") loadExchanges(); }
   if (OV.backtest && OV.backtest.running && !BT_TIMER) pollBt();
   else if (OV.backtest && !OV.backtest.running && OV.backtest.state !== "idle") renderBt(OV.backtest);
 }
