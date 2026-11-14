@@ -35,6 +35,14 @@ FLOW_WINDOW_S = 3600.0       # the default flow timeframe
 MAX_WINDOW_S = 604_800.0     # the longest one (1 week): whale orders and liquidations are logged this far back
 LOG_CAP = 600_000            # hard cap on each log (about 60 MB), should a crash week produce more than it can hold
 RERANK_S = 1800.0            # pick the most-traded coins again this often
+# trade ideas from whale activity (signals()): a heuristic for the terminal, never traded on
+SIG_MIN_ORDERS = 3           # fewer whale orders in the window than this: no idea, too little to read
+SIG_PRESSURE = 0.25          # |net pressure| needed for a LONG / SHORT bias
+SIG_STOP_SIGMA = 1.5         # the stop sits this many "whale price spreads" beyond the entry
+SIG_MIN_RISK = 0.003         # but never closer than 0.3% of the price ...
+SIG_MAX_RISK = 0.03          # ... and the spread used is capped at 3%
+SIG_RR = 2.0                 # the target when the other side's VWAP is too close: 2R
+SIG_MIN_RR = 1.5             # the other side's VWAP is the target only if at least this many R away
 
 
 class WhaleWatch:
@@ -47,8 +55,8 @@ class WhaleWatch:
         self._pending: dict[str, dict] = {}
         self.history: dict[str, dict[str, deque]] = {}    # symbol -> {"trades": ..., "liqs": ...}
         # compact, time-ordered logs behind the flow table, as seen by this bot (its own clock, so a 1 s window is exact):
-        self.flow_log: deque[tuple] = deque(maxlen=LOG_CAP)   # (seen_ms, symbol, is_buy, usd)
-        self.liq_log: deque[tuple] = deque(maxlen=LOG_CAP)    # (seen_ms, is_long, usd)
+        self.flow_log: deque[tuple] = deque(maxlen=LOG_CAP)   # (seen_ms, symbol, is_buy, usd, price)
+        self.liq_log: deque[tuple] = deque(maxlen=LOG_CAP)    # (seen_ms, is_long, usd, symbol, price)
         self._born = clock()                                  # how far back the logs can possibly reach
         self.marks: dict[str, tuple[float, float]] = {}   # symbol -> (mark price, funding rate), every second
         # callbacks: on_event("whale" | "liq", order) for each new one, on_marks(marks) after each mark-price update
@@ -130,7 +138,7 @@ class WhaleWatch:
             self.trades.append({"ts": p["first"], "symbol": sym, "side": p["side"], "usd": p["usd"],
                                 "price": p["usd"] / p["qty"], "qty": p["qty"], "fills": p["n"]})
             self._remember(sym, "trades", self.trades[-1])
-            self._log(self.flow_log, (self.clock() * 1000, sym, p["side"] == "buy", p["usd"]))
+            self._log(self.flow_log, (self.clock() * 1000, sym, p["side"] == "buy", p["usd"], p["usd"] / p["qty"]))
             self._call(self.on_event, "whale", self.trades[-1])
 
     def sweep(self, now_ms: float) -> None:
@@ -147,7 +155,7 @@ class WhaleWatch:
         self.liqs.append({"ts": int(o.get("T") or self.clock() * 1000), "symbol": o.get("s", ""),
                           "side": "long" if o.get("S") == "SELL" else "short", "usd": px * qty, "price": px, "qty": qty})
         self._remember(self.liqs[-1]["symbol"], "liqs", self.liqs[-1])
-        self._log(self.liq_log, (self.clock() * 1000, o.get("S") == "SELL", px * qty))
+        self._log(self.liq_log, (self.clock() * 1000, o.get("S") == "SELL", px * qty, o.get("s", ""), px))
         self._call(self.on_event, "liq", self.liqs[-1])
 
     # ---- what the page shows -------------------------------------------------------------------
@@ -169,7 +177,7 @@ class WhaleWatch:
         """Whale buying vs selling per coin, and liquidations, over the last window_s seconds (newest log entries first)."""
         since = self.clock() * 1000 - window_s * 1000
         flow: dict[str, dict] = {}
-        for ts, sym, is_buy, usd in reversed(self.flow_log):
+        for ts, sym, is_buy, usd, _px in reversed(self.flow_log):
             if ts < since:
                 break
             f = flow.setdefault(sym, {"symbol": sym, "buy": 0.0, "sell": 0.0, "n": 0})
@@ -179,7 +187,7 @@ class WhaleWatch:
         for f in rows:
             f["net"] = f["buy"] - f["sell"]
         liq = {"long": 0.0, "short": 0.0}
-        for ts, is_long, usd in reversed(self.liq_log):
+        for ts, is_long, usd, _sym, _px in reversed(self.liq_log):
             if ts < since:
                 break
             liq["long" if is_long else "short"] += usd
@@ -192,7 +200,79 @@ class WhaleWatch:
                 "thresholds": dict(sorted(self.thresholds.items(), key=lambda kv: -kv[1])[:10]),
                 "trades": list(self.trades)[::-1][:150], "liqs": list(self.liqs)[::-1][:150], "flow": rows,
                 "window_s": w, "covered_s": min(w, self.clock() - self._born),   # < window_s: the bot has not watched that long yet
-                "liq": liq, "liq_1h": self._flow(FLOW_WINDOW_S)[1] if w != FLOW_WINDOW_S else liq}
+                "liq": liq, "liq_1h": self._flow(FLOW_WINDOW_S)[1] if w != FLOW_WINDOW_S else liq,
+                "signals": self.signals(w)}
+
+    # ---- a trade idea from what the whales did -----------------------------------------------------
+    def signals(self, window_s: float = FLOW_WINDOW_S) -> list[dict]:
+        """Per coin, a long or short idea read from the whale orders and liquidations of the last window_s seconds.
+
+        A heuristic, not a forecast, and the bot never trades on it:
+        * pressure = (whale buys + shorts liquidated - whale sells - longs liquidated) / all of it, -1 .. +1
+          (a liquidated short is a forced BUY, a liquidated long a forced SELL). LONG at +SIG_PRESSURE or more,
+          SHORT at -SIG_PRESSURE or less, otherwise WAIT.
+        * entry: the whales' own average price on the leading side (their VWAP), or the mark if that is better,
+          i.e. buy a pullback to where the whales bought (sell a bounce to where they sold).
+        * stop: SIG_STOP_SIGMA times the spread of the whales' prices beyond the entry (floor SIG_MIN_RISK).
+        * target: the other side's VWAP when it lies at least SIG_MIN_RR R away, else SIG_RR R.
+        """
+        since = self.clock() * 1000 - self.clamp_window(window_s) * 1000
+        per: dict[str, dict] = {}
+        for ts, sym, is_buy, usd, px in reversed(self.flow_log):
+            if ts < since:
+                break
+            c = per.setdefault(sym, {"buy": 0.0, "sell": 0.0, "bq": 0.0, "sq": 0.0, "n": 0, "w": 0.0, "wx": 0.0,
+                                     "wxx": 0.0, "last": px, "liq_long": 0.0, "liq_short": 0.0})
+            if is_buy:
+                c["buy"] += usd; c["bq"] += usd / px
+            else:
+                c["sell"] += usd; c["sq"] += usd / px
+            c["n"] += 1
+            c["w"] += usd; c["wx"] += usd * px; c["wxx"] += usd * px * px
+        for ts, is_long, usd, sym, _px in reversed(self.liq_log):
+            if ts < since:
+                break
+            if sym in per:
+                per[sym]["liq_long" if is_long else "liq_short"] += usd
+        out = []
+        for sym, c in per.items():
+            if c["n"] < SIG_MIN_ORDERS:
+                continue
+            mark = (self.marks.get(sym) or (c["last"], 0.0))[0]
+            up = c["buy"] + c["liq_short"]
+            down = c["sell"] + c["liq_long"]
+            pressure = (up - down) / (up + down)
+            buy_vwap = c["buy"] / c["bq"] if c["bq"] else None
+            sell_vwap = c["sell"] / c["sq"] if c["sq"] else None
+            mean = c["wx"] / c["w"]
+            sigma = math.sqrt(max(c["wxx"] / c["w"] - mean * mean, 0.0))
+            sigma = min(max(sigma, mark * SIG_MIN_RISK), mark * SIG_MAX_RISK)
+            row = {"symbol": sym, "mark": mark, "pressure": round(pressure, 3), "n": c["n"], "buy": c["buy"],
+                   "sell": c["sell"], "liq_long": c["liq_long"], "liq_short": c["liq_short"],
+                   "buy_vwap": buy_vwap, "sell_vwap": sell_vwap, "bias": "wait",
+                   "entry": None, "stop": None, "target": None, "rr": None}
+            if abs(pressure) >= SIG_PRESSURE:
+                long = pressure > 0
+                anchor = buy_vwap if long else sell_vwap
+                entry = (min(mark, anchor) if long else max(mark, anchor)) if anchor else mark
+                risk = SIG_STOP_SIGMA * sigma
+                stop = entry - risk if long else entry + risk
+                other = sell_vwap if long else buy_vwap
+                far = other is not None and ((other - entry) if long else (entry - other)) >= SIG_MIN_RR * risk
+                target = other if far else (entry + SIG_RR * risk if long else entry - SIG_RR * risk)
+                if not long and target <= 0:
+                    continue
+                confirm = c["liq_short"] if long else c["liq_long"]
+                conf = (abs(pressure) * 55 + min(c["n"], 20) / 20 * 30
+                        + 15 * min(confirm / (up + down) / 0.1, 1.0))      # liquidations the same way: full at 10%
+                row.update(bias="long" if long else "short", entry=entry, stop=stop, target=target,
+                           rr=abs(target - entry) / risk, confidence=round(min(conf, 100.0)),
+                           to_entry_pct=(entry / mark - 1) * 100)
+            else:
+                row["confidence"] = 0
+            out.append(row)
+        out.sort(key=lambda r: (r["bias"] == "wait", -r["confidence"], -(r["buy"] + r["sell"])))
+        return out[:TOP_N]
 
     # ---- the connection --------------------------------------------------------------------------
     async def run(self) -> None:

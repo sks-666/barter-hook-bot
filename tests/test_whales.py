@@ -134,6 +134,52 @@ class WhaleTests(unittest.IsolatedAsyncioTestCase):
                             (float("inf"), 3600.0), (15, 15.0)):
             self.assertEqual(self.w.view(window_s=given)["window_s"], want, given)
 
+    def _at(self, sym, price, usd, sell=False):
+        t = int(self.now[0] * 1000)
+        self.w.handle(agg(sym, price, usd / price, t, sell=sell))
+        self.w.sweep(t + 10_000)
+        self.now[0] += 1
+
+    def test_whale_buying_gives_a_long_entry_at_their_vwap_with_stop_and_target(self):
+        for px_, usd in ((0.200, 100_000), (0.202, 200_000), (0.204, 100_000)):   # whales buy $400K, VWAP ~0.202
+            self._at("DOGEUSDT", px_, usd)
+        self._at("DOGEUSDT", 0.206, 60_000, sell=True)                            # a little selling higher up
+        self.w.marks["DOGEUSDT"] = (0.205, 0.0)
+        s = self.w.view()["signals"][0]
+        self.assertEqual((s["symbol"], s["bias"], s["n"]), ("DOGEUSDT", "long", 4))
+        self.assertAlmostEqual(s["entry"], s["buy_vwap"])                         # wait for the pullback to the whales' price
+        self.assertLess(s["entry"], 0.205)
+        self.assertLess(s["stop"], s["entry"])
+        self.assertGreater(s["target"], s["entry"])
+        self.assertGreaterEqual(s["rr"], 1.5)
+        self.assertTrue(0 < s["confidence"] <= 100)
+
+    def test_whale_selling_gives_a_short_and_a_split_market_says_wait(self):
+        for px_ in (0.21, 0.209, 0.208):
+            self._at("DOGEUSDT", px_, 100_000, sell=True)
+        self.w.marks["DOGEUSDT"] = (0.207, 0.0)
+        s = self.w.signals(3600)[0]
+        self.assertEqual(s["bias"], "short")
+        self.assertEqual(s["entry"], s["sell_vwap"])                              # sell the bounce to where they sold
+        self.assertGreater(s["stop"], s["entry"])
+        self.assertLess(s["target"], s["entry"])
+        for _ in range(3):
+            self._at("DOGEUSDT", 0.207, 100_000)                                  # now as much buying: no edge
+        s = self.w.signals(3600)[0]
+        self.assertEqual((s["bias"], s["entry"]), ("wait", None))
+
+    def test_liquidated_shorts_count_as_buying_and_too_few_orders_give_nothing(self):
+        self._at("DOGEUSDT", 0.2, 100_000)
+        self._at("DOGEUSDT", 0.2, 100_000)
+        self.assertEqual(self.w.signals(3600), [])                                # 2 orders: too little to read
+        self._at("DOGEUSDT", 0.2, 100_000, sell=True)
+        self._at("DOGEUSDT", 0.2, 100_000, sell=True)
+        self.assertEqual(self.w.signals(3600)[0]["bias"], "wait")                 # 200K each way: no edge
+        self.w.handle({"data": {"e": "forceOrder", "o": {"s": "DOGEUSDT", "S": "BUY", "q": "1000000", "z": "1000000",
+                                                          "ap": "0.2", "T": int(self.now[0] * 1000)}}})
+        s = self.w.signals(3600)[0]
+        self.assertEqual((s["bias"], s["liq_short"]), ("long", 200_000.0))        # a $200K short squeeze: 400K up vs 200K down
+
     async def test_a_dead_stream_never_ends_the_bot(self):
         class Boom:
             def ws_connect(self, *a, **k):
