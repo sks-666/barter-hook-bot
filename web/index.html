@@ -1469,7 +1469,7 @@ function stShow(d) {
 async function stPoll() {
   try {
     const r = await fetch("/api/signal-trader", { cache: "no-store" });
-    if (r.status === 404) { $("st-card").hidden = true; return; }        // not running in this bot
+    if (!r.ok) { $("st-card").hidden = true; return; }                  // not running in this bot (404, or an older bot)
     $("st-card").hidden = false;
     stShow(await r.json());
   } catch (_) { /* the bot is restarting: try again next time */ }
