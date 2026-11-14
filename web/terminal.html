@@ -496,7 +496,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private
 const S = {
   sym: lsGet("term-sym") || "BTCUSDT", iv: lsGet("term-iv") || "1h", mv: "gainers",
   snap: null, info: null, klines: null, depth: null, trades: null, sent: null, movers: null, whales: null, daily: null,
-  wt: "trades", wmin: 0, wcoin: false, fw: 3600, sp: "1h", marks: null, alerts: null, desk: null,
+  wt: "trades", wmin: 0, wcoin: false, fw: 3600, auto: null, sp: "1h", marks: null, alerts: null, desk: null,
   ov: { vwap: true, ema: true, cvd: true, lvl: true, whl: true, e50: true, rsi: true, sig: true },
   curve: null, cp: lsGet("term-curve") || "1d", cmp: null, cmpD: {},
   errs: {}, due: {}, busy: {}, hover: null, arbSort: { k: "net", dir: -1 }, history: [], hpos: 0,
@@ -735,7 +735,17 @@ function srcTag(s) {
   return `<span class="src ext" title="Not opened by this bot">OUTSIDE</span>`;
 }
 
+async function loadAuto() {
+  S.due.auto = Date.now() + 10000;
+  if (S.wt !== "sigs") return;
+  try {
+    const r = await fetch("/api/signal-trader", { cache: "no-store" });
+    S.auto = r.ok ? await r.json() : null;                        // 404: not running in this bot
+  } catch { S.auto = null; }
+  if (S.wt === "sigs") renderWhales();
+}
 function pollLoop() {
+  if (!document.hidden && !(S.due.auto > Date.now())) loadAuto();
   if (!document.hidden && !(S.due.acct > Date.now())) loadAcct();
   if (!document.hidden && !(S.due.cmp > Date.now())) loadCmp();
   if (!(S.due.alerts > Date.now())) loadAlerts();                  // also while hidden: fired alerts still pop up
@@ -1697,7 +1707,7 @@ function renderRisk() {
 // ---- whales: big trades and liquidations (arbbot/whales.py), and whale flow per coin --------------------------
 function setWhale(change) {
   Object.assign(S, change);
-  if (change.wt === "sigs") S.due.combo = 0;                  // fetch the combined signal at once
+  if (change.wt === "sigs") S.due.combo = S.due.auto = 0;     // fetch the combined signal at once
   document.querySelectorAll("[data-wt]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.wt === S.wt)));
   document.querySelectorAll("[data-wmin]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.wmin) === S.wmin)));
   $("wh-coin").setAttribute("aria-pressed", String(S.wcoin));
@@ -1737,14 +1747,22 @@ function renderSignals(el) {
   if (!c || c.window_s !== S.fw) { el.innerHTML = `<div class="empty">reading whales, crowd, curve, macro &amp; news over ${tf}…</div>`; return; }
   const all = c.rows.filter(x => !S.wcoin || x.symbol === S.sym);
   const pct = (a, b) => sgn((a / b - 1) * 100, 2) + "%";
-  const note = `<div class="mut" style="padding:3px 6px" title="Each source is read over the timeframe: Whales vs crowd and the futures curve in ${esc(c.steps.crowd)} / ${esc(c.steps.curve)} rows (step x how many back), the stop from the ATR of ${esc(c.steps.atr)} candles. Weights: ${Object.entries(c.weights).filter(([, v]) => v).map(([k, v]) => k + " " + Math.round(v * 100) + "%").join(", ")}. A heuristic, not a forecast or advice; nothing has been backtested.">Combined over <b>${tf}</b> (Whale flow sets it) · whales, crowd, curve, macro, news · heuristic, not advice</div>`;
+  let note = `<div class="mut" style="padding:3px 6px" title="Each source is read over the timeframe: Whales vs crowd and the futures curve in ${esc(c.steps.crowd)} / ${esc(c.steps.curve)} rows (step x how many back), the stop from the ATR of ${esc(c.steps.atr)} candles. Weights: ${Object.entries(c.weights).filter(([, v]) => v).map(([k, v]) => k + " " + Math.round(v * 100) + "%").join(", ")}. A heuristic, not a forecast or advice; nothing has been backtested.">Combined over <b>${tf}</b> (Whale flow sets it) · whales, crowd, curve, macro, news · heuristic, not advice</div>`;
+  const a = S.auto, held = s => a && (a.open[s] || a.pending[s]);
+  const money = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
+  if (a) note += `<div style="padding:2px 6px" title="The bot auto-trades this signal on the Binance futures TESTNET (test money) over its own timeframe; switch it on or off on the dashboard.">` +
+    `🤖 <b>Auto · testnet</b> ${flowLabel(a.window_s)} · <span class="${a.enabled ? "up" : "dn"}">${a.enabled ? "ON" : "OFF"}</span>` +
+    ` · today <span class="${cls(a.stats.today)}">${money(a.stats.today)}</span> · ${a.stats.wins}W ${a.stats.losses}L` +
+    (Object.keys(a.open).length ? ` · open ${Object.entries(a.open).map(([k, m]) => esc(k.replace(/USDT$/, "")) + (m.pnl != null ? ` <span class="${cls(m.pnl)}">${money(m.pnl)}</span>` : "")).join(", ")}` : "") +
+    (Object.keys(a.pending).length ? ` · waiting ${Object.keys(a.pending).map(k => esc(k.replace(/USDT$/, ""))).join(", ")}` : "") +
+    (a.blocked && a.enabled ? ` <span class="mut">(${esc(a.blocked)})</span>` : "") + `</div>`;
   if (!all.length) { el.innerHTML = note + `<div class="empty">No coin to score yet: it needs whale orders in the last ${tf}.</div>`; return; }
   const table = `<table class="sig"><thead><tr><th title="▲ long · ▼ short · · wait">Coin</th><th title="Limit entry; % from the price now">Entry</th>
     <th>Stop</th><th title="Reward : risk on hover">Target</th><th title="Combined score, −100 (bearish) to +100 (bullish)">Score</th>
     <th title="0-100: how strong the score is and how many sources agree">Conf</th></tr></thead><tbody>` +
     all.map(x => { const L = x.bias === "long", wait = x.bias === "wait", near = !wait && Math.abs(x.to_entry_pct) < 0.1;
       const arrow = wait ? `<span class="mut">·</span>` : L ? `<span class="up">▲</span>` : `<span class="dn">▼</span>`;
-      return `<tr class="click${x.symbol === S.sym ? " sel" : ""}${wait ? " mut" : ""}" data-sym="${esc(x.symbol)}"><td class="amb" title="${wait ? "WAIT: no clear side" : L ? "LONG" : "SHORT"}">${arrow} ${esc(x.symbol.replace(/USDT$/, ""))}</td>` +
+      return `<tr class="click${x.symbol === S.sym ? " sel" : ""}${wait ? " mut" : ""}" data-sym="${esc(x.symbol)}"><td class="amb" title="${wait ? "WAIT: no clear side" : L ? "LONG" : "SHORT"}">${arrow} ${esc(x.symbol.replace(/USDT$/, ""))}${held(x.symbol) ? ` <span class="amb" title="the auto-trader holds this coin on the testnet">●</span>` : ""}</td>` +
         (wait ? `<td colspan="3" class="mut">wait</td>` :
         `<td title="price now ${px(x.mark)}">${px(x.entry)}${near ? "" : `<span class="mut sub">${pct(x.entry, x.mark)}</span>`}</td>
         <td class="dn" title="${pct(x.stop, x.entry)} from entry">${px(x.stop)}</td><td class="up" title="${pct(x.target, x.entry)} from entry · R:R ${x.rr.toFixed(1)}">${px(x.target)}</td>`) +

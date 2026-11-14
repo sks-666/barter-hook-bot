@@ -150,6 +150,21 @@ def parse_args(argv=None) -> argparse.Namespace:
                         "with the paper stop), not only new entries")
     p.add_argument("--swing-mirror-fund", type=float, default=10_000.0,
                    help="size the testnet copies as if the mirrored account held this many dollars (default 10000)")
+    p.add_argument("--signal-trader", action="store_true",
+                   help="TESTNET only (with --live --testnet): auto-trade the terminal's combined signal (whales, crowd, "
+                        "futures curve, macro, news) with test money; entries can be switched off from the terminal")
+    p.add_argument("--signal-trader-window", default="1h", metavar="1m|5m|15m|30m|1h|4h|1d|1w",
+                   help="the signal's timeframe; it also sets how long an entry waits and a trade is held (default 1h)")
+    p.add_argument("--signal-trader-risk-usd", type=float, default=20.0,
+                   help="test USDT lost if a trade's stop is hit: the position is sized from it (default 20)")
+    p.add_argument("--signal-trader-max-usd", type=float, default=2000.0,
+                   help="largest position value in test USDT (default 2000)")
+    p.add_argument("--signal-trader-max-open", type=int, default=3,
+                   help="most positions and pending entries at once (default 3)")
+    p.add_argument("--signal-trader-min-conf", type=int, default=60,
+                   help="lowest signal confidence (0-100) to enter on, or to exit on a flip (default 60)")
+    p.add_argument("--signal-trader-daily-loss-usd", type=float, default=100.0,
+                   help="no new entries after this much realised test-USDT loss in a UTC day (default 100)")
     p.add_argument("--swing", action="store_true",
                    help="also paper-trade the swingkit strategies (trend, swing, SMC) in this process: alerts plus the "
                         "/setups /journal /swing Telegram commands. Paper only; separate from the arbitrage book")
@@ -279,6 +294,13 @@ async def amain(args: argparse.Namespace) -> None:
             parse_accounts(args.swing_mirror)
         except ValueError as e:
             sys.exit(str(e))
+    if args.signal_trader and not (live and cfg.execution.env == "testnet"):
+        sys.exit("--signal-trader trades the combined signal on the TESTNET only: it needs --live --testnet")
+    if args.signal_trader and args.no_whales:
+        sys.exit("--signal-trader reads the whale watch: drop --no-whales")
+    WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
+    if args.signal_trader and args.signal_trader_window.lower() not in WINDOWS:
+        sys.exit(f"--signal-trader-window takes {', '.join(WINDOWS)}")
     if args.check:   # read-only: never builds the engine, never sends an order
         sys.exit(await run_check(cfg, live_keys(cfg.execution.env)))
     setup_logging()
@@ -452,9 +474,24 @@ async def amain(args: argparse.Namespace) -> None:
             from freqkit.manager import FreqtradeManager
             from freqkit.store import FreqStore
             freq = FreqtradeManager(ROOT, cfg.freqtrade, FreqStore(ROOT / "data" / "freqtrade.db"), session)
+        macro = None if args.hosted else MacroNews(session)
+        signal_desk, trader = None, None
+        if whales is not None:
+            from .signals import SignalDesk
+            # the combined signal reads mainnet only (a testnet bot's own candles are not the real market)
+            signal_desk = SignalDesk(whales, MarketData(stats_client or client, stats_client=stats_client), macro)
+        if args.signal_trader:
+            from .signal_trader import SignalTrader
+            trader = SignalTrader(signal_desk, ticket, WINDOWS[args.signal_trader_window.lower()],
+                                  risk_usd=args.signal_trader_risk_usd, max_open=args.signal_trader_max_open,
+                                  min_conf=args.signal_trader_min_conf, max_usd=args.signal_trader_max_usd,
+                                  daily_loss_usd=args.signal_trader_daily_loss_usd,
+                                  path=ROOT / "data" / "signal-trader-testnet.json", notify=alerts.send)
+            other = ticket.source
+            ticket.source = lambda sym: "signal" if trader.holds(sym) else other(sym)
         dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client, stats_client=stats_client), paper=ticket,
                          lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
-                         macro=None if args.hosted else MacroNews(session), freq=freq)
+                         macro=macro, freq=freq, signal_desk=signal_desk, signal_trader=trader)
         if args.hosted:  # public interface: the READ-ONLY page behind a login, never the dashboard with its controls
             hosted_password, hosted_user = settings_from_env()
             runner = web.AppRunner(make_hosted_app(engine, ROOT / "vercel-dashboard" / "views" / "dashboard.html",
@@ -529,6 +566,11 @@ async def amain(args: argparse.Namespace) -> None:
                  ticket.run()]
         if whales is not None:
             coros.append(whales.run())
+        if trader is not None:
+            coros.append(trader.run())
+            log.warning("signal auto-trader: ON on the futures TESTNET (%s timeframe, $%g risk per trade, max %d open, "
+                        "confidence >= %d, entries %s)", args.signal_trader_window, trader.risk_usd, trader.max_open,
+                        trader.min_conf, "on" if trader.s["enabled"] else "OFF (switched off in the terminal)")
         if sampler is not None:
             coros.append(sampler.run())
         if swing is not None:

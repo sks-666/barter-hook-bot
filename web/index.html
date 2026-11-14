@@ -271,6 +271,12 @@
       <div class="card-h"><h2 id="h-r-ft">Trading bot · Freqtrade</h2><a class="more" href="/trading">Status, trades, backtests, settings →</a></div>
       <div class="empty" id="ft-summary">Loading…</div>
     </section>
+    <section class="card" aria-labelledby="h-r-st" id="st-card" hidden>
+      <div class="card-h"><h2 id="h-r-st">Signal auto-trader · testnet</h2>
+        <div class="sw-right"><a class="more" href="/terminal">Signals in the terminal →</a>
+          <span class="sw-power" id="st-power" hidden><span id="st-power-l"></span><button type="button" class="sw-toggle" id="st-toggle" role="switch" aria-checked="true" aria-label="Signal auto-trader entries on or off"></button></span></div></div>
+      <div id="st-body" class="empty">Loading…</div>
+    </section>
   </div><!--/PNL-->
 
   <section class="kpis" id="overview" aria-label="Summary" data-show="arb">
@@ -1440,6 +1446,48 @@ async function ftSummary() {
 }
 ftSummary();
 setInterval(ftSummary, 15_000);
+
+// the combined-signal auto-trader on the futures TESTNET (arbbot/signal_trader.py): status, and its on/off switch
+function stShow(d) {
+  const on = d.enabled, money = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
+  $("st-toggle").setAttribute("aria-checked", String(on));
+  $("st-power-l").textContent = on ? "Entries ON" : "Entries OFF";
+  $("st-power-l").className = on ? "pos" : "warn";
+  $("st-power").hidden = typeof TOKEN === "undefined";
+  const st = d.stats, open = Object.entries(d.open), pend = Object.keys(d.pending);
+  const tf = { 60: "1m", 300: "5m", 900: "15m", 1800: "30m", 3600: "1h", 14400: "4h", 86400: "1d", 604800: "1w" }[d.window_s] || d.window_s + "s";
+  $("st-body").className = "";
+  $("st-body").innerHTML = `<div style="font-size:13px;line-height:1.6">` +
+    `<b>${tf}</b> signal · $${d.risk_usd} risk per trade · up to ${d.max_open} open · confidence ≥ ${d.min_conf}` +
+    (d.blocked ? ` · <span class="warn">${esc(d.blocked)}</span>` : ` · <span class="pos">looking for entries</span>`) +
+    (d.error ? ` · <span class="neg">${esc(d.error)}</span>` : "") +
+    `<br>Realised <b class="${st.realized >= 0 ? "pos" : "neg"}">${money(st.realized)} USDT</b> (today ${money(st.today)}) · ${st.closed} closed: ${st.wins} won, ${st.losses} lost` +
+    (open.length ? `<br>Open: ` + open.map(([s, m]) => `${esc(s.replace(/USDT$/, ""))} ${m.side === "buy" ? "long" : "short"}` +
+      (m.pnl != null ? ` <span class="${m.pnl >= 0 ? "pos" : "neg"}">${money(m.pnl)}</span>` : "")).join(" · ") : "") +
+    (pend.length ? `<br>Waiting to fill: ${pend.map(s => esc(s.replace(/USDT$/, ""))).join(", ")}` : "") + `</div>`;
+}
+async function stPoll() {
+  try {
+    const r = await fetch("/api/signal-trader", { cache: "no-store" });
+    if (r.status === 404) { $("st-card").hidden = true; return; }        // not running in this bot
+    $("st-card").hidden = false;
+    stShow(await r.json());
+  } catch (_) { /* the bot is restarting: try again next time */ }
+}
+$("st-toggle").addEventListener("click", async e => {
+  const btn = e.currentTarget, on = btn.getAttribute("aria-checked") !== "true";
+  if (!on && !confirm("Switch the signal auto-trader's new entries OFF?\n\nIts open testnet positions keep their exchange stop and target and are still closed on a signal flip or after the maximum hold.")) return;
+  btn.disabled = true;
+  try {
+    const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ enabled: on }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    stShow(d);
+  } catch (err) { alert("Could not switch the auto-trader: " + err.message); }
+  finally { btn.disabled = false; }
+});
+stPoll();
+setInterval(stPoll, 10_000);
 
 function connect() {
   ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws`);

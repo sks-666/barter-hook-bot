@@ -108,14 +108,15 @@ LOCKED = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="
 
 class Dashboard:
     def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None,
-                 whales=None, alert_book=None, desk=None, macro=None, freq=None):
+                 whales=None, alert_book=None, desk=None, macro=None, freq=None, signal_desk=None, signal_trader=None):
         self.engine = engine
         self.freq = freq                          # a freqkit.manager.FreqtradeManager (the /trading page), or None
         self.macro = macro                        # an arbbot.macro.MacroNews (the terminal's MACRO / NEWS panel), or None
         self.desk = desk                          # a callable returning deskkit.report.desk_view(...), or None
         self.alert_book = alert_book              # an arbbot.price_alerts.AlertBook (terminal alerts), or None
         self.whales = whales                      # an arbbot.whales.WhaleWatch (big trades, liquidations), or None
-        self.signal_desk = None                   # an arbbot.signals.SignalDesk, made on the first request for it
+        self.signal_desk = signal_desk            # an arbbot.signals.SignalDesk (made on the first request if None)
+        self.signal_trader = signal_trader        # an arbbot.signal_trader.SignalTrader (testnet auto-trading), or None
         self.market = market                      # an arbbot.market.MarketData for the chart / order book panel, or None
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
@@ -176,10 +177,33 @@ class Dashboard:
         app.router.add_post("/api/paper/{op}", self.paper_action)
         app.router.add_post("/api/swing-capital", self.swing_capital)      # before the generic /api/{action}
         app.router.add_post("/api/swing-power", self.swing_power)
+        app.router.add_get("/api/signal-trader", self.signal_trader_get)
+        app.router.add_post("/api/signal-trader", self.signal_trader_post)   # before the generic /api/{action}
         app.router.add_get("/api/alerts", self.alerts_get)
         app.router.add_post("/api/alerts", self.alerts_post)
         app.router.add_post("/api/{action}", self.action)
         return app
+
+    async def signal_trader_get(self, request: web.Request) -> web.Response:
+        if self.signal_trader is None:
+            return web.json_response({"error": "the signal auto-trader is off in this bot (testnet: run.py --live "
+                                               "--testnet --signal-trader)"}, status=404)
+        return web.json_response(self.signal_trader.view(), headers={"Cache-Control": "no-store"})
+
+    async def signal_trader_post(self, request: web.Request) -> web.Response:
+        """Switch the auto-trader's new entries on or off ({"enabled": true|false}); open positions stay managed."""
+        if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
+            raise web.HTTPForbidden(text="bad token")
+        if self.signal_trader is None:
+            return web.json_response({"ok": False, "error": "the signal auto-trader is off in this bot"}, status=404)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
+            return web.json_response({"ok": False, "error": 'send {"enabled": true} or {"enabled": false}'}, status=400)
+        self.signal_trader.set_enabled(body["enabled"])
+        return web.json_response({"ok": True, **self.signal_trader.view()})
 
     async def market_data(self, request: web.Request) -> web.Response:
         """Public Binance futures market data for the market panel (read-only; see arbbot/market.py)."""
