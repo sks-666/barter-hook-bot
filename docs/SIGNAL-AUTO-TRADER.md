@@ -104,9 +104,9 @@ the stop and target.
 |---|---|---|
 | Timeframe | 1h | **Page** (terminal or dashboard), or `--signal-trader-window` |
 | Most open trades | 3 | **Page** (1–20), or `--signal-trader-max-open` |
-| Loss at the stop per trade | $20 | `--signal-trader-risk-usd` |
+| Loss at the stop per trade | $20 | **Page** or `/auto risk 30` (1–500), or `--signal-trader-risk-usd` |
 | Largest position | $2,000 | `--signal-trader-max-usd` |
-| Daily realised loss, then no new entries until the next UTC day | $100 | `--signal-trader-daily-loss-usd` |
+| Daily realised loss, then no new entries until the next UTC day | $100 | **Page** or `/auto daily 150` (5–5000), or `--signal-trader-daily-loss-usd` |
 | Minimum confidence | 60 | `--signal-trader-min-conf` |
 | Kill switch | — | `touch KILL` in the bot's folder: the ticket refuses every new order |
 
@@ -160,10 +160,13 @@ auto-trader on.
 **Terminal** (`http://127.0.0.1:8767/terminal`), Signals panel, auto-trader strip:
 - **Its timeframe**: pick a timeframe at the top of the panel, then press the orange **Trade …** button and confirm.
 - **Its open trades / most**: pick a number from the list (1–20) and confirm.
+- **Risk per trade · day limit**: type the $ lost at the stop per new trade (1–500) and the day's loss limit
+  (5–5000), press Enter and confirm.
 
 **Dashboard** (`http://127.0.0.1:8767/`), **Signal auto-trader · testnet** card:
 - **Timeframe buttons** (1m … 1w).
 - **Most open** list.
+- **Risk $** and **Day limit $** boxes.
 - **Entries ON/OFF** switch.
 
 Each change applies from the next pass (≤ 30 s), is saved, and is announced on Telegram.
@@ -183,6 +186,8 @@ The testnet bot answers these in your Telegram chat (only your configured chat):
 | `/auto on` · `/auto off` | New entries on or off |
 | `/auto 30m` | Trade the 30m signal (1m 5m 15m 30m 1h 4h 1d 1w) |
 | `/auto max 5` | Hold up to 5 trades at once (1-20) |
+| `/auto risk 30` | New trades lose about $30 if they hit their stop (1-500) |
+| `/auto daily 150` | No new trade after $150 of realised loss in a UTC day (5-5000) |
 | `/auto trades` | Open trades, waiting entries, the last 10 closed with result and reason |
 | `/ideas` · `/ideas 4h` | The combined signal's coins: side, score, confidence, R:R, entry / stop / target; ✅ marks the ones the auto-trader may take |
 | `/account` | The testnet futures account: balance, equity, every position and who opened it |
@@ -192,7 +197,7 @@ These are the same settings as on the page, saved in the same place.
 
 ### On the command line (restart needed)
 
-For the settings without a page control (risk per trade, largest position, daily loss, minimum confidence), edit the
+For the settings without a page control (largest position, minimum confidence), edit the
 drop-in file and restart:
 
 ```bash
@@ -212,7 +217,7 @@ ExecStart=/srv/apps/binance-arb-bot/.venv/bin/python run.py --live --testnet --c
 ```
 
 Flags you can add or change: `--signal-trader-risk-usd`, `--signal-trader-max-usd`, `--signal-trader-daily-loss-usd`,
-`--signal-trader-min-conf`. Remember that the timeframe and most-open flags are overridden by values picked on the page.
+`--signal-trader-min-conf`. Remember that the timeframe, most-open, risk and daily-loss flags are overridden by values picked on the page or in Telegram.
 
 **To turn the auto-trader off for good**, delete the drop-in file, then reload and restart:
 

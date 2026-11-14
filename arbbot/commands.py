@@ -37,7 +37,7 @@ MENU = [
     ("confirm", "Confirm the pending /open"),
     ("cancel", "Cancel the pending /open"),
     ("close", "Close a paper position: /close BTC"),
-    ("auto", "Signal auto-trader: /auto · on|off · 30m · max 5"),
+    ("auto", "Signal auto-trader: /auto · on|off · 30m · max 5 · risk 30 · daily 150"),
     ("ideas", "Combined signal LONG/SHORT ideas: /ideas 30m"),
     ("account", "Testnet futures account: every position, who opened it"),
     ("setups", "Swing/trend/SMC setups waiting for the next candle"),
@@ -68,6 +68,8 @@ HELP = (
     "• /auto on · /auto off = new entries on or off (open trades stay managed)\n"
     "• /auto 30m = trade the 30m signal (1m 5m 15m 30m 1h 4h 1d 1w)\n"
     "• /auto max 5 = hold up to 5 trades at once (1-20; lowering closes nothing)\n"
+    "• /auto risk 30 = new trades lose $30 at their stop (1-500) · /auto daily 150 = stop new entries after $150 of "
+    "realised loss in a UTC day (5-5000)\n"
     "• /auto trades = its open and last closed trades · /account = every position on the testnet account\n\n"
     "Swing toolkit (paper; only when the bot was started with --swing)\n"
     "• /setups = trend / swing / SMC setups waiting for the next candle open\n"
@@ -476,8 +478,23 @@ class CommandHandler:
                 return f"How many at most? A whole number from {lo} to {hi}, e.g. /auto max 5 (now {t.max_open})."
             t.set_max_open(int(n))
             return self._auto_status()
-        return ("I didn't catch that. Try /auto, /auto on, /auto off, /auto 30m, /auto max 5 or /auto trades.\n"
-                f"Timeframes: {' '.join(WINDOWS)}.")
+        if w in ("risk", "daily", "loss", "dailyloss", "daily-loss"):
+            from .signal_trader import DAILY_LOSS_RANGE, RISK_RANGE
+            risk = w == "risk"
+            (lo, hi), now = (RISK_RANGE, t.risk_usd) if risk else (DAILY_LOSS_RANGE, t.daily_loss_usd)
+            raw = (words[1] if len(words) > 1 else "").lstrip("$")
+            try:
+                v = float(raw)
+            except ValueError:
+                v = None
+            if v is None or not lo <= v <= hi:
+                ex = "/auto risk 30" if risk else "/auto daily 150"
+                what = "lost at the stop per new trade" if risk else "of realised loss in a day before new entries stop"
+                return f"How many USDT {what}? A number from {lo:g} to {hi:g}, e.g. {ex} (now ${now:g})."
+            (t.set_risk_usd if risk else t.set_daily_loss_usd)(v)
+            return self._auto_status()
+        return ("I didn't catch that. Try /auto, /auto on, /auto off, /auto 30m, /auto max 5, /auto risk 30, "
+                f"/auto daily 150 or /auto trades.\nTimeframes: {' '.join(WINDOWS)}.")
 
     def _auto_status(self) -> str:
         t = self.signal_trader
@@ -503,7 +520,8 @@ class CommandHandler:
             lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if m['side'] == 'buy' else 'SHORT'} "
                          f"entry {_px(m['entry'])} · stop {_px(m['stop'])} · target {_px(m['target'])}"
                          + (f" · {_money(pnl)}" if pnl is not None else ""))
-        lines.append("Change: /auto on|off · /auto 30m · /auto max 5 · trades: /auto trades")
+        lines.append("Change: /auto on|off · /auto 30m · /auto max 5 · /auto risk 30 · /auto daily 150 · "
+                     "trades: /auto trades")
         return "\n".join(lines)
 
     def _auto_trades(self, n: int = 10) -> str:

@@ -222,6 +222,8 @@
   .seg.tight button { padding: 4px 9px; min-height: 28px; font-size: 12.5px; }
   .seg.tight button:disabled { opacity: .5; }
   .st-max { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .st-max input { font: inherit; width: 5.5em; color: var(--text); background: var(--panel-2); border: 1px solid var(--line);
+    border-radius: 8px; min-height: 28px; padding: 2px 6px; }
   .st-max select { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
     min-height: 28px; padding: 2px 6px; }
   .pnl-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 10px; }
@@ -282,6 +284,8 @@
         <div class="sw-right"><a class="more" href="/terminal">Signals in the terminal →</a>
           <div class="seg tight" role="group" aria-label="Timeframe the auto-trader trades" id="st-tf" hidden></div>
           <label class="st-max" id="st-max-l" hidden>Most open <select id="st-max" title="The most trades it holds at once (positions + waiting entries). Lowering it closes nothing."></select></label>
+          <label class="st-max" id="st-risk-l" hidden title="What a NEW trade loses if it hits its stop (its size is still capped by the largest position). Open trades keep their size.">Risk $<input type="number" id="st-risk" data-key="risk_usd" step="1"></label>
+          <label class="st-max" id="st-day-l" hidden title="After this much realised loss in a UTC day it takes no new trade until the next day. Open trades stay managed.">Day limit $<input type="number" id="st-day" data-key="daily_loss_usd" step="1"></label>
           <span class="sw-power" id="st-power" hidden><span id="st-power-l"></span><button type="button" class="sw-toggle" id="st-toggle" role="switch" aria-checked="true" aria-label="Signal auto-trader entries on or off"></button></span></div></div>
       <div id="st-body" class="empty">Loading…</div>
     </section>
@@ -1477,6 +1481,11 @@ function stShow(d) {
       maxSel.innerHTML = Array.from({ length: hi - lo + 1 }, (_, i) => `<option value="${lo + i}">${lo + i}</option>`).join("");
     maxSel.value = String(d.max_open);
   }
+  for (const [box, label, rng, v] of [["st-risk", "st-risk-l", d.risk_range, d.risk_usd], ["st-day", "st-day-l", d.daily_loss_range, d.daily_loss_usd]]) {
+    $(label).hidden = typeof TOKEN === "undefined" || !rng;
+    if ($(label).hidden || document.activeElement === $(box)) continue;      // never overwrite what is being typed
+    [$(box).min, $(box).max] = rng; $(box).value = v; $(box).dataset.was = v;
+  }
   const st = d.stats, open = Object.entries(d.open), pend = Object.keys(d.pending);
   const tf = (wins.find(([, v]) => v === d.window_s) || [d.window_s + "s"])[0];
   $("st-body").className = "";
@@ -1509,6 +1518,25 @@ $("st-toggle").addEventListener("click", async e => {
   } catch (err) { alert("Could not switch the auto-trader: " + err.message); }
   finally { btn.disabled = false; }
 });
+for (const id of ["st-risk", "st-day"]) {
+  const inp = $(id), what = id === "st-risk" ? "risk per trade" : "daily loss limit";
+  inp.addEventListener("keydown", e => { if (e.key === "Enter") inp.blur(); if (e.key === "Escape") { inp.value = inp.dataset.was; inp.blur(); } });
+  inp.addEventListener("change", async () => {
+    const v = Number(inp.value), was = Number(inp.dataset.was);
+    if (!(v >= Number(inp.min) && v <= Number(inp.max))) { alert(`The ${what} must be from $${inp.min} to $${inp.max}.`); inp.value = was; return; }
+    if (v === was) return;
+    const says = id === "st-risk" ? `New trades will lose about $${v} if they hit their stop (open trades keep their size).`
+                                  : `No new trade after $${v} of realised loss in a UTC day (open trades stay managed).`;
+    if (!confirm(`Set the testnet auto-trader's ${what} to $${v} (now $${was})?\n\n${says}`)) { inp.value = was; return; }
+    inp.disabled = true;
+    try {
+      const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ [inp.dataset.key]: v }) });
+      const d = await r.json().catch(() => ({}));
+      if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+      inp.disabled = false; stShow(d);
+    } catch (err) { alert(`Could not change the ${what}: ` + err.message); inp.value = was; inp.disabled = false; }
+  });
+}
 $("st-max").addEventListener("change", async e => {
   const sel = e.currentTarget, n = Number(sel.value);
   if (!confirm(`Let the testnet auto-trader hold up to ${n} trade${n === 1 ? "" : "s"} at once?\n\nLowering it closes nothing: it just takes no new trade until fewer than that are open.`)) { stPoll(); return; }

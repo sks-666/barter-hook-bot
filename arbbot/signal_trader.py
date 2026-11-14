@@ -42,6 +42,8 @@ KEEP_TRADES = 300
 # the timeframes it can trade (the terminal's Signals panel buttons), in seconds
 WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
 MAX_OPEN_RANGE = (1, 20)     # the most open trades (positions + waiting limit entries) it can be set to from the page
+RISK_RANGE = (1.0, 500.0)    # USDT lost at the stop per trade, settable from the page
+DAILY_LOSS_RANGE = (5.0, 5000.0)   # USDT of realised loss in a UTC day before new entries stop, settable from the page
 
 
 def _clamp(v, lo, hi):
@@ -70,6 +72,10 @@ class SignalTrader:
         saved = self.s.get("max_open")                               # likewise the most open trades
         if isinstance(saved, int) and MAX_OPEN_RANGE[0] <= saved <= MAX_OPEN_RANGE[1]:
             self.max_open = saved
+        for key, (lo, hi) in (("risk_usd", RISK_RANGE), ("daily_loss_usd", DAILY_LOSS_RANGE)):   # and the risk limits
+            saved = self.s.get(key)
+            if isinstance(saved, (int, float)) and not isinstance(saved, bool) and lo <= saved <= hi:
+                setattr(self, key, float(saved))
         self.last_error, self.last_run, self.note = "", 0.0, ""
         self.last_signals: list[dict] = []
         self._halted_day = None
@@ -140,6 +146,29 @@ class SignalTrader:
         self._save()
         log.info("signal auto-trader: most open trades set to %d", n)
         self.notify(f"🤖 TESTNET signal auto-trader: at most {n} open trade{'s' if n != 1 else ''} now")
+
+    def _set_usd(self, key: str, value, rng: tuple, what: str) -> float:
+        lo, hi = rng
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not lo <= value <= hi:
+            raise ValueError(f"the {what} must be a number of USDT from {lo:g} to {hi:g}")
+        v = round(float(value), 2)
+        setattr(self, key, v)
+        self.s[key] = v
+        self._save()
+        log.info("signal auto-trader: %s set to %g USDT", what, v)
+        return v
+
+    def set_risk_usd(self, value) -> None:
+        """USDT lost if a NEW trade hits its stop (sizing; still capped by max_usd of position). Saved; open trades
+        keep the size they were opened with."""
+        v = self._set_usd("risk_usd", value, RISK_RANGE, "risk per trade")
+        self.notify(f"🤖 TESTNET signal auto-trader: new trades risk ${v:g} at the stop")
+
+    def set_daily_loss_usd(self, value) -> None:
+        """Realised loss in a UTC day after which no new entry is made (open trades stay managed). Saved."""
+        v = self._set_usd("daily_loss_usd", value, DAILY_LOSS_RANGE, "daily loss limit")
+        self._halted_day = None                                       # announce again if the new limit is reached
+        self.notify(f"🤖 TESTNET signal auto-trader: daily loss limit ${v:g} (today so far {self.realized_today():+.2f})")
 
     def _max_hold_of(self, m: dict) -> float:
         w = m.get("window_s") or self.window_s
@@ -360,7 +389,8 @@ class SignalTrader:
     def view(self) -> dict:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
         return dict(venue="testnet", enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
-                    max_open_range=list(MAX_OPEN_RANGE),
+                    max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE),
+                    daily_loss_range=list(DAILY_LOSS_RANGE),
                     risk_usd=self.risk_usd,
                     max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd,
                     daily_loss_usd=self.daily_loss_usd, entry_ttl_s=self.entry_ttl_s, max_hold_s=self.max_hold_s,

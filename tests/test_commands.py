@@ -406,6 +406,13 @@ class AutoTraderCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("1 to 20", await self.h.reply("/auto max 50"))
         self.assertEqual(self.trader.max_open, 7)
         self.assertIn("didn't catch", await self.h.reply("/auto 2h"))
+        self.assertIn("Per trade: $30 at the stop", await self.h.reply("/auto risk $30"))
+        self.assertEqual(self.trader.risk_usd, 30.0)
+        self.assertIn("stops at -$150", await self.h.reply("/auto daily 150"))
+        self.assertEqual(self.trader.daily_loss_usd, 150.0)
+        self.assertIn("from 1 to 500", await self.h.reply("/auto risk 0"))
+        self.assertIn("from 5 to 5000", await self.h.reply("/auto daily lots"))
+        self.assertEqual((self.trader.risk_usd, self.trader.daily_loss_usd), (30.0, 150.0))
         self.assertIn("Entries ON", await self.h.reply("/auto on"))
 
     async def test_auto_trades_lists_open_and_closed(self):

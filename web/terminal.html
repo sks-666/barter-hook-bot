@@ -193,6 +193,9 @@
   .sg-strip .v { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sg-strip .auto-tf { min-height: 18px; padding: 0 6px; margin-left: 4px; font-size: 11px; font-weight: 700;
     color: var(--amber-ink); background: var(--amber); border-color: var(--amber); vertical-align: 1px; }
+  .sg-strip .v.wrap { white-space: normal; overflow: visible; line-height: 1.5; }
+  .sg-strip .auto-usd { font: inherit; font-size: 12px; width: 4.4em; color: var(--text); background: var(--panel-2);
+    border: 1px solid var(--amber); border-radius: 3px; padding: 0 3px; min-height: 18px; }
   .sg-strip .auto-max { font: inherit; font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--amber);
     border-radius: 3px; padding: 0 2px; min-height: 18px; }
   .sg-tw { overflow-x: auto; max-height: 360px; overflow-y: auto; border-bottom: 1px solid var(--line); }
@@ -1845,6 +1848,36 @@ async function autoPost(body, what) {
   const { ok, ...view } = d; S.auto = view;
   renderSignals();
 }
+// "Risk": USDT lost at the stop per new trade, and the day's realised loss after which it takes no new trade; settable
+function autoRiskCell(a) {
+  const tip = `Risk: what a NEW trade loses if it hits its stop (its size is still capped at $${a.max_usd} of position). ` +
+    `Day: after this much realised loss in a UTC day it takes no new trade until the next day. Confidence ≥ ${a.min_conf} · ` +
+    `entry order lives ${dur(a.entry_ttl_s)} · max hold ${dur(a.max_hold_s)}`;
+  const box = (key, v, [lo, hi], label) => `<input type="number" class="auto-usd" data-auto-set="${key}" value="${v}" min="${lo}" max="${hi}" step="1" aria-label="${label}">`;
+  const edit = canControl() && a.risk_range && a.daily_loss_range;
+  const val = edit ? `$${box("risk_usd", a.risk_usd, a.risk_range, "Risk per trade in USDT")} · day −$${box("daily_loss_usd", a.daily_loss_usd, a.daily_loss_range, "Daily loss limit in USDT")}`
+    : `$${a.risk_usd} risk · day −$${a.daily_loss_usd}`;
+  return `<div title="${esc(tip)}"><div class="l">Risk per trade · day limit</div><div class="v wrap">${val}</div></div>`;
+}
+document.addEventListener("keydown", ev => {                       // Enter applies, Escape puts the value back
+  const inp = ev.target.closest?.("[data-auto-set]");
+  if (!inp) return;
+  if (ev.key === "Enter") inp.blur();
+  else if (ev.key === "Escape") { inp.value = S.auto[inp.dataset.autoSet]; inp.blur(); }
+});
+const AUTO_SET = { risk_usd: ["risk per trade", v => `New trades will lose about $${v} if they hit their stop (open trades keep their size).`],
+                   daily_loss_usd: ["daily loss limit", v => `No new trade after $${v} of realised loss in a UTC day (open trades stay managed).`] };
+document.addEventListener("change", async ev => {
+  const inp = ev.target.closest("[data-auto-set]");
+  if (!inp) return;
+  const key = inp.dataset.autoSet, [what, says] = AUTO_SET[key], v = Number(inp.value), was = S.auto[key];
+  if (!(v >= Number(inp.min) && v <= Number(inp.max))) { alert(`The ${what} must be from $${inp.min} to $${inp.max}.`); inp.value = was; return; }
+  if (v === was) return;
+  if (!confirm(`Set the testnet auto-trader's ${what} to $${v} (now $${was})?\n\n${says(v)}`)) { inp.value = was; inp.blur(); return; }
+  inp.disabled = true;
+  try { await autoPost({ [key]: v }); }
+  catch (err) { alert(`Could not change the ${what}: ` + err.message); inp.value = was; inp.disabled = false; }
+});
 document.addEventListener("change", async ev => {
   const sel = ev.target.closest("[data-auto-max]");
   if (!sel) return;
@@ -1881,7 +1914,7 @@ function sigAuto() {
     cell("Today", sgMoney(st.today) + " $", cls(st.today), `daily loss limit $${a.daily_loss_usd}`) +
     cell("Realised", sgMoney(st.realized) + " $", cls(st.realized)) +
     cell("Won / lost", `${st.wins} / ${st.losses}${st.win_rate != null ? ` · ${Math.round(st.win_rate * 100)}%` : ""}`) +
-    cell("Rules", `$${a.risk_usd} risk · conf ≥ ${a.min_conf}`, "", `max $${a.max_usd} per position · entry order lives ${dur(a.entry_ttl_s)} · max hold ${dur(a.max_hold_s)}`) +
+    autoRiskCell(a) +
     `</div>`;
 }
 function sigTrades() {
@@ -1946,7 +1979,7 @@ function sigWhy(c) {
 }
 function renderSignals() {
   const sel = document.activeElement;
-  if (sel?.matches?.("[data-auto-max]:not(:disabled)")) {        // the "most open" list is in use: redraw once it is left
+  if (sel?.matches?.("[data-auto-max]:not(:disabled), [data-auto-set]:not(:disabled)")) {   // a setting is being edited: redraw once it is left
     if (!sel.dataset.held) { sel.dataset.held = "1"; sel.addEventListener("blur", () => setTimeout(renderSignals), { once: true }); }
     return;
   }

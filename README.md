@@ -423,6 +423,7 @@ Type in plain words or use the `/` menu (registered automatically):
 | `/auto on` · `/auto off` | New entries on or off. Open trades stay managed: stop, target, signal flip, maximum hold |
 | `/auto 30m` (or `/auto tf 30m`) | Trade the 30m signal from the next pass (1m 5m 15m 30m 1h 4h 1d 1w). Open trades keep the maximum hold of their own timeframe |
 | `/auto max 5` | Hold up to 5 trades at once (1-20). Lowering it closes nothing |
+| `/auto risk 30` · `/auto daily 150` | New trades lose about $30 at their stop (1-500; open trades keep their size) · no new trade after $150 of realised loss in a UTC day (5-5000) |
 | `/auto trades` | Its open trades, waiting limit entries and the last 10 closed trades with their result in $ and R and why each closed |
 | `/account` (or "my futures account") | The futures account the order ticket trades (testnet on the testnet bot): balance, equity, unrealised P&L, every position with who opened it (signal auto-trader, swing mirror, order ticket, arbitrage, or outside the bot) |
 | `/setups` · `/swing` · `/journal [n]` | The swing / trend / SMC paper accounts (only with `run.py --swing`; see the swingkit section) |
@@ -489,6 +490,8 @@ works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md
 |---|---|---|
 | **Timeframe** it trades (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w) | Pick a timeframe at the top of the panel, then press the orange **Trade …** button in "Its timeframe". It reads **"= panel"** once they match. | The timeframe buttons |
 | **Most open trades** (1–20, default 3) | The list in "Its open trades / most" | The **Most open** list |
+| **Risk per trade**: $ lost if a new trade hits its stop (1–500, default 20) | The first box in "Risk per trade · day limit" | The **Risk $** box |
+| **Daily loss limit**: no new trade after this much realised loss in a UTC day (5–5000, default 100) | The second box in "Risk per trade · day limit" | The **Day limit $** box |
 | **New entries** on / off | — | The Entries ON/OFF switch |
 
 The panel's timeframe buttons on their own only change what the table shows. The auto-trader trades one timeframe,
@@ -499,14 +502,13 @@ its own. Each change asks first, applies within 30 s and is announced on Telegra
 - **Entries OFF** still manages the open trades.
 
 **Set with flags (restart needed):**
-- `--signal-trader-risk-usd` (20)
 - `--signal-trader-max-usd` (2000)
-- `--signal-trader-daily-loss-usd` (100)
 - `--signal-trader-min-conf` (60)
-- `--signal-trader-window` (1h) and `--signal-trader-max-open` (3), which only apply until you pick a value on the page
+- `--signal-trader-window` (1h), `--signal-trader-max-open` (3), `--signal-trader-risk-usd` (20) and
+  `--signal-trader-daily-loss-usd` (100), which only apply until you pick a value on the page or in Telegram
 
 State: `data/signal-trader-testnet.json`. API: `GET /api/signal-trader`; `POST /api/signal-trader` with `{"enabled"}`,
-`{"window_s"}` or `{"max_open"}`, which needs the control token.
+`{"window_s"}`, `{"max_open"}`, `{"risk_usd"}` or `{"daily_loss_usd"}`, which needs the control token.
 
 The terminal is otherwise a view: it can't pause, flatten or place orders. It receives the dashboard's control token
 only for these auto-trader settings, and a test checks the token is sent nowhere else.

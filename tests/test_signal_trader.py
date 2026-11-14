@@ -243,6 +243,42 @@ class Trader(unittest.IsolatedAsyncioTestCase):
                     t.set_max_open(bad)
             self.assertEqual(t.max_open, 7)
 
+    def test_the_risk_limits_can_be_set_and_survive_a_restart(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "st.json"
+            t = self.make(path=p)
+            t.set_risk_usd(35)
+            t.set_daily_loss_usd(250.5)
+            t2 = self.make(path=p)                                     # the saved values win over the command line's
+            self.assertEqual((t2.risk_usd, t2.daily_loss_usd), (35.0, 250.5))
+            self.assertEqual((t2.view()["risk_usd"], t2.view()["risk_range"]), (35.0, [1.0, 500.0]))
+            for bad in (0, 0.5, 501, -5, True, "30", None):
+                with self.assertRaises(ValueError):
+                    t.set_risk_usd(bad)
+            for bad in (4, 5001, False):
+                with self.assertRaises(ValueError):
+                    t.set_daily_loss_usd(bad)
+            self.assertEqual((t.risk_usd, t.daily_loss_usd), (35.0, 250.5))
+
+    async def test_a_new_risk_sizes_the_next_trade(self):
+        t = self.make()
+        t.set_risk_usd(40)
+        await t.step()
+        o = self.ticket.sent[0]                                        # stop 2% away (testnet 101 → 98.98): ~$40 at risk
+        self.assertAlmostEqual(o["qty"] * (101.01 - o["sl"]), 40, delta=0.5)
+
+    async def test_raising_the_daily_loss_limit_allows_entries_again(self):
+        t = self.make()
+        t.s["trades"].append(dict(symbol="XRPUSDT", side="buy", pnl=-60.0, closed_ms=int(NOW * 1000), opened_ms=0))
+        await t.step()
+        self.assertIn("daily loss limit (50 USDT)", t.can_enter())
+        self.assertEqual(self.ticket.sent, [])
+        t.set_daily_loss_usd(100)
+        await t.step()
+        self.assertEqual(len(self.ticket.sent), 1)
+
     async def test_more_open_trades_lets_more_coins_in_and_fewer_closes_nothing(self):
         self.desk.rows = [row("SOLUSDT"), row("ETHUSDT", conf=80), row("XRPUSDT", conf=75)]
         t = self.make(max_open=1)
