@@ -216,6 +216,21 @@ class TicketTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len([p for p in self.ex.posts if p.get("closePosition") == "true"]), 2)
         self.assertEqual(self.t.s["tpsl"], {})
 
+    async def test_tp_sl_trigger_on_the_mark_price_when_asked(self):
+        await self.order(side="buy", type="market", size_usdt=200, tp=84000, sl=78000)       # default: last trade
+        await self.order(side="buy", type="market", size_usdt=200, tp=84000, sl=78000, trigger="mark")
+        exits = [p["workingType"] for p in self.ex.posts if p.get("closePosition") == "true"]
+        self.assertEqual(exits, ["CONTRACT_PRICE", "CONTRACT_PRICE", "MARK_PRICE", "MARK_PRICE"])
+
+    async def test_a_resting_limit_keeps_its_mark_trigger_until_it_fills(self):
+        o = await self.order(side="buy", type="limit", price=79000, size_usdt=200, tp=84000, sl=78000, trigger="mark")
+        self.assertEqual(self.t.s["tpsl"][str(o["id"])]["trigger"], "mark")
+        self.ex.open = []
+        self.ex.positions["BTCUSDT"] = 0.002
+        await self.t.refresh()
+        self.assertEqual([p["workingType"] for p in self.ex.posts if p.get("closePosition") == "true"],
+                         ["MARK_PRICE", "MARK_PRICE"])
+
     async def test_refusals_never_reach_the_exchange(self):
         bad = [dict(side="buy", type="market", size_usdt=50),                 # below the 100 USDT minimum
                dict(side="buy", type="market", qty=0.0001),                   # below the minimum quantity

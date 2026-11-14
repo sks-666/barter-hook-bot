@@ -13,7 +13,9 @@ which refuses any non-testnet client), it:
 
 The signal is read from mainnet data (whales, crowd, curve, candles) while orders fill at testnet prices, so every level
 is moved onto the testnet by its distance from the price: entry = testnet price x (signal entry / mainnet price). A coin
-whose testnet price is more than MAX_DRIFT away from mainnet is skipped (its testnet book is not the real market).
+whose testnet price is more than MAX_DRIFT away from mainnet is skipped (its testnet book is not the real market), and so
+is one whose testnet book is too thin for the stop's market close (DEPTH_X x the position within DEPTH_SLIP_R of the
+stop distance past the stop): on a thin book a stop can fill far past its price.
 
 Limits: at most `max_open` positions and pending entries together, no new entries after `daily_loss_usd` of realised
 loss in a UTC day (closed trades' real results from Binance's fills), a cooldown after each exit, the KILL file (the
@@ -38,6 +40,8 @@ ENTRY_TTL = 0.5              # a limit entry waits at most this share of the tim
 HOLD_X = 2.0                 # close after holding this many timeframes (between 30 min and 7 days)
 COOLDOWN_X = 0.5             # no new entry on a coin for this share of the timeframe after an exit (at least 5 min)
 MAX_DRIFT = 0.02             # testnet price this far from mainnet: skip the coin
+DEPTH_X = 2.0                # the testnet book must hold this many times the position near the stop (exit depth)...
+DEPTH_SLIP_R = 0.5           # ...at prices at most this share of the stop distance past the stop
 KEEP_TRADES = 300
 # the timeframes it can trade (the terminal's Signals panel buttons), in seconds
 WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
@@ -331,8 +335,25 @@ class SignalTrader:
                 self.s["cooldown"][sym] = now_ms + int(self.cooldown_s * 1000)
                 log.info("signal trader: %s skipped: %s", sym, getattr(e, "msg", None) or e)
 
+    @staticmethod
+    def _check_exit_depth(book: dict | None, long: bool, ref: float, stop: float, qty: float) -> None:
+        """Refuse a coin whose testnet book could not take the stop's market close near the stop.
+
+        The stop is a market order on the exchange: on a thin testnet book it fills wherever the next resting order
+        is. So the side the stop would close into (asks for a short, bids for a long) must hold DEPTH_X x the position
+        at prices no worse than DEPTH_SLIP_R of the stop distance past the stop. This guards the stop's fill only; it
+        cannot prevent an exchange auto-deleveraging close (clientOrderId "adl_autoclose")."""
+        if not book:
+            raise ValueError("the testnet order book could not be read")
+        worst = stop + DEPTH_SLIP_R * abs(stop - ref) * (-1 if long else 1)
+        levels = book.get("bids" if long else "asks") or []
+        size = sum(v for p, v in levels if (p >= worst if long else p <= worst))
+        if size < DEPTH_X * qty:
+            raise ValueError(f"the testnet book is too thin for its stop: {size:.6g} within reach of the stop, "
+                             f"needs {DEPTH_X:g}x the position ({DEPTH_X * qty:.6g})")
+
     async def _open(self, sym: str, r: dict, now_ms: int) -> None:
-        q = await self.ticket._quote(sym)
+        q = await self.ticket._quote(sym, book=True)
         here = (q["bid"] + q["ask"]) / 2
         drift = here / r["mark"] - 1
         if abs(drift) > MAX_DRIFT:
@@ -346,7 +367,10 @@ class SignalTrader:
         if long and not stop < ref < target or not long and not target < ref < stop:
             raise ValueError("the price has already moved past the stop or the target")
         qty = min(self.risk_usd / abs(ref - stop), self.max_usd / ref)
-        order = dict(symbol=sym, side=side, qty=qty, tp=target, sl=stop)
+        self._check_exit_depth(q.get("book"), long, ref, stop, qty)
+        # stop and target trigger on the MARK price: a stray trade on a thin testnet book can spike the last price (and
+        # fill the stop there), not the mark
+        order = dict(symbol=sym, side=side, qty=qty, tp=target, sl=stop, trigger="mark")
         if market:
             order.update(type="market", slippage_pct=0.3)               # refuse a market order that would slip > 0.3%
         else:

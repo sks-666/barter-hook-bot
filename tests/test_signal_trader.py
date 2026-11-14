@@ -49,7 +49,12 @@ class Ticket:
         self.open_orders = [{"orderId": o["id"], "symbol": o["symbol"]} for o in self.orders]
 
     async def _quote(self, sym, book=False):
-        return {"bid": self.px - 0.01, "ask": self.px + 0.01, "last": self.px}
+        q = {"bid": self.px - 0.01, "ask": self.px + 0.01, "last": self.px}
+        if book:                                                     # a deep book unless a test sets self.book
+            q["book"] = getattr(self, "book", None) or {
+                "bids": [[self.px * (1 - i / 100), 1000.0] for i in range(10)],
+                "asks": [[self.px * (1 + i / 100), 1000.0] for i in range(10)]}
+        return q
 
     async def place_order(self, req):
         self.sent.append(req)
@@ -242,6 +247,30 @@ class Trader(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     t.set_max_open(bad)
             self.assertEqual(t.max_open, 7)
+
+    async def test_its_stop_and_target_trigger_on_the_mark_price(self):
+        await self.make().step()
+        self.assertEqual(self.ticket.sent[0]["trigger"], "mark")
+
+    async def test_a_book_too_thin_for_the_stop_skips_the_coin(self):
+        """A long's stop sells into the bids: with almost nothing between the price and the stop it would fill far away."""
+        t = self.make()                                              # long SOL: entry ~101, stop ~98.98, ~9.9 coins
+        self.ticket.book = {"bids": [[100.99, 3.0], [99.5, 3.0], [90.0, 5000.0]], "asks": [[101.01, 1000.0]]}
+        await t.step()
+        self.assertEqual(self.ticket.sent, [])                       # 6 coins within reach of the stop < 2x 9.9
+        self.assertIn("SOLUSDT", t.s["cooldown"])                    # tried again after the cooldown
+        self.ticket.book = {"bids": [[100.99, 10.0], [98.5, 10.0]], "asks": [[101.01, 1000.0]]}   # 98.5 ≥ stop - half a risk
+        t.s["cooldown"] = {}
+        await t.step()
+        self.assertEqual(len(self.ticket.sent), 1)
+
+    def test_the_exit_depth_is_read_on_the_side_the_stop_closes_into(self):
+        thin_asks = {"bids": [[99, 1e6]], "asks": [[101, 1.0], [150, 1e6]]}
+        with self.assertRaises(ValueError):                          # a short's stop buys: the asks must be deep
+            SignalTrader._check_exit_depth(thin_asks, long=False, ref=100, stop=102, qty=10)
+        SignalTrader._check_exit_depth(thin_asks, long=True, ref=100, stop=98, qty=10)   # a long's stop sells: bids
+        with self.assertRaises(ValueError):
+            SignalTrader._check_exit_depth(None, long=True, ref=100, stop=98, qty=10)
 
     def test_the_risk_limits_can_be_set_and_survive_a_restart(self):
         import tempfile

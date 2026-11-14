@@ -294,9 +294,10 @@ class TestnetTicket:
             self._own(sym)
             if tp or sl:
                 if out["status"] == "filled":
-                    await self._place_tpsl(sym, side, tp, sl, o.get("orderId"))
+                    await self._place_tpsl(sym, side, tp, sl, o.get("orderId"), trigger)
                 elif out["status"] == "new":
-                    self.s["tpsl"][str(o["orderId"])] = {"symbol": sym, "side": side, "tp": tp, "sl": sl}
+                    self.s["tpsl"][str(o["orderId"])] = {"symbol": sym, "side": side, "tp": tp, "sl": sl,
+                                                         "trigger": trigger}
             self._history(dict(out, updated=int(self.clock() * 1000)))
             self._save()
         if out["status"] == "filled":
@@ -337,7 +338,10 @@ class TestnetTicket:
                     stop_price=float(o.get("stopPrice") or 0) or None, status=status, filled_px=avg or None,
                     fee=0.0, reason="", created=int(o.get("updateTime") or self.clock() * 1000))
 
-    async def _place_tpsl(self, sym: str, side: str, tp: float | None, sl: float | None, parent) -> None:
+    async def _place_tpsl(self, sym: str, side: str, tp: float | None, sl: float | None, parent,
+                          trigger: str = "last") -> None:
+        """The take-profit and stop that close the position, triggered by the last trade price or, with trigger="mark",
+        by the mark price (which a single stray trade on a thin book cannot spike)."""
         exit_side = "SELL" if side == "buy" else "BUY"
         for kind, px in (("TAKE_PROFIT_MARKET", tp), ("STOP_MARKET", sl)):
             if not px:
@@ -345,7 +349,8 @@ class TestnetTicket:
             try:
                 await self.c.post("fapi", "/fapi/v1/algoOrder", {
                     "algoType": "CONDITIONAL", "symbol": sym, "side": exit_side, "type": kind,
-                    "triggerPrice": _fmt(self._px(sym, px)), "closePosition": "true", "workingType": "CONTRACT_PRICE"})
+                    "triggerPrice": _fmt(self._px(sym, px)), "closePosition": "true",
+                    "workingType": "MARK_PRICE" if trigger == "mark" else "CONTRACT_PRICE"})
             except BinanceError as e:                  # the entry stands; say clearly that its protection is missing
                 log.error("%s: could not place the %s for order %s: %s", sym, kind, parent, e)
                 self.notify(f"⚠️ {self.venue.upper()} {sym}: the {kind.replace('_', ' ').lower()} could not be placed ({e.msg}). "
@@ -468,7 +473,7 @@ class TestnetTicket:
                 continue
             o = await self.c.get("fapi", "/fapi/v1/order", {"symbol": t["symbol"], "orderId": int(oid)}, signed=True)
             if o.get("status") == "FILLED":
-                await self._place_tpsl(t["symbol"], t["side"], t["tp"], t["sl"], oid)
+                await self._place_tpsl(t["symbol"], t["side"], t["tp"], t["sl"], oid, t.get("trigger", "last"))
             if o.get("status") not in ("NEW", "PARTIALLY_FILLED"):
                 self.s["tpsl"].pop(oid, None)
         flat = {p["symbol"] for p in risk if float(p["positionAmt"]) == 0}
