@@ -451,6 +451,15 @@ and opens nothing. Send `/confirm` within 60 s to open it, or `/cancel`. Then `/
   (no model forecast exists for it).
 * **Paper only.** In `--live` mode `/open` and `/close` refuse; real orders are never placed from a chat message.
 
+## Signal auto-trader (testnet only)
+
+The terminal's Signals panel (`/terminal`) scores each coin from five readings (whales, crowd, futures curve, macro,
+news) into LONG / SHORT / WAIT with an entry, stop and target. With `--live --testnet --signal-trader` the bot trades
+the confident ones on the Binance futures **testnet**: about $20 at risk per trade, the stop and target on the
+exchange, and limits on open trades and daily loss. Its timeframe and its most open trades are set from the terminal
+or the dashboard, with no restart. **How the signal works, and how to start, change and troubleshoot it:
+[docs/SIGNAL-AUTO-TRADER.md](docs/SIGNAL-AUTO-TRADER.md).**
+
 ## Trading bot: Freqtrade (`/trading`, `freqkit/`)
 
 [Freqtrade](https://github.com/freqtrade/freqtrade) runs as a **separate process** (a dedicated venv or the official
