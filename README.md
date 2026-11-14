@@ -406,6 +406,12 @@ Tuning is in `[alerts]` in `config.toml` (per-category switches, one signal aler
 10 s debounce on feed problems). Messages are queued and rate-limited, failures never affect trading, and the
 token is never logged.
 
+**Signal alerts only when the arbitrage bot would trade.** While its entries are paused (Pause, `/pause`, or the
+default paused start), halted (kill file, daily loss limit, fault) or switched off (`--no-trade`, e.g. the mainnet
+monitor bot), it sends **no** signal messages. You still get the pause / halt / resume messages, so you know why it
+is quiet, and `/signals` still answers. To get them anyway, marked "→ NOT trading (reason)", set
+`notify_signals_when_not_trading = true` under `[alerts]`.
+
 ### Ask the bot from Telegram
 
 Type in plain words or use the `/` menu (registered automatically):

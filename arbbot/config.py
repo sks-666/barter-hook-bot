@@ -112,6 +112,9 @@ class AlertsCfg:
     """Telegram alerts. Active only when TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID are set in the environment."""
     enabled: bool = True
     notify_signals: bool = True
+    # also alert arbitrage signals the bot will NOT trade (entries paused, halted, or --no-trade)? Off: a paused or
+    # stopped arbitrage bot sends no signal messages (its pause / halt / resume messages still come)
+    notify_signals_when_not_trading: bool = False
     notify_trades: bool = True
     notify_halts: bool = True
     notify_feed: bool = True

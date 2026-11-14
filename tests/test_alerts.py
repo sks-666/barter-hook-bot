@@ -94,7 +94,16 @@ class NotifierTests(unittest.IsolatedAsyncioTestCase):
         await self.n.flush()
         self.assertEqual(len(self.tg.messages), 3)
 
-    async def test_unsent_signal_explains_why(self):
+    async def test_a_signal_the_bot_will_not_trade_is_not_sent(self):
+        self.n.signal(self.sig(), 1000.0, False, "paused manually")       # paused / halted / monitor-only: quiet
+        await self.n.flush()
+        self.assertEqual(self.tg.texts, [])
+        self.n.signal(self.sig(), 1001.0, True)                          # and it is not held back by a cooldown
+        await self.n.flush()
+        self.assertEqual(len(self.tg.texts), 1)
+
+    async def test_unsent_signal_explains_why_when_asked_for(self):
+        self.n.cfg.notify_signals_when_not_trading = True
         self.n.signal(self.sig(), 1000.0, False, "paused manually")
         await self.n.flush()
         self.assertIn("NOT trading (paused manually)", self.tg.texts[0])
@@ -221,7 +230,18 @@ class EngineAlertTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("paused manually", self.tg.texts[0])
         self.assertIn("resumed", self.tg.texts[1])
 
-    async def test_signal_while_halted_says_not_trading(self):
+    async def test_a_paused_bot_sends_no_signal_only_that_it_is_paused(self):
+        t = await self._warm()
+        self.eng.request_halt()
+        set_quotes(self.m, 100.0, 90.0, t)
+        await self.eng.tick(now=t)
+        await self.notifier.flush()
+        self.assertEqual([x for x in self.tg.texts if "SIGNAL" in x], [])
+        self.assertTrue(any("paused manually" in x for x in self.tg.texts))
+        self.assertEqual(len(self.pf.open), 0)
+
+    async def test_signal_while_halted_says_not_trading_when_asked_for(self):
+        self.cfg.alerts.notify_signals_when_not_trading = True
         t = await self._warm()
         self.eng.request_halt()
         set_quotes(self.m, 100.0, 90.0, t)

@@ -137,6 +137,8 @@ class Notifier:
     def signal(self, sig: Signal, now: float, will_trade: bool, reason: str = "") -> None:
         if not (self.enabled and self.cfg.notify_signals):
             return
+        if not will_trade and not self.cfg.notify_signals_when_not_trading:   # paused / halted / monitor-only: quiet
+            return
         if now - self._last_signal.get(sig.symbol, -1e18) < self.cfg.signal_cooldown_s:
             return
         self._last_signal[sig.symbol] = now

@@ -88,6 +88,7 @@ ttl_s = 120                       # a stopped bot disappears from the page after
 [alerts]                      # Telegram; active only if TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID are in .env
 enabled = true
 notify_signals = true             # LONG spot / SHORT perp signal detected
+notify_signals_when_not_trading = false   # also when entries are paused / halted / --no-trade (marked NOT trading)
 notify_trades = true              # entries and exits with P&L
 notify_halts = true               # halts, resumes, faults, kill switch, daily loss limit
 notify_feed = true                # data feed down / REST fallback / recovered
