@@ -115,6 +115,7 @@ class Dashboard:
         self.desk = desk                          # a callable returning deskkit.report.desk_view(...), or None
         self.alert_book = alert_book              # an arbbot.price_alerts.AlertBook (terminal alerts), or None
         self.whales = whales                      # an arbbot.whales.WhaleWatch (big trades, liquidations), or None
+        self.signal_desk = None                   # an arbbot.signals.SignalDesk, made on the first request for it
         self.market = market                      # an arbbot.market.MarketData for the chart / order book panel, or None
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
@@ -201,6 +202,21 @@ class Dashboard:
             except Exception as e:                # a bad results file must not take the page down
                 log.warning("desk view failed: %s: %s", type(e).__name__, e)
                 return web.json_response({"error": f"could not read the desk results: {type(e).__name__}"}, status=500)
+        if kind == "signals":                     # the combined signal (arbbot/signals.py): whales + crowd + curve + macro + news
+            if self.whales is None or self.market is None:
+                return web.json_response({"error": "signals need the whale watch and market data (off in this bot)"},
+                                         status=404)
+            if self.signal_desk is None:
+                from .signals import SignalDesk
+                self.signal_desk = SignalDesk(self.whales, self.market, self.macro)
+            try:
+                window = float(q.get("window", "3600"))
+            except ValueError:
+                return web.json_response({"error": "window must be a number of seconds"}, status=400)
+            sym = q.get("symbol", "").upper()
+            if sym and not (sym.endswith("USDT") and sym.isalnum()):
+                return web.json_response({"error": "symbol must look like BTCUSDT"}, status=400)
+            return web.json_response(await self.signal_desk.view(window, sym or None), headers={"Cache-Control": "no-store"})
         if kind == "whale-marks":
             if self.whales is None:
                 return web.json_response({"error": "the whale watch is off in this bot"}, status=404)

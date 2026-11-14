@@ -274,6 +274,29 @@ class WhaleWatch:
         out.sort(key=lambda r: (r["bias"] == "wait", -r["confidence"], -(r["buy"] + r["sell"])))
         return out[:TOP_N]
 
+    def levels(self, symbol: str, long: bool, window_s: float = FLOW_WINDOW_S) -> dict | None:
+        """The whales' price levels on one coin over the window, for a trade on one side (arbbot/signals.py):
+        anchor = the VWAP of the side that trade joins (buys for a long), other = the opposite side's VWAP,
+        risk = SIG_STOP_SIGMA times the spread of all their prices (None when there are no whale orders)."""
+        since = self.clock() * 1000 - self.clamp_window(window_s) * 1000
+        usd = {True: 0.0, False: 0.0}
+        qty = {True: 0.0, False: 0.0}
+        w = wx = wxx = 0.0
+        for ts, sym, is_buy, u, px in reversed(self.flow_log):
+            if ts < since:
+                break
+            if sym != symbol:
+                continue
+            usd[is_buy] += u
+            qty[is_buy] += u / px
+            w += u; wx += u * px; wxx += u * px * px
+        if not w:
+            return None
+        mean = wx / w
+        vwap = {side: usd[side] / qty[side] if qty[side] else None for side in (True, False)}
+        return {"anchor": vwap[long], "other": vwap[not long],
+                "risk": SIG_STOP_SIGMA * math.sqrt(max(wxx / w - mean * mean, 0.0))}
+
     # ---- the connection --------------------------------------------------------------------------
     async def run(self) -> None:
         """Runs for the life of the bot and never raises: a dropped stream or an unreachable Binance only shows as
