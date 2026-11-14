@@ -373,5 +373,77 @@ class ListenerTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.bot.offsets, [])
 
 
+class AutoTraderCommandTests(unittest.IsolatedAsyncioTestCase):
+    """/auto, /ideas, /account and the /status line, against the auto-trader's fake testnet account."""
+
+    def setUp(self):
+        from arbbot.signal_trader import SignalTrader
+        from tests.test_signal_trader import Desk, Ticket, row
+        self.ticket = Ticket()
+        self.ticket.view = lambda: dict(venue="testnet", balance=5000.0, available=4000.0, unrealized=1.5, equity=5001.5,
+                                        error="", orders=[{"id": 1}], positions=[
+            dict(symbol="SOLUSDT", side="long", notional=100.0, entry=101.0, mark=102.0, pnl=1.5, roe=3.0, source="signal"),
+            dict(symbol="DOGEUSDT", side="short", notional=50.0, entry=0.2, mark=0.19, pnl=2.0, roe=4.0, source="swing:trend")])
+        self.desk = Desk([row("SOLUSDT", conf=70), row("ETHUSDT", bias="wait", conf=0, score=0.05)])
+        self.trader = SignalTrader(self.desk, self.ticket, 3600, max_open=3)
+        self.h = CommandHandler(build(trading=False), "TESTNET")
+        self.h.signal_trader, self.h.signal_desk, self.h.ticket = self.trader, self.desk, self.ticket
+
+    async def test_auto_shows_its_settings_and_status(self):
+        text = await self.h.reply("/auto")
+        self.assertIn("Entries ON · 1h signal", text)
+        self.assertIn("Open 0 / most 3", text)
+        self.assertIn("/auto max 5", text)
+
+    async def test_auto_controls_entries_timeframe_and_most_open(self):
+        self.assertIn("Entries OFF", await self.h.reply("/auto off"))
+        self.assertFalse(self.trader.s["enabled"])
+        self.assertIn("30m signal", await self.h.reply("/auto 30m"))
+        self.assertEqual(self.trader.window_s, 1800)
+        self.assertIn("already trades the 30m", await self.h.reply("/auto tf 30m"))
+        self.assertIn("most 7", await self.h.reply("/auto max 7"))
+        self.assertEqual(self.trader.max_open, 7)
+        self.assertIn("1 to 20", await self.h.reply("/auto max 50"))
+        self.assertEqual(self.trader.max_open, 7)
+        self.assertIn("didn't catch", await self.h.reply("/auto 2h"))
+        self.assertIn("Entries ON", await self.h.reply("/auto on"))
+
+    async def test_auto_trades_lists_open_and_closed(self):
+        await self.trader.step()                                    # SOL opens at market
+        text = await self.h.reply("/auto trades")
+        self.assertIn("SOL LONG", text)
+        self.assertIn("No closed trades yet.", text)
+
+    async def test_ideas_show_the_combined_signal_and_what_the_auto_trader_may_take(self):
+        text = await self.h.reply("/ideas")
+        self.assertIn("Combined signal · 1h", text)
+        self.assertIn("SOL LONG", text)
+        self.assertIn("auto-trader may take it", text)
+        self.assertIn("ETH WAIT", text)
+        other = await self.h.reply("/ideas 4h")
+        self.assertIn("/auto 4h to switch it", other)
+        self.assertNotIn("may take it", other)
+        self.assertIn("One of", await self.h.reply("/ideas 2h"))
+
+    async def test_account_lists_every_position_and_who_opened_it(self):
+        await self.trader.step()                                    # the auto-trader now holds SOL
+        text = await self.h.reply("/account")
+        self.assertIn("TESTNET", text)
+        self.assertIn("SOL LONG $100 · entry 101.0000 → 102.0000 · +$1.50 (+3.0%) · signal auto-trader", text)
+        self.assertIn("swing mirror (trend)", text)
+
+    async def test_status_has_an_auto_trader_line_and_without_it_the_commands_explain(self):
+        self.assertIn("🤖 Auto-trader: entries ON · 1h · 0/3 open", await self.h.reply("/status"))
+        bare = CommandHandler(build(trading=False))
+        self.assertNotIn("Auto-trader", await bare.reply("/status"))
+        self.assertIn("isn't running in this bot", await bare.reply("/auto"))
+        self.assertIn("isn't running in this bot", await bare.reply("/ideas"))
+        self.assertIn("No futures account", await bare.reply("/account"))
+
+    def test_the_menu_has_the_new_commands(self):
+        self.assertTrue({"auto", "ideas", "account"} <= {c for c, _ in MENU})
+        self.assertTrue(all(len(d) <= 256 and c.islower() for c, d in MENU))
+
+
 if __name__ == "__main__":
     unittest.main()

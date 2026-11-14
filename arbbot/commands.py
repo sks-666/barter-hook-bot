@@ -1,5 +1,6 @@
-"""Telegram command interface: ask the bot what the market looks like, pause/resume entries, and open or close
-custom PAPER trades.
+"""Telegram command interface: ask the bot what the market looks like, pause/resume entries, open or close custom
+PAPER trades, read the combined signal (/ideas) and the futures account (/account), and steer the testnet signal
+auto-trader (/auto: on/off, timeframe, most open trades).
 
 CommandHandler turns a message into a reply from live engine state (no network of its own: easy to test).
 TelegramListener long-polls getUpdates, answers ONLY the configured chat, and ignores everyone else.
@@ -24,7 +25,7 @@ log = logging.getLogger("commands")
 PENDING_TTL_S = 60.0  # a /open request must be confirmed within this long
 
 MENU = [
-    ("signals", "Any long/short trades in the market right now?"),
+    ("signals", "Arbitrage: any spot/perp trades right now?"),
     ("status", "Bot health, feed and P&L summary"),
     ("positions", "Open positions; details: /positions BTC"),
     ("pnl", "Profit and loss, recent trades"),
@@ -36,6 +37,9 @@ MENU = [
     ("confirm", "Confirm the pending /open"),
     ("cancel", "Cancel the pending /open"),
     ("close", "Close a paper position: /close BTC"),
+    ("auto", "Signal auto-trader: /auto · on|off · 30m · max 5"),
+    ("ideas", "Combined signal LONG/SHORT ideas: /ideas 30m"),
+    ("account", "Testnet futures account: every position, who opened it"),
     ("setups", "Swing/trend/SMC setups waiting for the next candle"),
     ("journal", "Swing paper journal: stats and last trades"),
     ("swing", "Swing paper accounts: equity and open trades"),
@@ -57,12 +61,20 @@ HELP = (
     "• It shows a preview first. /confirm within 60 s opens it, /cancel drops it\n"
     "• /close BTC closes both sides; until then only the protective exits apply\n"
     "• Not available: a pure long, a pure short, or the reverse pair (short spot / long perp)\n\n"
+    "Combined signal and the auto-trader (TESTNET, test money)\n"
+    "• /ideas [30m] = LONG / SHORT ideas from whales, crowd, curve, macro and news over a timeframe "
+    "(default: the auto-trader's)\n"
+    "• /auto = the auto-trader: on/off, timeframe, open trades, results\n"
+    "• /auto on · /auto off = new entries on or off (open trades stay managed)\n"
+    "• /auto 30m = trade the 30m signal (1m 5m 15m 30m 1h 4h 1d 1w)\n"
+    "• /auto max 5 = hold up to 5 trades at once (1-20; lowering closes nothing)\n"
+    "• /auto trades = its open and last closed trades · /account = every position on the testnet account\n\n"
     "Swing toolkit (paper; only when the bot was started with --swing)\n"
     "• /setups = trend / swing / SMC setups waiting for the next candle open\n"
     "• /swing = the three paper accounts · /journal [n] = stats and the last n trades with the reason for each\n"
     "• /swing off = no new swing entries (open ones keep their stops and exits) · /swing on = trade again\n\n"
-    "I only trade LONG spot / SHORT perp, when the perp is rich versus spot. "
-    "Everything else I show is information only."
+    "The arbitrage bot only trades LONG spot / SHORT perp, when the perp is rich versus spot. On the testnet the "
+    "signal auto-trader and the swing mirror also trade, with test money. Everything else I show is information only."
 )
 
 _STOP = {"a", "i", "is", "it", "me", "my", "of", "on", "or", "to", "do", "in", "at", "an", "and", "the", "any", "all"}
@@ -96,6 +108,9 @@ class CommandHandler:
         self.pending: tuple[str, float, float] | None = None  # (symbol, usd, expires_at) from /open, awaiting /confirm
         self._now = time.monotonic                            # replaceable in tests
         self.swing = None                                     # a swingkit SwingRunner when started with --swing
+        self.signal_trader = None                             # the testnet SignalTrader when started with --signal-trader
+        self.signal_desk = None                               # the combined signal (arbbot/signals.py), when whales run
+        self.ticket = None                                    # the futures order ticket (testnet account), if any
 
     # ---- routing -------------------------------------------------------------------------------
     async def reply(self, text: str) -> str:
@@ -115,6 +130,8 @@ class CommandHandler:
             if self.swing is None:
                 return self._swing("swing")
             return await self.swing.set_enabled(arg.strip().lower() == "on")
+        if cmd in ("/ideas", "/idea", "/combo"):
+            return await self._ideas(arg.strip())
         return self.answer(t)
 
     def answer(self, text: str) -> str:
@@ -147,6 +164,10 @@ class CommandHandler:
             return self._resume()
         if cmd in ("/setups", "/setup", "/journal", "/swing"):
             return self._swing(cmd.lstrip("/"), arg)
+        if cmd in ("/auto", "/autotrader", "/bot"):
+            return self._auto(arg)
+        if cmd in ("/account", "/acct", "/futures"):
+            return self._account()
         return f"Unknown command {cmd}.\n\n{HELP}"
 
     def _natural(self, low: str) -> str:
@@ -158,6 +179,12 @@ class CommandHandler:
             return ("To open a custom PAPER trade use a command: /open BTC 200, then /confirm. It buys the spot (LONG) "
                     "and sells the perp (SHORT) together, as one hedged pair. "
                     "I never place real orders from a chat message.")
+        if has("auto-trader", "auto trader", "autotrader", "auto trade"):
+            return self._auto()
+        if has("futures account", "testnet account", "my account", "balance"):
+            return self._account()
+        if has("idea", "combined signal"):
+            return "For the combined signal's LONG / SHORT ideas use /ideas (or /ideas 30m for another timeframe)."
         if has("position", "holding", "open trade", "what do you hold"):
             sym = self._find_symbol(words)
             return self._position_detail(sym) if sym and sym in self.e.pf.open else self._positions()
@@ -255,7 +282,17 @@ class CommandHandler:
             f"Signals now: {st['signals']} · open positions: {st['open']}/{st['max_open']} (${st['open_notional']:.0f})\n"
             f"P&L today {_money(st['day'])} · all-time {_money(st['realized'])} · unrealised {_money(st['unrealized'])}\n"
             f"Trades: {st['wins']}W / {st['losses']}L · uptime {_dur(st['uptime_s'])}"
-        )
+        ) + self._auto_line()
+
+    def _auto_line(self) -> str:
+        """One line on the testnet auto-trader for /status (empty when it doesn't run here)."""
+        t = self.signal_trader
+        if t is None:
+            return ""
+        v = t.view()
+        return (f"\n🤖 Auto-trader: entries {'ON' if v['enabled'] else 'OFF'} · {self._tf(v['window_s'])} · "
+                f"{len(v['open'])}/{v['max_open']} open · today {_money(v['stats']['today'])} · "
+                f"{v['error'] or v['blocked'] or 'looking for entries'} (/auto)")
 
     def _positions(self, arg: str = "") -> str:
         if arg.strip():
@@ -403,6 +440,149 @@ class CommandHandler:
         if what == "journal":
             return self.swing.journal_text(int(arg) if arg.strip().isdigit() else 5)
         return self.swing.status_text()
+
+    # ---- the combined signal and its testnet auto-trader ---------------------------------------
+    @staticmethod
+    def _tf(window_s: float) -> str:
+        from .signal_trader import WINDOWS
+        return next((k for k, v in WINDOWS.items() if v == window_s), f"{window_s:g}s")
+
+    def _auto(self, arg: str = "") -> str:
+        """/auto (status), /auto on|off, /auto <timeframe>, /auto max <n>, /auto trades."""
+        from .signal_trader import MAX_OPEN_RANGE, WINDOWS
+        t = self.signal_trader
+        if t is None:
+            return ("The signal auto-trader isn't running in this bot. It runs on the testnet bot only "
+                    "(run.py --live --testnet --signal-trader); see docs/SIGNAL-AUTO-TRADER.md.")
+        words = arg.lower().split()
+        if not words or words[0] in ("status", "show"):
+            return self._auto_status()
+        w = words[0]
+        if w in ("on", "off"):
+            t.set_enabled(w == "on")             # it announces the change on Telegram itself
+            return self._auto_status()
+        if w in ("trades", "trade", "history", "closed"):
+            return self._auto_trades()
+        if w in WINDOWS or (w in ("tf", "timeframe", "window") and len(words) > 1 and words[1] in WINDOWS):
+            label = w if w in WINDOWS else words[1]
+            if WINDOWS[label] == t.window_s:
+                return f"🤖 It already trades the {label} signal."
+            t.set_window(WINDOWS[label])
+            return self._auto_status()
+        if w in ("max", "most", "open", "limit"):
+            lo, hi = MAX_OPEN_RANGE
+            n = words[1] if len(words) > 1 else ""
+            if not n.isdigit() or not lo <= int(n) <= hi:
+                return f"How many at most? A whole number from {lo} to {hi}, e.g. /auto max 5 (now {t.max_open})."
+            t.set_max_open(int(n))
+            return self._auto_status()
+        return ("I didn't catch that. Try /auto, /auto on, /auto off, /auto 30m, /auto max 5 or /auto trades.\n"
+                f"Timeframes: {' '.join(WINDOWS)}.")
+
+    def _auto_status(self) -> str:
+        t = self.signal_trader
+        v = t.view()
+        st = v["stats"]
+        open_, pend = v["open"], v["pending"]
+        upnl = sum((m.get("pnl") or 0) for m in open_.values())
+        state = v["error"] or v["blocked"] or "looking for entries"
+        lines = [
+            f"🤖 Signal auto-trader · TESTNET {self._tag()}".rstrip(),
+            f"Entries {'ON' if v['enabled'] else 'OFF'} · {self._tf(v['window_s'])} signal · "
+            f"confidence ≥ {v['min_conf']}",
+            f"Status: {state}",
+            f"Open {len(open_)} / most {v['max_open']}" + (f" · {len(pend)} waiting to fill" if pend else "")
+            + (f" · unrealised {_money(upnl)}" if open_ else ""),
+            f"Today {_money(st['today'])} (stops at -${v['daily_loss_usd']:g}) · realised {_money(st['realized'])} · "
+            f"{st['wins']}W / {st['losses']}L" + (f" ({st['win_rate'] * 100:.0f}%)" if st["win_rate"] is not None else ""),
+            f"Per trade: ${v['risk_usd']:g} at the stop, at most ${v['max_usd']:g} · limit entries wait "
+            f"{_dur(v['entry_ttl_s'])} · max hold {_dur(v['max_hold_s'])}",
+        ]
+        for sym, m in open_.items():
+            pnl = m.get("pnl")
+            lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if m['side'] == 'buy' else 'SHORT'} "
+                         f"entry {_px(m['entry'])} · stop {_px(m['stop'])} · target {_px(m['target'])}"
+                         + (f" · {_money(pnl)}" if pnl is not None else ""))
+        lines.append("Change: /auto on|off · /auto 30m · /auto max 5 · trades: /auto trades")
+        return "\n".join(lines)
+
+    def _auto_trades(self, n: int = 10) -> str:
+        v = self.signal_trader.view()
+        done = v["trades"][:n]
+        lines = [f"🤖 Auto-trader trades {self._tag()}".rstrip()]
+        if v["open"]:
+            lines.append("Open:")
+            for sym, m in v["open"].items():
+                held = (time.time() * 1000 - m["opened_ms"]) / 1000 if m.get("opened_ms") else 0
+                lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if m['side'] == 'buy' else 'SHORT'} "
+                             f"held {_dur(held)}" + (f" · {_money(m['pnl'])}" if m.get("pnl") is not None else ""))
+        for sym, p in v["pending"].items():
+            lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if p['side'] == 'buy' else 'SHORT'} limit "
+                         f"{_px(p['entry'])} waiting to fill")
+        lines.append(f"Last {len(done)} closed:" if done else "No closed trades yet.")
+        for tr in done:
+            res = f"{_money(tr['pnl'])}" + (f" ({tr['r']:+.2f}R)" if tr.get("r") is not None else "") \
+                if tr.get("pnl") is not None else "result pending"
+            lines.append(f"• {tr['symbol'].removesuffix('USDT')} {'LONG' if tr['side'] == 'buy' else 'SHORT'} "
+                         f"{res} · {tr.get('why', '')}")
+        return "\n".join(lines)
+
+    async def _ideas(self, arg: str) -> str:
+        """/ideas [timeframe]: the combined signal's coins, LONG / SHORT first, as on the terminal's Signals panel."""
+        from .signal_trader import WINDOWS
+        if self.signal_desk is None:
+            return "The combined signal isn't running in this bot (it needs the whale watch: drop --no-whales)."
+        label = arg.lower().split()[0] if arg.strip() else ""
+        if label and label not in WINDOWS:
+            return f"Which timeframe? One of {' '.join(WINDOWS)}, e.g. /ideas 30m."
+        trader = self.signal_trader
+        w = WINDOWS[label] if label else (trader.window_s if trader else 3600)
+        view = await self.signal_desk.view(w)
+        rows = view.get("rows", [])
+        tf = self._tf(w)
+        if not rows:
+            return f"💡 No combined signal over {tf} yet: it needs whale orders in that time. Try a longer timeframe."
+        lines = [f"💡 Combined signal · {tf} {self._tag()}".rstrip()]
+        for r in rows[:8]:
+            coin = r["symbol"].removesuffix("USDT")
+            if r["bias"] == "wait":
+                lines.append(f"• {coin} WAIT (score {r['score'] * 100:+.0f}) · no clear side")
+                continue
+            take = trader is not None and w == trader.window_s and r["confidence"] >= trader.min_conf \
+                and (r.get("rr") or 0) >= 1.5
+            lines.append(f"• {coin} {r['bias'].upper()} score {r['score'] * 100:+.0f} · conf {r['confidence']}"
+                         + (f" · agree {r['agree'] * 100:.0f}%" if r.get("agree") is not None else "")
+                         + (f" · R:R {r['rr']:.1f}" if r.get("rr") else "")
+                         + (" · ✅ auto-trader may take it" if take else ""))
+            if r.get("entry"):
+                lines.append(f"  entry {_px(r['entry'])} · stop {_px(r['stop'])} · target {_px(r['target'])}")
+        if trader is not None and w != trader.window_s:
+            lines.append(f"(The auto-trader trades {self._tf(trader.window_s)}, not {tf}: /auto {tf} to switch it.)")
+        lines.append("A heuristic from whales, crowd, curve, macro and news. Not advice; nothing backtested.")
+        return "\n".join(lines)
+
+    def _account(self) -> str:
+        """/account: every position on the futures account the ticket trades, and what opened it."""
+        if self.ticket is None:
+            return "No futures account in this bot. The testnet bot (port 8767) trades the testnet demo account."
+        v = self.ticket.view()
+        names = {"arbitrage": "arbitrage", "ticket": "order ticket", "external": "outside the bot"}
+        signal = self.signal_trader
+        lines = [f"💼 Futures account · {v['venue'].upper()} {self._tag()}".rstrip(),
+                 f"Balance ${v['balance']:,.2f} · equity ${v['equity']:,.2f} · unrealised {_money(v['unrealized'])} · "
+                 f"available ${v['available']:,.2f}"]
+        if v.get("error"):
+            lines.append(f"⚠️ {v['error']}")
+        if not v["positions"]:
+            lines.append("No open position.")
+        for p in v["positions"]:
+            src = "signal auto-trader" if signal and signal.holds(p["symbol"]) else (
+                f"swing mirror ({p['source'][6:]})" if p["source"].startswith("swing:") else names.get(p["source"], p["source"]))
+            lines.append(f"• {p['symbol'].removesuffix('USDT')} {p['side'].upper()} ${p['notional']:,.0f} · "
+                         f"entry {_px(p['entry'])} → {_px(p['mark'])} · {_money(p['pnl'])} ({p['roe']:+.1f}%) · {src}")
+        if v["orders"]:
+            lines.append(f"{len(v['orders'])} open order(s) (stops, targets, limits).")
+        return "\n".join(lines)
 
     # ---- custom paper trades -------------------------------------------------------------------
     def _resolve(self, token: str) -> str | None:

@@ -173,6 +173,23 @@ Each change applies from the next pass (≤ 30 s), is saved, and is announced on
   opened on.
 - **Entries OFF** stops new trades. Open ones are still managed: stop, target, signal flip, maximum hold.
 
+### From Telegram (no restart)
+
+The testnet bot answers these in your Telegram chat (only your configured chat):
+
+| Send | What it does |
+|---|---|
+| `/auto` | Status: entries on/off, timeframe, open / most open, why it isn't entering (if it isn't), today and total result, each open trade |
+| `/auto on` · `/auto off` | New entries on or off |
+| `/auto 30m` | Trade the 30m signal (1m 5m 15m 30m 1h 4h 1d 1w) |
+| `/auto max 5` | Hold up to 5 trades at once (1-20) |
+| `/auto trades` | Open trades, waiting entries, the last 10 closed with result and reason |
+| `/ideas` · `/ideas 4h` | The combined signal's coins: side, score, confidence, R:R, entry / stop / target; ✅ marks the ones the auto-trader may take |
+| `/account` | The testnet futures account: balance, equity, every position and who opened it |
+| `/status` | The bot's health, now with a one-line auto-trader summary |
+
+These are the same settings as on the page, saved in the same place.
+
 ### On the command line (restart needed)
 
 For the settings without a page control (risk per trade, largest position, daily loss, minimum confidence), edit the

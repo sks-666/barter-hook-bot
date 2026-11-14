@@ -489,6 +489,9 @@ async def amain(args: argparse.Namespace) -> None:
                                   path=ROOT / "data" / "signal-trader-testnet.json", notify=alerts.send)
             other = ticket.source
             ticket.source = lambda sym: "signal" if trader.holds(sym) else other(sym)
+        # Telegram: /ideas reads the combined signal, /auto drives the auto-trader, /account lists the exchange account
+        handler.signal_desk, handler.signal_trader = signal_desk, trader
+        handler.ticket = ticket if isinstance(ticket, TestnetTicket) else None
         dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client, stats_client=stats_client), paper=ticket,
                          lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
                          macro=macro, freq=freq, signal_desk=signal_desk, signal_trader=trader)

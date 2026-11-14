@@ -418,6 +418,13 @@ Type in plain words or use the `/` menu (registered automatically):
 | `/positions` · `/pnl` · `/top 10` | Open positions (one summary each) · profit/loss and last trades · best markets by edge |
 | `/positions BTC` (or "show me the BTC position") | **Full detail of one open trade:** AUTO or MANUAL, size, the spot and perp quantities and prices paid, time held, entry basis, fees paid, funding earned, the model's z and expected net at entry, the unwind basis now, P&L if closed now, and the exit rules with how far each is (convergence z, timeout countdown, P&L stop, basis stop) |
 | `/pause` · `/resume` | Stop / allow new entries. The pause (also the dashboard's Pause and Flatten buttons) is saved in the state database, so a restart keeps entries paused until you resume; the bot says so in its log, its event list and on Telegram. **By default every start begins paused** (`[risk] start_paused = true` in `config.toml`; set it to `false` to start trading straight away) |
+| `/ideas` · `/ideas 30m` | The **combined signal** (whales, crowd, curve, macro, news), as on the terminal's Signals panel: each busy coin's LONG / SHORT / WAIT, score, confidence, agreement, R:R and entry / stop / target, marked ✅ when the auto-trader may take it. Without a timeframe: the auto-trader's (1h when it doesn't run) |
+| `/auto` (or "how is the auto trader?") | The **signal auto-trader** (testnet bot only): entries on/off, its timeframe, open / most open, status (looking for entries, or why not), today's and total result, win rate, the per-trade rules and each open trade with its entry, stop, target and P&L |
+| `/auto on` · `/auto off` | New entries on or off. Open trades stay managed: stop, target, signal flip, maximum hold |
+| `/auto 30m` (or `/auto tf 30m`) | Trade the 30m signal from the next pass (1m 5m 15m 30m 1h 4h 1d 1w). Open trades keep the maximum hold of their own timeframe |
+| `/auto max 5` | Hold up to 5 trades at once (1-20). Lowering it closes nothing |
+| `/auto trades` | Its open trades, waiting limit entries and the last 10 closed trades with their result in $ and R and why each closed |
+| `/account` (or "my futures account") | The futures account the order ticket trades (testnet on the testnet bot): balance, equity, unrealised P&L, every position with who opened it (signal auto-trader, swing mirror, order ticket, arbitrage, or outside the bot) |
 | `/setups` · `/swing` · `/journal [n]` | The swing / trend / SMC paper accounts (only with `run.py --swing`; see the swingkit section) |
 | `/open BTC 200` → `/confirm` · `/cancel` | A custom **paper** trade (see below) |
 | `/close BTC` | Close an open paper position now |
@@ -425,7 +432,8 @@ Type in plain words or use the `/` menu (registered automatically):
 Safety: only your configured chat is answered (everyone else is ignored); commands sent while the bot was
 offline are skipped, never replayed; plain words like "stop trading" or "open btc" never change anything (only the
 explicit slash commands do); `/resume` cannot override a fault, the kill file or the daily loss limit; and no
-command can place a **real** order (the trade commands refuse when the bot runs `--live`). Only **one** running bot
+command can place a **real** order (the trade commands refuse when the bot runs `--live`). `/auto` settings only steer
+the testnet auto-trader (test money), which places orders itself, inside its own limits. Only **one** running bot
 may poll a given Telegram bot token (a second one is detected and backs off). Turn it off with `commands = false`
 under `[alerts]`.
 
