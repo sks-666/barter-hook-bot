@@ -65,7 +65,8 @@ class PausePersistTests(unittest.TestCase):
 
     def test_the_default_is_to_start_paused(self):
         self.assertTrue(RiskCfg().start_paused)                    # out of the box
-        self.assertTrue(load(Path(__file__).resolve().parent.parent / "config.toml").risk.start_paused)
+        # config.toml opts out (start_paused = false): that bot starts with entries on; the code default stays paused
+        self.assertFalse(load(Path(__file__).resolve().parent.parent / "config.toml").risk.start_paused)
         self.assertEqual(initial_pause(None, True), "default")
         self.assertEqual(initial_pause("0", True), "default")       # even after you resumed: each start is paused
         self.assertEqual(initial_pause("1", True), "saved")         # your own pause is named as such
