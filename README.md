@@ -23,7 +23,7 @@ Open <http://127.0.0.1:8765>. Run the tests with `.venv/bin/python -m unittest t
 | `run.py --no-trade` | Monitor only. |
 | `run.py --live --testnet` | Real order flow against Binance **testnet**. Needs testnet API keys. |
 | `run.py --live` | Real money. Also needs `ARBBOT_LIVE_ACK` (see below). |
-| `Start Binance Bots.command` | Double-click (macOS): starts the testnet bot (port 8767, mirroring the trend, swing and smc accounts), and the real-money mainnet bot (port 8765) only if you say yes, its read-only `--check` passes and you type `TRADE REAL MONEY`. The testnet bot starts paused; the mainnet bot runs `--no-trade` (monitor only: it never opens arbitrage entries, and Resume cannot turn them on), so its only real orders are the ones you place in its dashboard's order ticket (`--real-ticket`). Both keep running after the window closes. `Stop Binance Bots.command` stops them. |
+| `Start Binance Bots.command` | Double-click (macOS): starts the testnet bot (port 8767, mirroring the trend, swing and smc accounts), and the real-money mainnet bot (port 8765) only if you say yes, its read-only `--check` passes and you type `TRADE REAL MONEY`. The testnet bot starts paused; the mainnet bot runs `--no-trade` (monitor only: it never opens arbitrage entries, and Resume cannot turn them on), so its only real orders are the ones you place in its dashboard's order ticket (`--real-ticket`). Both keep running after the window closes. `Stop Binance Bots.command` stops them. The testnet bot also runs the [signal auto-trader](#signal-auto-trader-testnet-only) (`--signal-trader`): it trades the terminal's combined signal with test money. |
 | `Run Backtests.command` | Double-click (macOS): a menu for the backtests below, with no orders and no account access. It covers the swing strategies on 4h or daily candles (or your own choice of strategy, coins, candle size, days and risk), the journal summary, and the arbitrage replay, sweep and slippage over `data/recordings`. Each run is also saved to `logs/backtests/`: the report as `.txt`, swing trades as `.csv`. |
 
 Useful flags: `--max-markets N`, `--interval S`, `--min-samples N`, `--port P`, `--no-commands` (Telegram alerts
@@ -455,10 +455,55 @@ and opens nothing. Send `/confirm` within 60 s to open it, or `/cancel`. Then `/
 
 The terminal's Signals panel (`/terminal`) scores each coin from five readings (whales, crowd, futures curve, macro,
 news) into LONG / SHORT / WAIT with an entry, stop and target. With `--live --testnet --signal-trader` the bot trades
-the confident ones on the Binance futures **testnet**: about $20 at risk per trade, the stop and target on the
-exchange, and limits on open trades and daily loss. Its timeframe and its most open trades are set from the terminal
-or the dashboard, with no restart. **How the signal works, and how to start, change and troubleshoot it:
-[docs/SIGNAL-AUTO-TRADER.md](docs/SIGNAL-AUTO-TRADER.md).**
+the confident ones on the Binance futures **testnet** (test money; it refuses any other account). **How the signal
+works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md](docs/SIGNAL-AUTO-TRADER.md).**
+
+**What it does**
+
+* **Enters** on LONG / SHORT with confidence ≥ 60, reward:risk ≥ 1.5 and the whale reading present, most confident
+  coin first. The entry is a market order when the signal's entry is the price now, otherwise a limit order that is
+  cancelled after half the timeframe.
+* **Sizes** each trade so the stop loses about **$20**, at most **$2,000** of position. The **stop and target sit on
+  Binance**, so they work even if the bot stops.
+* **Exits** on its stop or target, when the signal flips with confidence ≥ 60, or after holding **2× the timeframe it
+  was opened on**.
+* **Limits:**
+  * the most open trades (positions plus waiting entries),
+  * $100 of realised loss per UTC day, then no new entries,
+  * a cooldown per coin after an exit,
+  * the `KILL` file.
+
+  It leaves alone coins held by the arbitrage bot, the swing mirror or the order ticket.
+
+**What you set from the page (no restart; saved, so it survives restarts and wins over the command-line flag)**
+
+| Setting | Terminal (`/terminal`, Signals panel) | Dashboard (`/`, "Signal auto-trader · testnet" card) |
+|---|---|---|
+| **Timeframe** it trades (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w) | Pick a timeframe at the top of the panel, then press the orange **Trade …** button in "Its timeframe". It reads **"= panel"** once they match. | The timeframe buttons |
+| **Most open trades** (1–20, default 3) | The list in "Its open trades / most" | The **Most open** list |
+| **New entries** on / off | — | The Entries ON/OFF switch |
+
+The panel's timeframe buttons on their own only change what the table shows. The auto-trader trades one timeframe,
+its own. Each change asks first, applies within 30 s and is announced on Telegram:
+- **Changing the timeframe** affects new trades only: open ones keep the maximum hold of the timeframe they were opened
+  on.
+- **Lowering "most open"** closes nothing: it just takes no new trade until fewer are open.
+- **Entries OFF** still manages the open trades.
+
+**Set with flags (restart needed):**
+- `--signal-trader-risk-usd` (20)
+- `--signal-trader-max-usd` (2000)
+- `--signal-trader-daily-loss-usd` (100)
+- `--signal-trader-min-conf` (60)
+- `--signal-trader-window` (1h) and `--signal-trader-max-open` (3), which only apply until you pick a value on the page
+
+State: `data/signal-trader-testnet.json`. API: `GET /api/signal-trader`; `POST /api/signal-trader` with `{"enabled"}`,
+`{"window_s"}` or `{"max_open"}`, which needs the control token.
+
+The terminal is otherwise a view: it can't pause, flatten or place orders. It receives the dashboard's control token
+only for these auto-trader settings, and a test checks the token is sent nowhere else.
+
+Nothing here has been backtested: it is an experiment with test money.
 
 ## Trading bot: Freqtrade (`/trading`, `freqkit/`)
 
@@ -550,6 +595,18 @@ Use either the service or `start-bots.sh` / `stop-bots.sh` for the testnet bot, 
 stops it, but a service restarts only after a crash, so a stopped service stays stopped until
 `systemctl --user start arbbot-testnet`. If the mainnet bot runs too, it answers the Telegram commands, so add
 `--no-commands` to the testnet service's ExecStart (one bot per Telegram token).
+
+`deploy/arbbot-testnet.service` does **not** start the [signal auto-trader](#signal-auto-trader-testnet-only), unlike
+`start-bots.sh`. To add it, append these flags to the service's `ExecStart`, then `systemctl --user daemon-reload` and
+restart:
+
+```
+--signal-trader --signal-trader-window 1h --signal-trader-risk-usd 20 --signal-trader-max-usd 2000 --signal-trader-max-open 3
+```
+
+For a system-wide service, a drop-in `/etc/systemd/system/arbbot-testnet.service.d/override.conf` does the same
+without touching the unit. It needs an empty `ExecStart=` line, then the full command
+(see [docs/SIGNAL-AUTO-TRADER.md](docs/SIGNAL-AUTO-TRADER.md#3-start-stop-restart)).
 
 ## Running without your computer (Render)
 
