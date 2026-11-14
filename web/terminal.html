@@ -86,6 +86,7 @@
   .grid { display: grid; gap: 6px; padding: 6px; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr);
           grid-template-areas:
             "chart book  tape"
+            "sig   sig   sig"
             "whale flow  sent"
             "curve curve risk"
             "cmp   cmp   risk"
@@ -96,11 +97,11 @@
             "log   log   log"; }
   @media (max-width: 1200px) {
     .grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-            grid-template-areas: "chart chart" "book tape" "whale flow" "sent sent" "curve curve" "cmp risk" "macro macro" "arb arb" "movers alerts" "pos pos" "desk desk" "log log"; }
+            grid-template-areas: "chart chart" "book tape" "sig sig" "whale flow" "sent sent" "curve curve" "cmp risk" "macro macro" "arb arb" "movers alerts" "pos pos" "desk desk" "log log"; }
   }
   @media (max-width: 720px) {
     .grid { grid-template-columns: minmax(0, 1fr);
-            grid-template-areas: "chart" "book" "tape" "whale" "flow" "sent" "curve" "cmp" "risk" "macro" "arb" "movers" "alerts" "pos" "desk" "log"; }
+            grid-template-areas: "chart" "book" "tape" "sig" "whale" "flow" "sent" "curve" "cmp" "risk" "macro" "arb" "movers" "alerts" "pos" "desk" "log"; }
     .cmd .msg { display: none; }
   }
   .p { background: var(--panel); border: 1px solid var(--line); min-width: 0; display: flex; flex-direction: column;
@@ -122,8 +123,6 @@
 
   table { border-collapse: collapse; width: 100%; }
   th, td { padding: 2px 8px; text-align: right; white-space: nowrap; }
-  table.sig { font-size: .94em; } table.sig th, table.sig td { padding: 2px 4px; }               /* the whale Signals table: 6 columns in a half-width panel */
-  table.sig .sub { display: block; font-size: .85em; line-height: 1.1; }   /* entry's % from now, under the price */
   th { position: sticky; top: 0; background: var(--panel-2); color: var(--muted); font-weight: 600; font-size: 11px;
        text-transform: uppercase; z-index: 1; }
   th:first-child, td:first-child { text-align: left; }
@@ -184,6 +183,37 @@
   .toast { position: fixed; right: 12px; bottom: 56px; z-index: 30; max-width: min(420px, calc(100vw - 24px));
            background: var(--panel); border: 1px solid var(--amber); padding: 8px 12px; box-shadow: 0 8px 24px rgba(0,0,0,.35); }
   #p-whale .pb, #p-flow .pb, #p-sent .pb { height: 320px; }
+  /* Signals: full width, the combined trade idea per coin with every input, the loaded coin's reasons and the auto-trader */
+  #p-sig { grid-area: sig; } #p-sig .pb { overflow: visible; }
+  .sg-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 1px; background: var(--line);
+              border-bottom: 1px solid var(--line); }
+  .sg-strip > div { background: var(--panel); padding: 4px 8px; min-width: 0; }
+  .sg-strip .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; }
+  .sg-strip .v { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sg-tw { overflow-x: auto; max-height: 360px; overflow-y: auto; border-bottom: 1px solid var(--line); }
+  table.sgt td, table.sgt th { padding: 3px 7px; }
+  table.sgt th.f, table.sgt td.f { border-left: 1px solid var(--line); }
+  table.sgt .sub { display: block; font-size: .82em; line-height: 1.1; color: var(--muted); }
+  table.sgt .bias { font-weight: 800; letter-spacing: .5px; }
+  .sbar { display: inline-block; width: 84px; height: 8px; background: color-mix(in srgb, var(--line) 70%, transparent);
+          position: relative; vertical-align: middle; margin-right: 6px; }
+  .sbar i { position: absolute; top: 0; bottom: 0; }
+  .sbar::after { content: ""; position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--muted); }
+  .sg-low { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .sg-low > div { min-width: 0; padding: 6px 8px; }
+  .sg-low > div + div { border-left: 1px solid var(--line); }
+  .sg-low h3 { margin: 0 0 4px; font-size: 11px; letter-spacing: 1px; color: var(--amber); text-transform: uppercase; }
+  .sg-f { padding: 3px 0; border-bottom: 1px dashed color-mix(in srgb, var(--line) 70%, transparent); }
+  .sg-f .t { display: flex; gap: 8px; align-items: center; white-space: nowrap; }
+  .sg-f .n { width: 150px; overflow: hidden; text-overflow: ellipsis; }
+  .sg-f .why { color: var(--muted); font-size: .88em; line-height: 1.25; white-space: normal; }
+  .ladder { position: relative; height: 34px; margin: 8px 4px 14px; }
+  .ladder .rail { position: absolute; left: 0; right: 0; top: 14px; height: 4px; }
+  .ladder .mk { position: absolute; top: 4px; width: 2px; height: 24px; transform: translateX(-1px); }
+  .ladder .mk span { position: absolute; top: 25px; left: 50%; transform: translateX(-50%); font-size: 10px; white-space: nowrap; }
+  .ladder .mk b { position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%); font-size: 10px; white-space: nowrap; font-weight: 600; }
+  @media (max-width: 1100px) { .sg-low { grid-template-columns: minmax(0, 1fr); } .sg-low > div + div { border-left: 0; border-top: 1px solid var(--line); } }
+  @media (max-width: 720px) { table.sgt .xw { display: none; } }
   #p-curve { grid-area: curve; } #p-cmp { grid-area: cmp; } #p-risk { grid-area: risk; }
   #p-curve .pb { height: 420px; } #p-cmp .pb { max-height: 420px; } #p-risk .pb { flex: 1; min-height: 300px; }
   /* small line / bar charts drawn as SVG (curve history, funding, term structure) */
@@ -320,11 +350,20 @@
     <div class="pb" id="tape"></div>
   </section>
 
+  <section class="p" id="p-sig" aria-label="Signals">
+    <div class="ph"><h2>Signals</h2><span class="k" id="sg-k"></span>
+      <div class="r"><span class="grp" id="sg-tf" role="group" aria-label="Signal timeframe"></span>
+        <span class="grp" id="sg-f" role="group" aria-label="Show"><button type="button" data-sgf="all" aria-pressed="true">All</button>
+          <button type="button" data-sgf="trade" aria-pressed="false" title="Only coins with a LONG or SHORT idea">Ideas</button>
+          <button type="button" data-sgf="long" aria-pressed="false">Long</button>
+          <button type="button" data-sgf="short" aria-pressed="false">Short</button></span></div></div>
+    <div class="pb" id="sig"></div>
+  </section>
+
   <section class="p" id="p-whale" aria-label="Whale tape">
     <div class="ph"><h2>Whales</h2><span class="k" id="wh-k"></span>
       <div class="r"><span class="grp"><button type="button" data-wt="trades" aria-pressed="true">Trades</button>
-        <button type="button" data-wt="liqs" aria-pressed="false">Liquidations</button>
-        <button type="button" data-wt="sigs" aria-pressed="false" title="One trade idea per coin from Whale flow, Whales vs crowd, Futures curve, Macro and News, all read over the Whale flow timeframe">Signals</button></span>
+        <button type="button" data-wt="liqs" aria-pressed="false">Liquidations</button></span>
         <span class="grp"><button type="button" data-wmin="0" aria-pressed="true">All</button>
         <button type="button" data-wmin="250000" aria-pressed="false">250K+</button>
         <button type="button" data-wmin="1000000" aria-pressed="false">1M+</button></span>
@@ -444,6 +483,7 @@
   <button type="button" data-run="BOOK"><b>F8</b>Book</button>
   <button type="button" data-run="SENT"><b>F9</b>Whales vs crowd</button>
   <button type="button" data-run="WHALE"><b>F10</b>Whales</button>
+  <button type="button" data-run="SIGNALS"><b>F11</b>Signals</button>
   <button type="button" data-run="COMP"><b>COMP</b>Compare</button>
   <button type="button" data-run="RISK"><b>RISK</b>Size</button>
   <button type="button" data-run="ECO"><b>ECO</b>Macro &amp; news</button>
@@ -458,6 +498,7 @@
       <tr><td>ARB · MOV · POS · LOG</td><td>Jump to the basis monitor, movers, positions or event log.</td></tr>
       <tr><td>CHART · BOOK · TAPE · SENT</td><td>Jump to the chart, order book, trades or sentiment.</td></tr>
       <tr><td>WHALE · LIQ · FLOW</td><td>Big trades ($50K+, more on busy coins), liquidations across the market, and each coin's whale buying vs selling. <b>FLOW 4H</b> (or 1S 5S 15S 30S 1M 5M 15M 30M 1H 1D 1W) sets the flow timeframe.</td></tr>
+      <tr><td>SIGNALS · SIGNALS 4H</td><td>The Signals panel: one long / short idea per coin from whale flow, whales vs crowd, the futures curve, macro and news, with entry, stop, target and why. <b>SIGNALS 4H</b> (or 1M 5M 15M 30M 1H 1D 1W) sets its timeframe.</td></tr>
       <tr><td>SENT</td><td>Whales vs crowd: the top traders' long share against all accounts', with taker flow and open interest. <b>SENT 4H</b> (or 5M 15M 30M 1H 2H 6H 12H 1D 1W) sets one row's step.</td></tr>
       <tr><td>ALERT BTC &gt; 82000</td><td>Price alert on the mark price (also <b>ALERT BTC 82000</b>: above or below is picked from the price now). Alt+click the chart to set one at that price.</td></tr>
       <tr><td>ALERT FUND BTC &gt; 0.05</td><td>Funding alert, in percent.</td></tr>
@@ -496,7 +537,7 @@ const lsSet = (k, v) => { try { localStorage.setItem(k, v); } catch { /* private
 const S = {
   sym: lsGet("term-sym") || "BTCUSDT", iv: lsGet("term-iv") || "1h", mv: "gainers",
   snap: null, info: null, klines: null, depth: null, trades: null, sent: null, movers: null, whales: null, daily: null,
-  wt: "trades", wmin: 0, wcoin: false, fw: 3600, auto: null, sp: "1h", marks: null, alerts: null, desk: null,
+  wt: "trades", wmin: 0, wcoin: false, fw: 3600, sgw: 3600, sgf: "all", auto: null, sp: "1h", marks: null, alerts: null, desk: null,
   ov: { vwap: true, ema: true, cvd: true, lvl: true, whl: true, e50: true, rsi: true, sig: true },
   curve: null, cp: lsGet("term-curve") || "1d", cmp: null, cmpD: {},
   errs: {}, due: {}, busy: {}, hover: null, arbSort: { k: "net", dir: -1 }, history: [], hpos: 0,
@@ -538,7 +579,7 @@ const GLOBAL = new Set(["movers", "symbols", "whales", "desk", "macro", "news", 
 function params(kind) {
   if (kind === "btcd") return { symbols: "BTCUSDT", interval: "1d", years: 2, format: "json" };   // bitcoin, macro panel
   if (kind === "whales") return { window: S.fw };
-  if (kind === "combo") return { window: S.fw, symbol: S.sym };
+  if (kind === "combo") return { window: S.sgw, symbol: S.sym };
   if (kind === "sent") return { symbol: S.sym, period: S.sp };
   if (kind === "curve") return { symbol: S.sym, period: S.cp };
   if (GLOBAL.has(kind)) return {};
@@ -552,14 +593,13 @@ const API_KIND = { info: "info", klines: "klines", depth: "depth", trades: "trad
                    marks: "whale-marks", desk: "desk", curve: "curve", macro: "macro", news: "news", btcd: "history",
                    combo: "signals" };
 // what an answer belongs to: an answer for a coin (or interval) the page has since left is dropped
-const forWhat = kind => kind === "whales" ? "w" + S.fw : kind === "combo" ? "c" + S.fw + S.sym : kind === "sent" ? S.sym + S.sp : kind === "curve" ? S.sym + S.cp : GLOBAL.has(kind) ? "" : kind === "daily" || kind === "marks" ? S.sym : S.sym + S.iv;
+const forWhat = kind => kind === "whales" ? "w" + S.fw : kind === "combo" ? "c" + S.sgw + S.sym : kind === "sent" ? S.sym + S.sp : kind === "curve" ? S.sym + S.cp : GLOBAL.has(kind) ? "" : kind === "daily" || kind === "marks" ? S.sym : S.sym + S.iv;
 function friendly(err) {
   if (/ClientConnector|Cannot connect|TimeoutError/.test(err)) return `Binance is unreachable from this computer (${err.split(":")[0]}). Retrying…`;
   return err;
 }
 async function load(kind) {
   if (S.busy[kind]) return;
-  if (kind === "combo" && S.wt !== "sigs") { S.due.combo = Date.now() + 1000; return; }   // only while Signals is open
   S.busy[kind] = true;
   const want = forWhat(kind);
   let stale = false;
@@ -737,12 +777,12 @@ function srcTag(s) {
 
 async function loadAuto() {
   S.due.auto = Date.now() + 10000;
-  if (S.wt !== "sigs") return;
+  if (S.auto === false) return;                                   // this bot does not run the auto-trader
   try {
     const r = await fetch("/api/signal-trader", { cache: "no-store" });
-    S.auto = r.ok ? await r.json() : null;                        // 404: not running in this bot
-  } catch { S.auto = null; }
-  if (S.wt === "sigs") renderWhales();
+    S.auto = r.ok ? await r.json() : r.status === 404 || r.status === 405 ? false : S.auto;   // 404/405: not in this bot
+  } catch { /* restarting: keep the last answer */ }
+  renderSignals();
 }
 function pollLoop() {
   if (!document.hidden && !(S.due.auto > Date.now())) loadAuto();
@@ -769,9 +809,9 @@ const PANELS = { ARB: "p-arb", MOV: "p-movers", POS: "p-pos", LOG: "p-log", CHAR
                  TAPE: "p-tape", SENT: "p-sent", QUOTE: "p-quote", WHALE: "p-whale", WHALES: "p-whale", FLOW: "p-flow",
                  ALERTS: "p-alerts", DESK: "p-desk", CURVE: "p-curve", YC: "p-curve", GC: "p-curve", RISK: "p-risk",
                  COMP: "p-cmp", COMPARE: "p-cmp", CMP: "p-cmp", ECO: "p-macro", MACRO: "p-macro", NEWS: "p-macro",
-                 TOP: "p-macro", WEI: "p-macro" };
+                 TOP: "p-macro", WEI: "p-macro", SIGNALS: "p-sig", SIGNAL: "p-sig", SGN: "p-sig" };
 const OVERLAYS = { VWAP: "vwap", EMA: "ema", CVD: "cvd", LVL: "lvl", LEVELS: "lvl", WHL: "whl", EMA50: "e50", RSI: "rsi",
-                   SIG: "sig", SIGNALS: "sig" };
+                   SIG: "sig" };
 function say(text, err = false) { const m = $("cmd-msg"); m.textContent = text; m.className = "msg" + (err ? " err" : ""); }
 function focusPanel(id) {
   const el = $(id);
@@ -785,6 +825,7 @@ function setSym(sym) {
   S.info = S.klines = S.depth = S.trades = S.sent = S.daily = S.marks = S.curve = null;
   S.hover = null;
   if (S.wcoin) renderWhales();
+  renderSignals();
   for (const k of ["info", "klines", "depth", "trades", "sent", "daily", "marks", "curve", "combo"]) { S.errs[k] = ""; S.due[k] = 0; render(k); }
   renderCmp();                                    // the "+ coin" button names the loaded coin
   renderSnap();
@@ -821,6 +862,10 @@ function run(line) {
     else if (w === "FLOW" && FLOW_TF.some(([l]) => l.toUpperCase() === words[i + 1])) {
       const tf = words[++i];
       setFlow(FLOW_TF.find(([l]) => l.toUpperCase() === tf)[1]); focusPanel("p-flow"); did.push("flow " + flowLabel(S.fw));
+    }
+    else if (["SIGNALS", "SIGNAL", "SGN"].includes(w) && SIG_TF.some(([l]) => l.toUpperCase() === words[i + 1])) {
+      const tf = words[++i];
+      setSigTf(SIG_TF.find(([l]) => l.toUpperCase() === tf)[1]); focusPanel("p-sig"); did.push("signals " + tf.toLowerCase());
     }
     else if (["CURVE", "YC", "GC"].includes(w) && CURVE_TF.includes((words[i + 1] || "").toLowerCase())) {
       const tf = words[++i].toLowerCase();
@@ -885,6 +930,7 @@ $("cmd").addEventListener("keydown", ev => {
 const COMMANDS = [["HELP", "list the commands"], ["ARB", "basis monitor"], ["MOV", "movers"], ["POS", "positions & P&L"],
   ["LOG", "event log"], ["CHART", "chart"], ["BOOK", "order book & walls"], ["TAPE", "last trades"],
   ["SENT", "whales vs crowd · SENT 4H sets the step"], ["WHALE", "big trades"], ["LIQ", "liquidations"], ["FLOW", "whale buying vs selling · FLOW 4H sets the timeframe"],
+  ["SIGNALS", "combined long / short ideas · SIGNALS 4H sets the timeframe"],
   ["VWAP", "chart: session VWAP on/off"], ["EMA", "chart: EMA 9/21 on/off"], ["CVD", "chart: buy−sell volume delta on/off"],
   ["LVL", "chart: day & yesterday levels on/off"], ["WHL", "chart: whale & liquidation markers on/off"],
   ["EMA50", "chart: EMA 50 on/off"], ["RSI", "chart: RSI 14 pane on/off"], ["SIG", "chart: EMA50 + RSI swing signals on/off"],
@@ -973,7 +1019,7 @@ $("sugg").addEventListener("mousemove", ev => {
 });
 
 // F5, F11 and F12 stay the browser's (reload, full screen, developer tools): CURVE, COMP and RISK are typed or clicked
-const FKEYS = { F1: "HELP", F2: "ARB", F3: "MOV", F4: "POS", F6: "LOG", F7: "CHART", F8: "BOOK", F9: "SENT", F10: "WHALE" };
+const FKEYS = { F1: "HELP", F2: "ARB", F3: "MOV", F4: "POS", F6: "LOG", F7: "CHART", F8: "BOOK", F9: "SENT", F10: "WHALE", F11: "SIGNALS" };
 document.addEventListener("keydown", ev => {
   if (ev.key === "Escape" && !$("help").hidden) { closeHelp(); return; }
   if (FKEYS[ev.key]) { ev.preventDefault(); run(FKEYS[ev.key]); return; }
@@ -1109,7 +1155,7 @@ function render(kind) {
   ({ info: renderQuote, klines: drawChart, depth: renderBook, trades: renderTape, sent: renderSent, movers: renderMovers,
      symbols: () => { if (!$("sugg").hidden) suggest(); }, whales: () => { renderWhales(); renderFlow(); },
      daily: drawChart, marks: drawChart, desk: renderDesk, curve: renderCurve, macro: renderMacro, btcd: renderMacro,
-     news: renderNews, combo: renderWhales })[kind]();
+     news: renderNews, combo: renderSignals })[kind]();
 }
 function renderQuote() {
   const i = S.info, row = S.snap?.markets.find(r => r.sym === S.sym);
@@ -1707,7 +1753,6 @@ function renderRisk() {
 // ---- whales: big trades and liquidations (arbbot/whales.py), and whale flow per coin --------------------------
 function setWhale(change) {
   Object.assign(S, change);
-  if (change.wt === "sigs") S.due.combo = S.due.auto = 0;     // fetch the combined signal at once
   document.querySelectorAll("[data-wt]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.wt === S.wt)));
   document.querySelectorAll("[data-wmin]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.wmin) === S.wmin)));
   $("wh-coin").setAttribute("aria-pressed", String(S.wcoin));
@@ -1724,7 +1769,6 @@ function renderWhales() {
   $("wh-k").textContent = w.status === "live"
     ? `live · ${w.coins} coins · whale = $${big(w.min_usd)}+${btc ? ` (BTC $${big(btc)}+)` : ""}`
     : w.status === "starting" ? "connecting…" : `stream down — retrying${w.error ? ": " + w.error : ""}`;
-  if (S.wt === "sigs") return renderSignals(el);
   const liqs = S.wt === "liqs";
   const rows = (liqs ? w.liqs : w.trades).filter(x => x.usd >= S.wmin && (!S.wcoin || x.symbol === S.sym));
   if (!rows.length) {
@@ -1740,47 +1784,134 @@ function renderWhales() {
       <td class="amb">${esc(x.symbol.replace(/USDT$/, ""))}</td><td>${side(x)}</td>
       <td class="${x.usd >= 1e6 ? "big" : ""}">${big(x.usd)}</td><td>${px(x.price)}</td></tr>`).join("") + `</tbody></table>`;
 }
-// signals (WhaleWatch.signals): a long/short idea per coin from the whale orders and liquidations of the flow timeframe
-function renderSignals(el) {
-  const c = S.combo, tf = flowLabel(S.fw);
-  if (S.errs.combo) { el.innerHTML = `<div class="err-line">${esc(S.errs.combo)}</div>`; return; }
-  if (!c || c.window_s !== S.fw) { el.innerHTML = `<div class="empty">reading whales, crowd, curve, macro &amp; news over ${tf}…</div>`; return; }
-  const all = c.rows.filter(x => !S.wcoin || x.symbol === S.sym);
-  const pct = (a, b) => sgn((a / b - 1) * 100, 2) + "%";
-  let note = `<div class="mut" style="padding:3px 6px" title="Each source is read over the timeframe: Whales vs crowd and the futures curve in ${esc(c.steps.crowd)} / ${esc(c.steps.curve)} rows (step x how many back), the stop from the ATR of ${esc(c.steps.atr)} candles. Weights: ${Object.entries(c.weights).filter(([, v]) => v).map(([k, v]) => k + " " + Math.round(v * 100) + "%").join(", ")}. A heuristic, not a forecast or advice; nothing has been backtested.">Combined over <b>${tf}</b> (Whale flow sets it) · whales, crowd, curve, macro, news · heuristic, not advice</div>`;
-  const a = S.auto, held = s => a && (a.open[s] || a.pending[s]);
-  const money = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
-  if (a) note += `<div style="padding:2px 6px" title="The bot auto-trades this signal on the Binance futures TESTNET (test money) over its own timeframe; switch it on or off on the dashboard.">` +
-    `🤖 <b>Auto · testnet</b> ${flowLabel(a.window_s)} · <span class="${a.enabled ? "up" : "dn"}">${a.enabled ? "ON" : "OFF"}</span>` +
-    ` · today <span class="${cls(a.stats.today)}">${money(a.stats.today)}</span> · ${a.stats.wins}W ${a.stats.losses}L` +
-    (Object.keys(a.open).length ? ` · open ${Object.entries(a.open).map(([k, m]) => esc(k.replace(/USDT$/, "")) + (m.pnl != null ? ` <span class="${cls(m.pnl)}">${money(m.pnl)}</span>` : "")).join(", ")}` : "") +
-    (Object.keys(a.pending).length ? ` · waiting ${Object.keys(a.pending).map(k => esc(k.replace(/USDT$/, ""))).join(", ")}` : "") +
-    (a.blocked && a.enabled ? ` <span class="mut">(${esc(a.blocked)})</span>` : "") + `</div>`;
-  if (!all.length) { el.innerHTML = note + `<div class="empty">No coin to score yet: it needs whale orders in the last ${tf}.</div>`; return; }
-  const table = `<table class="sig"><thead><tr><th title="▲ long · ▼ short · · wait">Coin</th><th title="Limit entry; % from the price now">Entry</th>
-    <th>Stop</th><th title="Reward : risk on hover">Target</th><th title="Combined score, −100 (bearish) to +100 (bullish)">Score</th>
-    <th title="0-100: how strong the score is and how many sources agree">Conf</th></tr></thead><tbody>` +
-    all.map(x => { const L = x.bias === "long", wait = x.bias === "wait", near = !wait && Math.abs(x.to_entry_pct) < 0.1;
-      const arrow = wait ? `<span class="mut">·</span>` : L ? `<span class="up">▲</span>` : `<span class="dn">▼</span>`;
-      return `<tr class="click${x.symbol === S.sym ? " sel" : ""}${wait ? " mut" : ""}" data-sym="${esc(x.symbol)}"><td class="amb" title="${wait ? "WAIT: no clear side" : L ? "LONG" : "SHORT"}">${arrow} ${esc(x.symbol.replace(/USDT$/, ""))}${held(x.symbol) ? ` <span class="amb" title="the auto-trader holds this coin on the testnet">●</span>` : ""}</td>` +
-        (wait ? `<td colspan="3" class="mut">wait</td>` :
-        `<td title="price now ${px(x.mark)}">${px(x.entry)}${near ? "" : `<span class="mut sub">${pct(x.entry, x.mark)}</span>`}</td>
-        <td class="dn" title="${pct(x.stop, x.entry)} from entry">${px(x.stop)}</td><td class="up" title="${pct(x.target, x.entry)} from entry · R:R ${x.rr.toFixed(1)}">${px(x.target)}</td>`) +
-        `<td class="${cls(x.score)}">${sgn(x.score * 100, 0)}</td>
-        <td class="${x.confidence >= 70 ? "big" : x.confidence < 40 ? "mut" : ""}">${wait ? "—" : x.confidence}</td></tr>`; }).join("") + `</tbody></table>`;
-  // the loaded coin's breakdown: each source's score, weight and reason
+// ---- signals (arbbot/signals.py): one combined long / short idea per coin, full width ------------------------------
+// Whale flow, whales vs crowd, the futures curve, macro and news, each read over the panel's own timeframe.
+const SIG_TF = [["1m", 60], ["5m", 300], ["15m", 900], ["30m", 1800], ["1h", 3600], ["4h", 14400], ["1d", 86400], ["1w", 604800]];
+const SIG_F = [["whales", "Whales"], ["crowd", "Crowd"], ["curve", "Curve"], ["macro", "Macro"], ["news", "News"]];
+$("sg-tf").innerHTML = SIG_TF.map(([l, v]) => `<button type="button" data-sgw="${v}" aria-pressed="false" title="Read every source over the last ${l}">${l}</button>`).join("");
+function setSigTf(sec) {
+  S.sgw = sec; lsSet("term-sig", String(sec));
+  document.querySelectorAll("[data-sgw]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.sgw) === sec)));
+  S.due.combo = 0; renderSignals();
+}
+$("sg-tf").addEventListener("click", ev => { const b = ev.target.closest("[data-sgw]"); if (b) setSigTf(Number(b.dataset.sgw)); });
+$("sg-f").addEventListener("click", ev => {
+  const b = ev.target.closest("[data-sgf]"); if (!b) return;
+  S.sgf = b.dataset.sgf;
+  document.querySelectorAll("[data-sgf]").forEach(x => x.setAttribute("aria-pressed", String(x.dataset.sgf === S.sgf)));
+  renderSignals();
+});
+$("sig").addEventListener("click", ev => { const tr = ev.target.closest("tr[data-sym]"); if (tr) setSym(tr.dataset.sym); });
+{ const saved = Number(lsGet("term-sig")); if (SIG_TF.some(([, v]) => v === saved)) S.sgw = saved; }
+
+const sgCoin = s => esc(s.replace(/USDT$/, ""));
+const sgMoney = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
+const pctOf = (a, b) => sgn((a / b - 1) * 100, 2) + "%";
+function sbar(v) {                                   // −1 … +1 as a bar growing left (red) or right (green) from the middle
+  if (v == null) return `<span class="sbar"></span>`;
+  const w = Math.min(50, Math.round(Math.abs(v) * 50));
+  return `<span class="sbar"><i style="${v >= 0 ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:var(${v >= 0 ? "--pos" : "--neg"})"></i></span>`;
+}
+// the auto-trader on the futures testnet (arbbot/signal_trader.py), when this bot runs it
+function sigAuto() {
+  const a = S.auto;
+  if (!a) return "";
+  const open = Object.entries(a.open), upnl = open.reduce((t, [, m]) => t + (m.pnl || 0), 0), st = a.stats;
+  const cell = (l, v, c = "", t = "") => `<div${t ? ` title="${esc(t)}"` : ""}><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
+  return `<div class="sg-strip">` +
+    cell("Auto-trader · testnet", a.enabled ? "ON" : "OFF", a.enabled ? "up" : "dn", "Trades this signal on the Binance futures TESTNET (test money). Switch it on or off on the dashboard.") +
+    cell("Its timeframe", flowLabel(a.window_s), "amb", `It trades the ${flowLabel(a.window_s)} signal whatever this panel shows`) +
+    cell("Status", a.error ? esc(a.error) : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked ? "wrn" : "up", a.error || a.blocked || "") +
+    cell("Open", `${open.length} / ${a.max_open}${Object.keys(a.pending).length ? ` · ${Object.keys(a.pending).length} waiting` : ""}`) +
+    cell("Open P&amp;L", sgMoney(upnl) + " $", cls(upnl)) +
+    cell("Today", sgMoney(st.today) + " $", cls(st.today), `daily loss limit $${a.daily_loss_usd}`) +
+    cell("Realised", sgMoney(st.realized) + " $", cls(st.realized)) +
+    cell("Won / lost", `${st.wins} / ${st.losses}${st.win_rate != null ? ` · ${Math.round(st.win_rate * 100)}%` : ""}`) +
+    cell("Rules", `$${a.risk_usd} risk · conf ≥ ${a.min_conf}`, "", `max $${a.max_usd} per position · entry order lives ${dur(a.entry_ttl_s)} · max hold ${dur(a.max_hold_s)}`) +
+    `</div>`;
+}
+function sigTrades() {
+  const a = S.auto;
+  if (!a) return `<h3>Auto-trader</h3><div class="mut">Not running in this bot. It runs on the testnet bot (port 8767) with <b>--signal-trader</b>.</div>`;
+  const now = Date.now(), open = Object.entries(a.open), pend = Object.entries(a.pending);
+  let h = `<h3>Auto-trader positions · testnet</h3>`;
+  h += open.length || pend.length ? `<table><thead><tr><th>Coin</th><th>Side</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L $</th><th>Held</th></tr></thead><tbody>` +
+    open.map(([s, m]) => `<tr class="click${s === S.sym ? " sel" : ""}" data-sym="${esc(s)}"><td class="amb">${sgCoin(s)}</td>
+      <td class="${m.side === "buy" ? "up" : "dn"}">${m.side === "buy" ? "LONG" : "SHORT"}</td><td>${px(m.entry_px || m.entry)}</td><td>${m.mark ? px(m.mark) : "—"}</td>
+      <td class="dn">${px(m.stop)}</td><td class="up">${px(m.target)}</td><td class="${cls(m.pnl || 0)}">${m.pnl != null ? sgMoney(m.pnl) : "—"}</td>
+      <td class="mut">${dur((now - m.opened_ms) / 1000)}</td></tr>`).join("") +
+    pend.map(([s, m]) => `<tr class="click mut" data-sym="${esc(s)}"><td class="amb">${sgCoin(s)}</td><td>${m.side === "buy" ? "LONG" : "SHORT"}</td>
+      <td>${px(m.price || m.entry)}</td><td colspan="5">limit order waiting to fill</td></tr>`).join("") + `</tbody></table>`
+    : `<div class="mut">No position open.</div>`;
+  h += `<h3 style="margin-top:8px">Closed trades</h3>` + (a.trades.length
+    ? `<table><thead><tr><th>Coin</th><th>Side</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
+      a.trades.slice(0, 15).map(t => `<tr class="click" data-sym="${esc(t.symbol)}"><td class="amb">${sgCoin(t.symbol)}</td>
+        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
+        <td class="mut">${esc(t.why || "")}</td><td class="${cls(t.pnl || 0)}">${t.pnl != null ? sgMoney(t.pnl) : "…"}</td></tr>`).join("") + `</tbody></table>`
+    : `<div class="mut">None yet.</div>`);
+  return h;
+}
+// the loaded coin: where stop, entry, price and target sit, then each source's score and reason
+function sigWhy(c) {
   const me = c.rows.find(x => x.symbol === S.sym);
-  const bar = v => { const w = Math.round(Math.abs(v) * 50);
-    return `<span style="display:inline-block;width:100px;height:8px;background:var(--line,#ccc3);position:relative;vertical-align:middle">` +
-      `<span style="position:absolute;top:0;bottom:0;${v >= 0 ? "left:50px" : `left:${50 - w}px`};width:${w}px;background:var(${v >= 0 ? "--pos" : "--neg"})"></span></span>`; };
-  const detail = me ? `<div style="padding:4px 6px;border-top:1px solid var(--line,#ccc3)"><b class="amb">${esc(S.sym.replace(/USDT$/, ""))}</b>
-      <span class="${me.bias === "wait" ? "mut" : cls(me.score)}">${me.bias.toUpperCase()} ${sgn(me.score * 100, 0)}</span> <span class="mut">· agree ${Math.round(me.agree * 100)}% · data ${Math.round(me.coverage * 100)}%${me.atr ? ` · ATR ${esc(me.atr_interval)} ${px(me.atr)}` : ""}</span>` +
-      me.factors.map(f => `<div style="padding-top:3px">
-        <div style="display:flex;gap:6px;align-items:center;white-space:nowrap"><span style="width:150px">${esc(f.label)} <span class="mut">${Math.round(f.weight * 100)}%</span></span>${f.score == null ? `<span class="mut" style="width:100px">—</span>` : bar(f.score)}
-        <span class="${cls(f.score)}" style="width:34px;text-align:right">${f.score == null ? "" : sgn(f.score * 100, 0)}</span></div>
-        <div class="mut" style="font-size:.85em;line-height:1.2">${esc(f.why)}</div></div>`).join("") + `</div>`
-    : `<div class="mut" style="padding:4px 6px">Load a coin (click a row) to see why.</div>`;
-  el.innerHTML = note + table + detail;
+  if (!me) return `<h3>Why · ${sgCoin(S.sym)}</h3><div class="mut">No signal for ${sgCoin(S.sym)} over ${flowLabel(S.sgw)}: it needs whale orders in that time. Click a row above.</div>`;
+  const wait = me.bias === "wait";
+  let h = `<h3>Why · ${sgCoin(S.sym)} <span class="${wait ? "mut" : cls(me.score)}">${me.bias.toUpperCase()} ${sgn(me.score * 100, 0)}</span>
+    <span class="mut" style="text-transform:none;letter-spacing:0">· confidence ${wait ? "—" : me.confidence} · sources agree ${Math.round(me.agree * 100)}% · data ${Math.round(me.coverage * 100)}%</span></h3>`;
+  if (!wait) {
+    const pts = [["stop", me.stop, "--neg"], ["entry", me.entry, "--amber"], ["now", me.mark, "--text"], ["target", me.target, "--pos"]];
+    const lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1])), at = v => hi > lo ? (v - lo) / (hi - lo) * 100 : 50;
+    const L = me.bias === "long", loss = at(me.stop), win = at(me.target);
+    h += `<div class="ladder" title="${L ? "Long" : "Short"}: risk ${pctOf(me.stop, me.entry)} to the stop, reward ${pctOf(me.target, me.entry)} to the target (R:R ${me.rr.toFixed(1)})">
+      <div class="rail" style="left:${Math.min(loss, at(me.entry))}%;width:${Math.abs(at(me.entry) - loss)}%;background:color-mix(in srgb,var(--neg) 55%,transparent)"></div>
+      <div class="rail" style="left:${Math.min(win, at(me.entry))}%;width:${Math.abs(win - at(me.entry))}%;background:color-mix(in srgb,var(--pos) 55%,transparent)"></div>` +
+      pts.filter(([n, v]) => !(n === "now" && Math.abs(at(v) - at(me.entry)) < 6))      // the price at the entry: one marker
+        .map(([n, v, col]) => { const x = at(v), al = x < 8 ? "left:0;transform:none" : x > 92 ? "left:auto;right:0;transform:none" : "";
+          const name = n === "entry" && Math.abs(at(me.mark) - x) < 6 ? "entry = now" : n;
+          return `<div class="mk" style="left:${x}%;background:var(${col})"><b style="color:var(${col});${al}">${name}</b><span style="${al}">${px(v)}</span></div>`; }).join("") + `</div>`;
+    h += `<div class="mut" style="font-size:.9em;margin-bottom:4px">Entry ${px(me.entry)} (${me.to_entry_pct ? sgn(me.to_entry_pct, 2) + "% from now" : "at the price"}) · stop ${px(me.stop)} (${pctOf(me.stop, me.entry)}) · target ${px(me.target)} (${pctOf(me.target, me.entry)}) · R:R ${me.rr.toFixed(1)}${me.atr ? ` · ATR ${esc(me.atr_interval)} ${px(me.atr)}` : ""}</div>`;
+  }
+  h += me.factors.map(f => `<div class="sg-f"><div class="t"><span class="n">${esc(f.label)} <span class="mut">${Math.round(f.weight * 100)}%</span></span>${sbar(f.score)}
+      <span class="${f.score == null ? "mut" : cls(f.score)}" style="width:36px;text-align:right">${f.score == null ? "no data" : sgn(f.score * 100, 0)}</span>
+      <span class="mut" style="font-size:.85em">${f.score == null || !f.weight ? "" : "adds " + sgn(f.score * f.weight * 100, 1)}</span></div>
+      <div class="why">${esc(f.why)}</div></div>`).join("");
+  return h;
+}
+function renderSignals() {
+  const el = $("sig"), c = S.combo, tf = flowLabel(S.sgw);
+  if (S.errs.combo) { el.innerHTML = `<div class="err-line">${esc(S.errs.combo)}</div>`; return; }
+  if (!c || c.window_s !== S.sgw) { el.innerHTML = sigAuto() + `<div class="empty">reading whales, crowd, curve, macro &amp; news over ${tf}…</div>`; return; }
+  const w = c.weights;
+  $("sg-k").innerHTML = `over <b>${tf}</b> · ${c.rows.length} coins · weights ${SIG_F.filter(([k]) => w[k]).map(([k, l]) => `${l.toLowerCase()} ${Math.round(w[k] * 100)}%`).join(" · ")}` +
+    ` · <span title="Crowd and curve: ${esc(c.steps.crowd)} / ${esc(c.steps.curve)} rows (step x how many back); stop from the ATR of ${esc(c.steps.atr)} candles. LONG at a score of +15 or more, SHORT at −15 or less. A heuristic, not a forecast or advice; nothing has been backtested.">heuristic, not advice ⓘ</span>`;
+  const a = S.auto, held = s => a && (a.open[s] ? "open" : a.pending[s] ? "waiting" : "");
+  const rows = c.rows.filter(x => S.sgf === "all" || (S.sgf === "trade" ? x.bias !== "wait" : x.bias === S.sgf));
+  const fx = (x, k) => { const f = x.factors.find(f => f.key === k);
+    return !f || f.score == null ? `<td class="f xw mut">—</td>` : `<td class="f xw ${cls(f.score)}" title="${esc(f.label)} (${Math.round(f.weight * 100)}%): ${esc(f.why)}">${sgn(f.score * 100, 0)}</td>`; };
+  const table = rows.length ? `<div class="sg-tw"><table class="sgt"><thead><tr><th>Coin</th><th>Signal</th>
+      <th title="Combined score, −100 (bearish) to +100 (bullish)">Score</th><th title="0-100: how strong the score is, how many sources agree, how much data there was">Conf</th>
+      <th class="xw" title="Weight of the sources that point the same way as the score">Agree</th><th class="xw" title="Share of the weights that had data">Data</th>
+      <th>Price</th><th title="Limit entry; % from the price now">Entry</th><th>Stop</th><th>Target</th><th title="Reward : risk">R:R</th>
+      <th class="xw" title="Average true range: one candle's typical move">ATR</th>` +
+      SIG_F.map(([k, l]) => `<th class="f xw" title="${l} score, −100 to +100 (hover a cell for why)">${l}</th>`).join("") +
+      `<th title="The testnet auto-trader holds this coin">Auto</th></tr></thead><tbody>` +
+      rows.map(x => { const L = x.bias === "long", wait = x.bias === "wait", h = held(x.symbol);
+        return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb">${sgCoin(x.symbol)}</td>
+          <td class="bias ${wait ? "mut" : L ? "up" : "dn"}">${wait ? "· WAIT" : L ? "▲ LONG" : "▼ SHORT"}</td>
+          <td class="${cls(x.score)}">${sbar(x.score)}${sgn(x.score * 100, 0)}</td>
+          <td class="${wait ? "mut" : x.confidence >= 70 ? "big" : x.confidence < 40 ? "mut" : ""}">${wait ? "—" : x.confidence}</td>
+          <td class="xw">${Math.round(x.agree * 100)}%</td><td class="xw ${x.coverage < 0.6 ? "wrn" : ""}">${Math.round(x.coverage * 100)}%</td>
+          <td>${px(x.mark)}</td>` +
+          (wait ? `<td colspan="4" class="mut">no clear side</td>` :
+          `<td>${px(x.entry)}<span class="sub">${Math.abs(x.to_entry_pct) < 0.1 ? "at the price" : sgn(x.to_entry_pct, 2) + "%"}</span></td>
+          <td class="dn">${px(x.stop)}<span class="sub">${pctOf(x.stop, x.entry)}</span></td>
+          <td class="up">${px(x.target)}<span class="sub">${pctOf(x.target, x.entry)}</span></td>
+          <td class="${x.rr >= 2 ? "up" : ""}">${x.rr.toFixed(1)}</td>`) +
+          `<td class="xw mut">${x.atr ? px(x.atr) + `<span class="sub">${esc(x.atr_interval)}</span>` : "—"}</td>` +
+          SIG_F.map(([k]) => fx(x, k)).join("") +
+          `<td>${h ? `<span class="amb" title="the auto-trader's position on the testnet">● ${h}</span>` : ""}</td></tr>`; }).join("") + `</tbody></table></div>`
+    : `<div class="empty">${c.rows.length ? "No coin matches this filter." : `No coin to score yet: it needs whale orders in the last ${tf}.`}</div>`;
+  el.innerHTML = sigAuto() + table + `<div class="sg-low"><div>${sigWhy(c)}</div><div>${sigTrades()}</div></div>`;
 }
 // the flow table's timeframe: [label, seconds]. The bot keeps a week of whale orders and liquidations (arbbot/whales.py).
 const FLOW_TF = [["1s", 1], ["5s", 5], ["15s", 15], ["30s", 30], ["1m", 60], ["5m", 300], ["15m", 900], ["30m", 1800],
@@ -1791,8 +1922,8 @@ function setFlow(sec) {
   S.fw = sec; lsSet("term-flow", String(sec));
   POLL.whales = sec <= 5 ? 1000 : 2000;                       // a 1-second window would be stale after a 2-second poll
   document.querySelectorAll("[data-fw]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.fw) === sec)));
-  S.due.whales = 0; S.due.combo = 0;                          // the 0.5 s poll tick fetches them at once
-  renderFlow(); renderWhales();                                // Signals follow the flow timeframe
+  S.due.whales = 0;                                           // the 0.5 s poll tick fetches it at once
+  renderFlow(); renderWhales();
 }
 $("fl-tf").addEventListener("click", ev => { const b = ev.target.closest("[data-fw]"); if (b) setFlow(Number(b.dataset.fw)); });
 { const saved = Number(lsGet("term-flow")); if (FLOW_TF.some(([, v]) => v === saved)) S.fw = saved; }
@@ -2148,6 +2279,7 @@ renderIv();
 renderOv();
 setWhale({});
 setFlow(S.fw);
+setSigTf(S.sgw);
 setSent(S.sp);
 setCurve(S.cp);
 setHz(S.mh);
