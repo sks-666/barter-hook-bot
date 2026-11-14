@@ -1,4 +1,5 @@
-"""/terminal: the read-only terminal view. It never carries the control token, and --lan locks it like every page."""
+"""/terminal: the terminal view. Its one control is the testnet auto-trader's timeframe, so it carries the control token
+(like the dashboard at /), and --lan locks it like every page."""
 import unittest
 from pathlib import Path
 
@@ -8,15 +9,23 @@ from arbbot.server import Dashboard
 
 
 class TerminalTests(LanTests):
-    async def test_this_mac_gets_the_terminal_without_the_control_token(self):
+    async def test_this_mac_gets_the_terminal_with_the_control_token_for_the_auto_trader_timeframe(self):
         await self.start(cls=Dashboard)
         for path in ("/terminal", "/terminal/"):
             r = await self.get(path, host=f"127.0.0.1:{self.port}")
             body = await r.text()
             self.assertEqual(r.status, 200, path)
             self.assertIn("ARB TERMINAL", body)
-            self.assertNotIn(self.dash.token, body)        # read-only: it cannot pause, flatten or trade
-            self.assertNotIn("X-Token", body)
+            self.assertIn(f'const TOKEN = "{self.dash.token}"', body)
+            self.assertNotIn("__TOKEN__", body)
+
+    def test_its_only_control_is_the_auto_trader_timeframe(self):
+        """It never pauses, flattens or places orders: the token is only ever sent to /api/signal-trader."""
+        import re
+        html = Path("web/terminal.html").read_text(encoding="utf-8")
+        with_token = re.findall(r'fetch\(([^,]+),\s*\{[^}]*"X-Token"', html)
+        self.assertEqual(with_token, ['"/api/signal-trader"'])
+        self.assertEqual(html.count('"X-Token"'), 1)
 
     async def test_a_phone_needs_the_key(self):
         await self.start()

@@ -436,9 +436,10 @@ class Dashboard:
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def terminal(self, request: web.Request) -> web.Response:
-        """A dense, keyboard-driven READ-ONLY view of the same data: it gets no control token, so it cannot pause,
-        flatten or place orders."""
-        html = (self.web_dir / "terminal.html").read_text(encoding="utf-8")
+        """A dense, keyboard-driven view of the same data. It cannot pause, flatten or place orders; its one control is
+        the testnet signal auto-trader's timeframe, so it gets the control token (the same one the dashboard at / gets,
+        behind the same LAN key)."""
+        html = (self.web_dir / "terminal.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def snapshot(self, request: web.Request) -> web.Response:

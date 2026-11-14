@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Arb Terminal</title>
 <style>
-  /* READ-ONLY terminal view of the bot: the same local endpoints as the dashboard, no control token, no orders. */
+  /* Terminal view of the bot: the same local endpoints as the dashboard, no orders. Its only control is the testnet
+     signal auto-trader's timeframe (the "Trade …" button in the Signals panel). */
   :root {
     --bg: #000; --panel: #0b0b0c; --panel-2: #141416; --line: #26262a; --text: #e9e7e2; --muted: #8d8a83;
     --amber: #ffa52b; --amber-ink: #000; --accent: #5ec8ff; --pos: #35d07f; --neg: #ff5c57; --warn: #ffd23f;
@@ -190,6 +191,8 @@
   .sg-strip > div { background: var(--panel); padding: 4px 8px; min-width: 0; }
   .sg-strip .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; letter-spacing: .6px; }
   .sg-strip .v { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sg-strip .auto-tf { min-height: 18px; padding: 0 6px; margin-left: 4px; font-size: 11px; font-weight: 700;
+    color: var(--amber-ink); background: var(--amber); border-color: var(--amber); vertical-align: 1px; }
   .sg-tw { overflow-x: auto; max-height: 360px; overflow-y: auto; border-bottom: 1px solid var(--line); }
   table.sgt td, table.sgt th { padding: 3px 7px; }
   table.sgt th.f, table.sgt td.f { border-left: 1px solid var(--line); }
@@ -1812,6 +1815,34 @@ function sbar(v) {                                   // −1 … +1 as a bar gro
   const w = Math.min(50, Math.round(Math.abs(v) * 50));
   return `<span class="sbar"><i style="${v >= 0 ? "left:50%" : `left:${50 - w}%`};width:${w}%;background:var(${v >= 0 ? "--pos" : "--neg"})"></i></span>`;
 }
+// The auto-trader trades ONE timeframe. The panel's buttons only change what this table shows; when they differ, a
+// "Trade <panel>" button switches the auto-trader to the panel's timeframe (asks first; needs the control token).
+const TOKEN = "__TOKEN__";
+const canControl = () => !TOKEN.startsWith("__");                // a page not served by the bot has no token
+function autoTfCell(a) {
+  const its = flowLabel(a.window_s), here = flowLabel(S.sgw), same = a.window_s === S.sgw;
+  const can = canControl() && Object.values(a.windows || {}).includes(S.sgw);
+  const btn = !same && can ? ` <button type="button" class="auto-tf" data-auto-tf="${S.sgw}" title="Make the auto-trader trade the ${here} signal (it asks first)">Trade ${here}</button>` : "";
+  const tip = same ? `The auto-trader trades the ${its} signal: the same timeframe this panel shows.`
+    : `The auto-trader trades the ${its} signal. This panel shows ${here}: the table is the ${here} signal, not what it trades.` +
+      (can ? ` Press "Trade ${here}" to switch it.` : "");
+  return `<div title="${esc(tip)}"><div class="l">Its timeframe${same ? " = panel" : ""}</div><div class="v amb">${its}${btn}</div></div>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-auto-tf]");
+  if (!b) return;
+  const w = Number(b.dataset.autoTf), label = flowLabel(w);
+  if (!confirm(`Make the testnet auto-trader trade the ${label} signal from now on (instead of ${flowLabel(S.auto.window_s)})?\n\n` +
+               `New entries use the ${label} signal, its entry wait and its maximum hold. Open positions keep the maximum hold of the timeframe they were opened on.`)) return;
+  b.disabled = true;
+  try {
+    const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ window_s: w }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    const { ok, ...view } = d; S.auto = view;
+    renderSignals();
+  } catch (err) { alert("Could not change the auto-trader's timeframe: " + err.message); b.disabled = false; }
+});
 // the auto-trader on the futures testnet (arbbot/signal_trader.py), when this bot runs it
 function sigAuto() {
   const a = S.auto;
@@ -1820,8 +1851,7 @@ function sigAuto() {
   const cell = (l, v, c = "", t = "") => `<div${t ? ` title="${esc(t)}"` : ""}><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
   return `<div class="sg-strip">` +
     cell("Auto-trader · testnet", a.enabled ? "ON" : "OFF", a.enabled ? "up" : "dn", "Trades this signal on the Binance futures TESTNET (test money). Switch it on or off on the dashboard.") +
-    cell("Its timeframe", flowLabel(a.window_s) + (a.window_s !== S.sgw ? ` <span class="mut" style="font-size:.8em">≠ panel</span>` : ""), "amb",
-         `It trades the ${flowLabel(a.window_s)} signal whatever this panel shows. Change it with the timeframe buttons on the dashboard's "Signal auto-trader · testnet" card (this page is read-only).`) +
+    autoTfCell(a) +
     cell("Status", a.error ? esc(a.error) : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked ? "wrn" : "up", a.error || a.blocked || "") +
     cell("Its open trades", `${open.length} / ${a.max_open}${Object.keys(a.pending).length ? ` · ${Object.keys(a.pending).length} waiting` : ""}`) +
     cell("Its open P&amp;L", sgMoney(upnl) + " $", cls(upnl)) +
