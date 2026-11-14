@@ -221,6 +221,9 @@
   .seg.tight { flex-wrap: wrap; }
   .seg.tight button { padding: 4px 9px; min-height: 28px; font-size: 12.5px; }
   .seg.tight button:disabled { opacity: .5; }
+  .st-max { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); }
+  .st-max select { font: inherit; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px;
+    min-height: 28px; padding: 2px 6px; }
   .pnl-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 10px; }
   .pnl-sum > div { background: var(--panel-2); border-radius: 8px; padding: 6px 10px; min-width: 0; }
   .pnl-sum .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
@@ -278,6 +281,7 @@
       <div class="card-h"><h2 id="h-r-st">Signal auto-trader · testnet</h2>
         <div class="sw-right"><a class="more" href="/terminal">Signals in the terminal →</a>
           <div class="seg tight" role="group" aria-label="Timeframe the auto-trader trades" id="st-tf" hidden></div>
+          <label class="st-max" id="st-max-l" hidden>Most open <select id="st-max" title="The most trades it holds at once (positions + waiting entries). Lowering it closes nothing."></select></label>
           <span class="sw-power" id="st-power" hidden><span id="st-power-l"></span><button type="button" class="sw-toggle" id="st-toggle" role="switch" aria-checked="true" aria-label="Signal auto-trader entries on or off"></button></span></div></div>
       <div id="st-body" class="empty">Loading…</div>
     </section>
@@ -1466,6 +1470,13 @@ function stShow(d) {
     tfBox.innerHTML = wins.map(([l, v]) => `<button type="button" data-w="${v}" aria-pressed="false" title="Trade the ${l} signal">${l}</button>`).join("");
   }
   tfBox.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.w) === d.window_s)));
+  const [lo, hi] = d.max_open_range || [], maxSel = $("st-max");
+  $("st-max-l").hidden = typeof TOKEN === "undefined" || !lo;
+  if (!$("st-max-l").hidden && document.activeElement !== maxSel) {
+    if (maxSel.options.length !== hi - lo + 1)
+      maxSel.innerHTML = Array.from({ length: hi - lo + 1 }, (_, i) => `<option value="${lo + i}">${lo + i}</option>`).join("");
+    maxSel.value = String(d.max_open);
+  }
   const st = d.stats, open = Object.entries(d.open), pend = Object.keys(d.pending);
   const tf = (wins.find(([, v]) => v === d.window_s) || [d.window_s + "s"])[0];
   $("st-body").className = "";
@@ -1497,6 +1508,17 @@ $("st-toggle").addEventListener("click", async e => {
     stShow(d);
   } catch (err) { alert("Could not switch the auto-trader: " + err.message); }
   finally { btn.disabled = false; }
+});
+$("st-max").addEventListener("change", async e => {
+  const sel = e.currentTarget, n = Number(sel.value);
+  if (!confirm(`Let the testnet auto-trader hold up to ${n} trade${n === 1 ? "" : "s"} at once?\n\nLowering it closes nothing: it just takes no new trade until fewer than that are open.`)) { stPoll(); return; }
+  sel.disabled = true;
+  try {
+    const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ max_open: n }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    sel.disabled = false; sel.blur(); stShow(d);
+  } catch (err) { alert("Could not change the most open trades: " + err.message); sel.disabled = false; stPoll(); }
 });
 $("st-tf").addEventListener("click", async e => {
   const btn = e.target.closest("button[data-w]");

@@ -229,6 +229,33 @@ class Trader(unittest.IsolatedAsyncioTestCase):
                 t.set_window(bad)
         self.assertEqual(t.window_s, 3600)
 
+    def test_the_most_open_trades_can_be_set_and_survives_a_restart(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "st.json"
+            t = self.make(path=p)
+            t.set_max_open(7)
+            self.assertEqual((t.max_open, t.view()["max_open"]), (7, 7))
+            self.assertEqual(self.make(path=p).max_open, 7)        # the saved number wins over the command line's 3
+            for bad in (0, 21, 2.5, True, "5"):
+                with self.assertRaises(ValueError):
+                    t.set_max_open(bad)
+            self.assertEqual(t.max_open, 7)
+
+    async def test_more_open_trades_lets_more_coins_in_and_fewer_closes_nothing(self):
+        self.desk.rows = [row("SOLUSDT"), row("ETHUSDT", conf=80), row("XRPUSDT", conf=75)]
+        t = self.make(max_open=1)
+        await t.step()
+        self.assertEqual(list(t.s["open"]), ["ETHUSDT"])               # the most confident one only
+        t.set_max_open(3)
+        await t.step()
+        self.assertEqual(sorted(t.s["open"]), ["ETHUSDT", "SOLUSDT", "XRPUSDT"])
+        t.set_max_open(1)
+        await t.step()
+        self.assertEqual((len(t.s["open"]), self.ticket.closed), (3, []))   # lowering it closes nothing
+        self.assertIn("1 positions / entries open", t.can_enter())
+
     async def test_an_open_position_keeps_the_maximum_hold_of_its_own_timeframe(self):
         t = self.make()
         await t.step()                                               # opened on the 1h signal: max hold 2 h

@@ -192,7 +192,8 @@ class Dashboard:
 
     async def signal_trader_post(self, request: web.Request) -> web.Response:
         """Switch the auto-trader's new entries on or off ({"enabled": true|false}; open positions stay managed) and/or
-        change the timeframe it trades ({"window_s": 900}, one of its timeframes)."""
+        change the timeframe it trades ({"window_s": 900}, one of its timeframes) and/or the most open trades
+        ({"max_open": 5})."""
         if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
             raise web.HTTPForbidden(text="bad token")
         if self.signal_trader is None:
@@ -201,13 +202,18 @@ class Dashboard:
             body = await request.json()
         except ValueError:
             body = None
-        on, win = (body.get("enabled"), body.get("window_s")) if isinstance(body, dict) else (None, None)
-        if not isinstance(on, bool) and not (isinstance(win, int) and not isinstance(win, bool)):
-            return web.json_response({"ok": False, "error": 'send {"enabled": true|false} and/or {"window_s": seconds}'},
-                                     status=400)
+        body = body if isinstance(body, dict) else {}
+        on, win, most = body.get("enabled"), body.get("window_s"), body.get("max_open")
+        if not isinstance(on, bool) and win is None and most is None:
+            return web.json_response({"ok": False, "error": 'send {"enabled": true|false}, {"window_s": seconds} '
+                                                            'and/or {"max_open": n}'}, status=400)
         try:
-            if isinstance(win, int) and not isinstance(win, bool):
+            if win is not None:
+                if not isinstance(win, int) or isinstance(win, bool):
+                    raise ValueError("window_s must be a whole number of seconds")
                 self.signal_trader.set_window(win)
+            if most is not None:
+                self.signal_trader.set_max_open(most)
             if isinstance(on, bool):
                 self.signal_trader.set_enabled(on)
         except ValueError as e:

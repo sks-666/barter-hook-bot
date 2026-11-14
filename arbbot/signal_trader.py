@@ -41,6 +41,7 @@ MAX_DRIFT = 0.02             # testnet price this far from mainnet: skip the coi
 KEEP_TRADES = 300
 # the timeframes it can trade (the terminal's Signals panel buttons), in seconds
 WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
+MAX_OPEN_RANGE = (1, 20)     # the most open trades (positions + waiting limit entries) it can be set to from the page
 
 
 def _clamp(v, lo, hi):
@@ -66,6 +67,9 @@ class SignalTrader:
         # a timeframe picked on the dashboard (saved in the state) wins over the command line's
         saved = self.s.get("window_s")
         self.window_s = desk.whales.clamp_window(saved if saved in WINDOWS.values() else window_s)
+        saved = self.s.get("max_open")                               # likewise the most open trades
+        if isinstance(saved, int) and MAX_OPEN_RANGE[0] <= saved <= MAX_OPEN_RANGE[1]:
+            self.max_open = saved
         self.last_error, self.last_run, self.note = "", 0.0, ""
         self.last_signals: list[dict] = []
         self._halted_day = None
@@ -124,6 +128,18 @@ class SignalTrader:
         self._save()
         log.info("signal auto-trader: timeframe set to %s", label)
         self.notify(f"🤖 TESTNET signal auto-trader: now trading the {label} signal")
+
+    def set_max_open(self, n) -> None:
+        """The most positions and waiting limit entries it holds at once (saved, so it survives a restart). Lowering it
+        closes nothing: it only stops new entries until enough trades have closed."""
+        lo, hi = MAX_OPEN_RANGE
+        if not (isinstance(n, int) and not isinstance(n, bool) and lo <= n <= hi):
+            raise ValueError(f"the most open trades must be a whole number from {lo} to {hi}")
+        self.max_open = n
+        self.s["max_open"] = n
+        self._save()
+        log.info("signal auto-trader: most open trades set to %d", n)
+        self.notify(f"🤖 TESTNET signal auto-trader: at most {n} open trade{'s' if n != 1 else ''} now")
 
     def _max_hold_of(self, m: dict) -> float:
         w = m.get("window_s") or self.window_s
@@ -344,6 +360,7 @@ class SignalTrader:
     def view(self) -> dict:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
         return dict(venue="testnet", enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
+                    max_open_range=list(MAX_OPEN_RANGE),
                     risk_usd=self.risk_usd,
                     max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd,
                     daily_loss_usd=self.daily_loss_usd, entry_ttl_s=self.entry_ttl_s, max_hold_s=self.max_hold_s,

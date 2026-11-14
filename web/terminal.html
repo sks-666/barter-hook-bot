@@ -193,6 +193,8 @@
   .sg-strip .v { font-size: 13px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .sg-strip .auto-tf { min-height: 18px; padding: 0 6px; margin-left: 4px; font-size: 11px; font-weight: 700;
     color: var(--amber-ink); background: var(--amber); border-color: var(--amber); vertical-align: 1px; }
+  .sg-strip .auto-max { font: inherit; font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--amber);
+    border-radius: 3px; padding: 0 2px; min-height: 18px; }
   .sg-tw { overflow-x: auto; max-height: 360px; overflow-y: auto; border-bottom: 1px solid var(--line); }
   table.sgt td, table.sgt th { padding: 3px 7px; }
   table.sgt th.f, table.sgt td.f { border-left: 1px solid var(--line); }
@@ -1828,6 +1830,31 @@ function autoTfCell(a) {
       (can ? ` Press "Trade ${here}" to switch it.` : "");
   return `<div title="${esc(tip)}"><div class="l">Its timeframe${same ? " = panel" : ""}</div><div class="v amb">${its}${btn}</div></div>`;
 }
+// "Its open trades": how many it holds now, out of the most it may hold (positions + waiting limit entries), settable
+function autoMaxCell(a, n) {
+  const wait = Object.keys(a.pending).length, [lo, hi] = a.max_open_range || [];
+  const pick = canControl() && lo ? `<select class="auto-max" data-auto-max aria-label="Most open trades" title="The most trades it holds at once (positions + waiting entries). Lowering it closes nothing.">` +
+      Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).map(k => `<option value="${k}"${k === a.max_open ? " selected" : ""}>${k}</option>`).join("") + `</select>`
+    : a.max_open;
+  return `<div><div class="l">Its open trades / most</div><div class="v">${n} / ${pick}${wait ? ` · ${wait} waiting` : ""}</div></div>`;
+}
+async function autoPost(body, what) {
+  const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+  const { ok, ...view } = d; S.auto = view;
+  renderSignals();
+}
+document.addEventListener("change", async ev => {
+  const sel = ev.target.closest("[data-auto-max]");
+  if (!sel) return;
+  const n = Number(sel.value), was = S.auto.max_open;
+  if (!confirm(`Let the testnet auto-trader hold up to ${n} trade${n === 1 ? "" : "s"} at once (now ${was})?` +
+               (n < was ? `\n\nLowering it closes nothing: it just takes no new trade until fewer than ${n} are open.` : ""))) { sel.value = was; return; }
+  sel.disabled = true;
+  try { await autoPost({ max_open: n }); }
+  catch (err) { alert("Could not change the most open trades: " + err.message); sel.value = was; sel.disabled = false; }
+});
 document.addEventListener("click", async ev => {
   const b = ev.target.closest("[data-auto-tf]");
   if (!b) return;
@@ -1835,13 +1862,8 @@ document.addEventListener("click", async ev => {
   if (!confirm(`Make the testnet auto-trader trade the ${label} signal from now on (instead of ${flowLabel(S.auto.window_s)})?\n\n` +
                `New entries use the ${label} signal, its entry wait and its maximum hold. Open positions keep the maximum hold of the timeframe they were opened on.`)) return;
   b.disabled = true;
-  try {
-    const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ window_s: w }) });
-    const d = await r.json().catch(() => ({}));
-    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
-    const { ok, ...view } = d; S.auto = view;
-    renderSignals();
-  } catch (err) { alert("Could not change the auto-trader's timeframe: " + err.message); b.disabled = false; }
+  try { await autoPost({ window_s: w }); }
+  catch (err) { alert("Could not change the auto-trader's timeframe: " + err.message); b.disabled = false; }
 });
 // the auto-trader on the futures testnet (arbbot/signal_trader.py), when this bot runs it
 function sigAuto() {
@@ -1853,7 +1875,7 @@ function sigAuto() {
     cell("Auto-trader · testnet", a.enabled ? "ON" : "OFF", a.enabled ? "up" : "dn", "Trades this signal on the Binance futures TESTNET (test money). Switch it on or off on the dashboard.") +
     autoTfCell(a) +
     cell("Status", a.error ? esc(a.error) : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked ? "wrn" : "up", a.error || a.blocked || "") +
-    cell("Its open trades", `${open.length} / ${a.max_open}${Object.keys(a.pending).length ? ` · ${Object.keys(a.pending).length} waiting` : ""}`) +
+    autoMaxCell(a, open.length) +
     cell("Its open P&amp;L", sgMoney(upnl) + " $", cls(upnl)) +
     (S.acct ? cell("Whole account", `${S.acct.positions.length} pos · ${(S.acct.orders || []).length} orders`, "", "Every position and order on the testnet account, including the swing mirror's: listed below") : "") +
     cell("Today", sgMoney(st.today) + " $", cls(st.today), `daily loss limit $${a.daily_loss_usd}`) +
@@ -1923,6 +1945,11 @@ function sigWhy(c) {
   return h;
 }
 function renderSignals() {
+  const sel = document.activeElement;
+  if (sel?.matches?.("[data-auto-max]:not(:disabled)")) {        // the "most open" list is in use: redraw once it is left
+    if (!sel.dataset.held) { sel.dataset.held = "1"; sel.addEventListener("blur", () => setTimeout(renderSignals), { once: true }); }
+    return;
+  }
   const el = $("sig"), c = S.combo, tf = flowLabel(S.sgw);
   if (S.errs.combo) { el.innerHTML = `<div class="err-line">${esc(S.errs.combo)}</div>`; return; }
   if (!c || c.window_s !== S.sgw) { el.innerHTML = sigAuto() + `<div class="empty">reading whales, crowd, curve, macro &amp; news over ${tf}…</div>`; return; }
