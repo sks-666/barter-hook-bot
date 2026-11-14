@@ -141,6 +141,23 @@ class Desk(unittest.IsolatedAsyncioTestCase):
         self.assertGreater(r["target"], r["entry"])
         self.assertGreater(r["confidence"], 50)
 
+    async def test_the_whale_reading_is_live_while_binance_answers_are_reused(self):
+        m = FakeMarket()
+        desk = SignalDesk(self.w, m, Macro(), clock=lambda: self.now[0], wall=lambda: self.now[0])
+        first = (await desk.view(3600))["rows"][0]["factors"][0]["why"]
+        calls = len(m.calls)
+        t = int(self.now[0] * 1000)
+        self.w.handle(agg("DOGEUSDT", 0.2, 1_000_000, t, sell=True))   # a $200K whale sell, 1 s later
+        self.w.sweep(t + 10_000)
+        self.now[0] += 1
+        second = (await desk.view(3600))["rows"][0]["factors"][0]["why"]
+        self.assertNotEqual(first, second)                             # the whale reading moved at once
+        self.assertIn("sells $200.0K", second)
+        self.assertEqual(len(m.calls), calls)                          # no new Binance calls inside the 60 s
+        self.now[0] += 61
+        await desk.view(3600)
+        self.assertGreater(len(m.calls), calls)                        # and fresh ones after it
+
     async def test_the_crowd_and_curve_can_overrule_the_whales_and_the_loaded_coin_is_added(self):
         v = await SignalDesk(self.w, FakeMarket(bullish=False), Macro(), clock=lambda: self.now[0],
                              wall=lambda: self.now[0]).view(3600, "BTCUSDT")

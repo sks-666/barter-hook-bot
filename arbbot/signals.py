@@ -25,7 +25,8 @@ log = logging.getLogger("signals")
 
 STEP_S = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "2h": 7200, "4h": 14_400, "6h": 21_600,
           "12h": 43_200, "1d": 86_400, "1w": 604_800}
-TTL_S = 60.0                 # a coin's combined signal is reused this long (each costs ~14 Binance calls)
+TTL_S = 60.0                 # a coin's Binance readings (crowd, curve, candles: ~14 calls) are reused this long;
+                             # the whale reading is recomputed on every request, so it always matches the Whale flow panel
 MAX_COINS = 6                # coins scored per request (the busiest whale coins), plus the one the page has loaded
 LONG_AT = 0.15               # |combined score| needed for a side
 ATR_N = 14
@@ -155,7 +156,7 @@ def score_news(data: dict, base: str, window_s: float, now_ms: float) -> tuple[f
         weight += w
     if not n:
         return None, "no headlines in the timeframe"
-    return clamp(total / weight * min(1.0, n / 5)), f"{n} headlines: {pos} bullish, {neg} bearish"
+    return clamp(total / weight * min(1.0, n / 5)), f"{n} headline{'s' if n != 1 else ''}: {pos} bullish, {neg} bearish"
 
 
 def _big(v: float) -> str:
@@ -208,25 +209,31 @@ class SignalDesk:
         return tuple(None if isinstance(g, BaseException) else g for g in got)
 
     async def _coin(self, sym, w, whale, sent, curve, iv, macro, news) -> dict | None:
-        key = (sym, w)
-        hit = self._cache.get(key)
-        if hit and self.clock() - hit[0] < TTL_S:
-            return hit[1]
         try:
-            row = await self._score(sym, w, whale, sent, curve, iv, macro, news)
+            fetched = await self._fetch(sym, sent[0], curve[0], iv)
+            return self._score(sym, w, whale, sent, curve, iv, macro, news, *fetched)
         except Exception as e:                                        # one coin failing never hides the rest
             log.warning("signal for %s failed: %s: %s", sym, type(e).__name__, e)
             return None
-        self._cache[key] = (self.clock(), row)
+
+    async def _fetch(self, sym, sent_p, curve_p, iv) -> tuple:
+        """The coin's Binance readings (Whales vs crowd rows, futures curve, candles), reused for TTL_S: only these are
+        cached, so the score itself is worked out afresh from the live whale log on every request."""
+        key = (sym, sent_p, curve_p, iv)
+        hit = self._cache.get(key)
+        if hit and self.clock() - hit[0] < TTL_S:
+            return hit[1]
+        got = tuple(await asyncio.gather(self.market.trading_data(sym, sent_p), self.market.curve(sym, curve_p),
+                                         self.market.klines(sym, iv), return_exceptions=True))
+        if all(isinstance(g, BaseException) for g in got):           # Binance unreachable: ask again next time
+            return got
+        self._cache[key] = (self.clock(), got)
         if len(self._cache) > 200:
             for k in sorted(self._cache, key=lambda k: self._cache[k][0])[:100]:
                 del self._cache[k]
-        return row
+        return got
 
-    async def _score(self, sym, w, whale, sent, curve, iv, macro, news) -> dict:
-        crowd_d, curve_d, kl = await asyncio.gather(self.market.trading_data(sym, sent[0]),
-                                                    self.market.curve(sym, curve[0]),
-                                                    self.market.klines(sym, iv), return_exceptions=True)
+    def _score(self, sym, w, whale, sent, curve, iv, macro, news, crowd_d, curve_d, kl) -> dict:
         wt = weights(w)
         factors = []
 
