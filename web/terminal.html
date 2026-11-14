@@ -122,7 +122,7 @@
 
   table { border-collapse: collapse; width: 100%; }
   th, td { padding: 2px 8px; text-align: right; white-space: nowrap; }
-  table.sig { font-size: .94em; } table.sig th, table.sig td { padding: 2px 4px; }               /* the whale Signals table: 7 columns in a half-width panel */
+  table.sig { font-size: .94em; } table.sig th, table.sig td { padding: 2px 4px; }               /* the whale Signals table: 6 columns in a half-width panel */
   table.sig .sub { display: block; font-size: .85em; line-height: 1.1; }   /* entry's % from now, under the price */
   th { position: sticky; top: 0; background: var(--panel-2); color: var(--muted); font-weight: 600; font-size: 11px;
        text-transform: uppercase; z-index: 1; }
@@ -1738,12 +1738,11 @@ function renderSignals(w, el) {
     return;
   }
   const pct = (a, b) => sgn((a / b - 1) * 100, 2) + "%";
-  el.innerHTML = note + `<table class="sig"><thead><tr><th>Coin</th><th>Side</th><th title="Limit entry; % from the price now">Entry</th>
+  el.innerHTML = note + `<table class="sig"><thead><tr><th title="▲ long · ▼ short">Coin</th><th title="Limit entry; % from the price now">Entry</th>
     <th>Stop</th><th title="Reward : risk on hover">Target</th><th title="Net pressure: whale buys + shorts liquidated vs whale sells + longs liquidated">Press.</th>
     <th title="0-100: pressure, number of whale orders, liquidations the same way">Conf</th></tr></thead><tbody>` +
     rows.map(x => { const L = x.bias === "long", near = Math.abs(x.to_entry_pct) < 0.1;
-      return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb">${esc(x.symbol.replace(/USDT$/, ""))}</td>
-      <td>${L ? `<span class="up">LONG</span>` : `<span class="dn">SHORT</span>`}</td>
+      return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb" title="${L ? "LONG" : "SHORT"}">${L ? `<span class="up">▲</span>` : `<span class="dn">▼</span>`} ${esc(x.symbol.replace(/USDT$/, ""))}</td>
       <td title="price now ${px(x.mark)}">${px(x.entry)}${near ? "" : `<span class="mut sub">${pct(x.entry, x.mark)}</span>`}</td>
       <td class="dn" title="${pct(x.stop, x.entry)} from entry">${px(x.stop)}</td><td class="up" title="${pct(x.target, x.entry)} from entry · R:R ${x.rr.toFixed(1)}">${px(x.target)}</td><td class="${cls(x.pressure)}">${sgn(x.pressure * 100, 0)}%</td>
       <td class="${x.confidence >= 70 ? "big" : x.confidence < 40 ? "mut" : ""}" title="${x.n} whale orders">${x.confidence}</td></tr>`; }).join("") + `</tbody></table>`;
