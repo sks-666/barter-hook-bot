@@ -212,6 +212,33 @@ class Trader(unittest.IsolatedAsyncioTestCase):
             self.assertIn("SOLUSDT", t2.s["open"])
             self.assertFalse(t2.s["enabled"])
 
+    def test_the_timeframe_can_be_changed_and_survives_a_restart(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "st.json"
+            t = self.make(path=p)
+            t.set_window(900)
+            self.assertEqual((t.window_s, t.view()["window_s"]), (900, 900))
+            self.assertEqual(self.make(path=p).window_s, 900)     # the saved timeframe wins over the command line's 1h
+
+    def test_only_its_timeframes_are_accepted(self):
+        t = self.make()
+        for bad in (0, 61, 7200, -300):
+            with self.assertRaises(ValueError):
+                t.set_window(bad)
+        self.assertEqual(t.window_s, 3600)
+
+    async def test_an_open_position_keeps_the_maximum_hold_of_its_own_timeframe(self):
+        t = self.make()
+        await t.step()                                               # opened on the 1h signal: max hold 2 h
+        self.assertIn("SOLUSDT", t.s["open"])
+        t.set_window(86_400)                                         # 1d: max hold 2 days for new trades
+        self.desk.rows = []
+        self.now[0] += 2 * 3600 + 1
+        await t.step()
+        self.assertEqual((self.ticket.closed, t.s["trades"][-1]["why"]), (["SOLUSDT"], "held the maximum time"))
+
 
 if __name__ == "__main__":
     unittest.main()

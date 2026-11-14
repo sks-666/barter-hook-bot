@@ -569,7 +569,10 @@ async def amain(args: argparse.Namespace) -> None:
         if trader is not None:
             coros.append(trader.run())
             log.warning("signal auto-trader: ON on the futures TESTNET (%s timeframe, $%g risk per trade, max %d open, "
-                        "confidence >= %d, entries %s)", args.signal_trader_window, trader.risk_usd, trader.max_open,
+                        "confidence >= %d, entries %s)",
+                        next((k for k, v in WINDOWS.items() if v == trader.window_s), f"{trader.window_s:g}s")
+                        + ("" if trader.window_s == WINDOWS[args.signal_trader_window.lower()] else ", picked on the dashboard"),
+                        trader.risk_usd, trader.max_open,
                         trader.min_conf, "on" if trader.s["enabled"] else "OFF (switched off in the terminal)")
         if sampler is not None:
             coros.append(sampler.run())

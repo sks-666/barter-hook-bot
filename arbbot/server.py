@@ -191,7 +191,8 @@ class Dashboard:
         return web.json_response(self.signal_trader.view(), headers={"Cache-Control": "no-store"})
 
     async def signal_trader_post(self, request: web.Request) -> web.Response:
-        """Switch the auto-trader's new entries on or off ({"enabled": true|false}); open positions stay managed."""
+        """Switch the auto-trader's new entries on or off ({"enabled": true|false}; open positions stay managed) and/or
+        change the timeframe it trades ({"window_s": 900}, one of its timeframes)."""
         if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
             raise web.HTTPForbidden(text="bad token")
         if self.signal_trader is None:
@@ -200,9 +201,17 @@ class Dashboard:
             body = await request.json()
         except ValueError:
             body = None
-        if not isinstance(body, dict) or not isinstance(body.get("enabled"), bool):
-            return web.json_response({"ok": False, "error": 'send {"enabled": true} or {"enabled": false}'}, status=400)
-        self.signal_trader.set_enabled(body["enabled"])
+        on, win = (body.get("enabled"), body.get("window_s")) if isinstance(body, dict) else (None, None)
+        if not isinstance(on, bool) and not (isinstance(win, int) and not isinstance(win, bool)):
+            return web.json_response({"ok": False, "error": 'send {"enabled": true|false} and/or {"window_s": seconds}'},
+                                     status=400)
+        try:
+            if isinstance(win, int) and not isinstance(win, bool):
+                self.signal_trader.set_window(win)
+            if isinstance(on, bool):
+                self.signal_trader.set_enabled(on)
+        except ValueError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
         return web.json_response({"ok": True, **self.signal_trader.view()})
 
     async def market_data(self, request: web.Request) -> web.Response:

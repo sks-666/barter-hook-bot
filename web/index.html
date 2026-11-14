@@ -218,6 +218,9 @@
   .seg button { border: 0; border-radius: 0; min-height: 30px; padding: 4px 12px; background: none; color: var(--muted); }
   .seg button + button { border-left: 1px solid var(--line); }
   .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+  .seg.tight { flex-wrap: wrap; }
+  .seg.tight button { padding: 4px 9px; min-height: 28px; font-size: 12.5px; }
+  .seg.tight button:disabled { opacity: .5; }
   .pnl-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 10px; }
   .pnl-sum > div { background: var(--panel-2); border-radius: 8px; padding: 6px 10px; min-width: 0; }
   .pnl-sum .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
@@ -274,6 +277,7 @@
     <section class="card" aria-labelledby="h-r-st" id="st-card" hidden>
       <div class="card-h"><h2 id="h-r-st">Signal auto-trader · testnet</h2>
         <div class="sw-right"><a class="more" href="/terminal">Signals in the terminal →</a>
+          <div class="seg tight" role="group" aria-label="Timeframe the auto-trader trades" id="st-tf" hidden></div>
           <span class="sw-power" id="st-power" hidden><span id="st-power-l"></span><button type="button" class="sw-toggle" id="st-toggle" role="switch" aria-checked="true" aria-label="Signal auto-trader entries on or off"></button></span></div></div>
       <div id="st-body" class="empty">Loading…</div>
     </section>
@@ -1454,8 +1458,16 @@ function stShow(d) {
   $("st-power-l").textContent = on ? "Entries ON" : "Entries OFF";
   $("st-power-l").className = on ? "pos" : "warn";
   $("st-power").hidden = typeof TOKEN === "undefined";
+  const wins = Object.entries(d.windows || {});                 // an older bot sends no list: no picker
+  const tfBox = $("st-tf");
+  tfBox.hidden = typeof TOKEN === "undefined" || !wins.length;
+  if (!tfBox.hidden && tfBox.dataset.keys !== wins.map(([l]) => l).join()) {
+    tfBox.dataset.keys = wins.map(([l]) => l).join();
+    tfBox.innerHTML = wins.map(([l, v]) => `<button type="button" data-w="${v}" aria-pressed="false" title="Trade the ${l} signal">${l}</button>`).join("");
+  }
+  tfBox.querySelectorAll("button").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.w) === d.window_s)));
   const st = d.stats, open = Object.entries(d.open), pend = Object.keys(d.pending);
-  const tf = { 60: "1m", 300: "5m", 900: "15m", 1800: "30m", 3600: "1h", 14400: "4h", 86400: "1d", 604800: "1w" }[d.window_s] || d.window_s + "s";
+  const tf = (wins.find(([, v]) => v === d.window_s) || [d.window_s + "s"])[0];
   $("st-body").className = "";
   $("st-body").innerHTML = `<div style="font-size:13px;line-height:1.6">` +
     `<b>${tf}</b> signal · $${d.risk_usd} risk per trade · up to ${d.max_open} open · confidence ≥ ${d.min_conf}` +
@@ -1485,6 +1497,21 @@ $("st-toggle").addEventListener("click", async e => {
     stShow(d);
   } catch (err) { alert("Could not switch the auto-trader: " + err.message); }
   finally { btn.disabled = false; }
+});
+$("st-tf").addEventListener("click", async e => {
+  const btn = e.target.closest("button[data-w]");
+  if (!btn || btn.getAttribute("aria-pressed") === "true") return;
+  const w = Number(btn.dataset.w), label = btn.textContent;
+  if (!confirm(`Trade the ${label} signal from now on?\n\nNew entries use the ${label} signal, its entry wait and its maximum hold. Open positions keep the maximum hold of the timeframe they were opened on.`)) return;
+  const all = $("st-tf").querySelectorAll("button");
+  all.forEach(b => b.disabled = true);
+  try {
+    const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ window_s: w }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    stShow(d);
+  } catch (err) { alert("Could not change the timeframe: " + err.message); }
+  finally { all.forEach(b => b.disabled = false); }
 });
 stPoll();
 setInterval(stPoll, 10_000);

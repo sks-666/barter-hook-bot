@@ -39,6 +39,8 @@ HOLD_X = 2.0                 # close after holding this many timeframes (between
 COOLDOWN_X = 0.5             # no new entry on a coin for this share of the timeframe after an exit (at least 5 min)
 MAX_DRIFT = 0.02             # testnet price this far from mainnet: skip the coin
 KEEP_TRADES = 300
+# the timeframes it can trade (the terminal's Signals panel buttons), in seconds
+WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
 
 
 def _clamp(v, lo, hi):
@@ -55,13 +57,15 @@ class SignalTrader:
             raise ValueError("signal trader: risk, max size and daily loss must be above 0, max open at least 1, "
                              "min confidence 0..100")
         self.desk, self.ticket = desk, ticket
-        self.window_s = desk.whales.clamp_window(window_s)
         self.risk_usd, self.max_open, self.min_conf = float(risk_usd), int(max_open), int(min_conf)
         self.max_usd, self.daily_loss_usd = float(max_usd), float(daily_loss_usd)
         self.path, self.notify, self.clock, self.poll_s = path, notify or (lambda text: None), clock, poll_s
         self.s = self._load() or {"enabled": True, "open": {}, "pending": {}, "cooldown": {}, "trades": []}
         for k, v in (("open", {}), ("pending", {}), ("cooldown", {}), ("trades", []), ("enabled", True)):
             self.s.setdefault(k, v)
+        # a timeframe picked on the dashboard (saved in the state) wins over the command line's
+        saved = self.s.get("window_s")
+        self.window_s = desk.whales.clamp_window(saved if saved in WINDOWS.values() else window_s)
         self.last_error, self.last_run, self.note = "", 0.0, ""
         self.last_signals: list[dict] = []
         self._halted_day = None
@@ -108,6 +112,22 @@ class SignalTrader:
         log.info("signal auto-trader: new entries %s", "ON" if on else "OFF")
         self.notify(f"🤖 TESTNET signal auto-trader: new entries {'ON' if on else 'OFF'}"
                     f"{'' if on else ' (open positions are still managed)'}")
+
+    def set_window(self, window_s) -> None:
+        """Trade the signal over another timeframe from the next pass on (one of WINDOWS; saved, so it survives a
+        restart). Open positions keep the maximum hold of the timeframe they were opened on."""
+        if window_s not in WINDOWS.values():
+            raise ValueError(f"the timeframe must be one of {', '.join(WINDOWS)}")
+        label = next(k for k, v in WINDOWS.items() if v == window_s)
+        self.window_s = self.desk.whales.clamp_window(window_s)
+        self.s["window_s"] = window_s
+        self._save()
+        log.info("signal auto-trader: timeframe set to %s", label)
+        self.notify(f"🤖 TESTNET signal auto-trader: now trading the {label} signal")
+
+    def _max_hold_of(self, m: dict) -> float:
+        w = m.get("window_s") or self.window_s
+        return _clamp(w * HOLD_X, 1800, 7 * 86_400)
 
     # ---- results ----------------------------------------------------------------------------------
     def realized_today(self) -> float:
@@ -206,7 +226,7 @@ class SignalTrader:
             flipped = (row and row["bias"] not in ("wait", "long" if m["side"] == "buy" else "short")
                        and row["confidence"] >= self.min_conf)
             why = ("signal turned " + row["bias"].upper()) if flipped else (
-                "held the maximum time" if now_ms - m["opened_ms"] >= self.max_hold_s * 1000 else "")
+                "held the maximum time" if now_ms - m["opened_ms"] >= self._max_hold_of(m) * 1000 else "")
             if not why:
                 continue
             try:
@@ -323,7 +343,8 @@ class SignalTrader:
 
     def view(self) -> dict:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
-        return dict(venue="testnet", enabled=self.s["enabled"], window_s=self.window_s, risk_usd=self.risk_usd,
+        return dict(venue="testnet", enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
+                    risk_usd=self.risk_usd,
                     max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd,
                     daily_loss_usd=self.daily_loss_usd, entry_ttl_s=self.entry_ttl_s, max_hold_s=self.max_hold_s,
                     blocked=self.can_enter(), last_run=int(self.last_run * 1000), error=self.last_error,

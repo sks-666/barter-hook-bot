@@ -219,6 +219,9 @@
   .seg button { border: 0; border-radius: 0; min-height: 30px; padding: 4px 12px; background: none; color: var(--muted); }
   .seg button + button { border-left: 1px solid var(--line); }
   .seg button[aria-pressed="true"] { background: var(--panel-2); color: var(--text); }
+  .seg.tight { flex-wrap: wrap; }
+  .seg.tight button { padding: 4px 9px; min-height: 28px; font-size: 12.5px; }
+  .seg.tight button:disabled { opacity: .5; }
   .pnl-sum { display: grid; grid-template-columns: repeat(auto-fit, minmax(118px, 1fr)); gap: 8px; margin-bottom: 10px; }
   .pnl-sum > div { background: var(--panel-2); border-radius: 8px; padding: 6px 10px; min-width: 0; }
   .pnl-sum .l { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; }
