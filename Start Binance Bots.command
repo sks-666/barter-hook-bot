@@ -3,6 +3,7 @@
 # Linux: run ./start-bots.sh from a terminal (the same script).
 #
 #   TESTNET bot  - test money. Starts right away. Dashboard http://127.0.0.1:8767
+#                  It also auto-trades the combined whale/crowd/curve/macro/news signal (SIGNAL_TRADER below).
 #   MAINNET bot  - REAL MONEY. Only if you say so here: the read-only account check must pass first, then you type the
 #                  confirmation yourself. Dashboard http://127.0.0.1:8765
 #
@@ -18,6 +19,9 @@ cd "$(dirname "$0")" || exit 1
 PY=.venv/bin/python
 REAL_TICKET_MAX_USD=100               # largest real-money order from the mainnet dashboard's ticket, in USDT
 TESTNET="run.py --live --testnet"
+# The testnet bot also auto-trades the terminal's combined signal with test money (arbbot/signal_trader.py); switch its
+# entries off on the dashboard. Its settings (defaults shown): timeframe, loss at the stop, largest position, most open.
+SIGNAL_TRADER="--signal-trader-window 1h --signal-trader-risk-usd 20 --signal-trader-max-usd 2000 --signal-trader-max-open 3"
 MAINNET="run.py --live --config config.toml"
 mkdir -p logs
 
@@ -55,7 +59,8 @@ wait_for() {   # $1 = log file, $2 = name, $3 = dashboard url, $4 = process patt
 start_testnet() {   # $1 = extra flags
     : > logs/testnet-bot.out           # so wait_for never reads the previous run's lines
     DASHBOARD_PUSH_URL= DASHBOARD_PUSH_TOKEN= nohup "$PY" run.py --live --testnet --config config.testnet.toml \
-        --min-samples 20 --swing --swing-mirror trend,swing,smc --swing-mirror-copy-open --lan $1 > logs/testnet-bot.out 2>&1 &
+        --min-samples 20 --swing --swing-mirror trend,swing,smc --swing-mirror-copy-open --lan \
+        --signal-trader $SIGNAL_TRADER $1 > logs/testnet-bot.out 2>&1 &
     disown
 }
 
