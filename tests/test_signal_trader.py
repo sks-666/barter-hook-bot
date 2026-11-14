@@ -35,6 +35,16 @@ class Ticket:
         self.px, self.pos, self.orders, self.sent, self.closed, self.fills = px, {}, [], [], [], {}
         self.kill, self.taken = "", set()
         self.open_orders = []
+        self.leverage, self.lev_set, self.client_ids, self.lookups = {}, [], {}, []
+
+    async def set_leverage(self, sym, lev):
+        self.lev_set.append((sym, lev))
+        self.leverage[sym] = lev
+        return lev
+
+    async def client_order_id(self, sym, oid):
+        self.lookups.append(oid)
+        return self.client_ids.get(oid, "web_abc")
 
     def blocked(self):
         return self.kill
@@ -247,6 +257,61 @@ class Trader(unittest.IsolatedAsyncioTestCase):
                 with self.assertRaises(ValueError):
                     t.set_max_open(bad)
             self.assertEqual(t.max_open, 7)
+
+    async def test_it_sets_low_leverage_on_a_coin_before_entering_once(self):
+        t = self.make(leverage=3)
+        await t.step()
+        self.assertEqual(self.ticket.lev_set, [("SOLUSDT", 3)])
+        self.assertEqual(t.view()["leverage"], 3)
+        with self.assertRaises(ValueError):
+            self.make(leverage=50)
+
+    async def _close_sol(self, t, closing_order_id, pnl="-944"):
+        await t.step()
+        self.ticket.pos["SOLUSDT"] = 0.0
+        self.now[0] += 60
+        self.ticket.fills["SOLUSDT"] = [
+            {"side": "BUY", "time": int(NOW * 1000) + 1, "price": "101", "qty": "6", "commission": "0.3", "realizedPnl": "0",
+             "orderId": 1},
+            {"side": "SELL", "time": int(NOW * 1000) + 50_000, "price": "50", "qty": "6", "commission": "0",
+             "realizedPnl": pnl, "orderId": closing_order_id}]
+        await t.step()
+        await t.step()
+        return t.s["trades"][-1]
+
+    async def test_an_auto_deleveraging_close_is_marked_and_left_out_of_the_daily_limit(self):
+        self.ticket.client_ids[77] = "adl_autoclose"
+        t = self.make()                                              # daily loss limit 50
+        tr = await self._close_sol(t, 77)
+        self.assertEqual((tr["forced"], tr["why"]), ("adl", "closed by Binance: auto-deleveraging"))
+        self.assertAlmostEqual(tr["pnl"], -944.3)
+        self.assertEqual(t.realized_today(), 0)                      # not a loss the strategy made
+        self.assertEqual(t.can_enter(), "")
+        st = t.stats()
+        self.assertAlmostEqual(st["realized"], -944.3)               # still in the totals
+        self.assertEqual(st["adl_count"], 1)
+        self.assertEqual(self.ticket.lookups, [77])                  # checked once, not again on later passes
+        await t.step()
+        self.assertEqual(self.ticket.lookups, [77])
+
+    async def test_a_liquidation_or_an_ordinary_close_still_counts(self):
+        self.ticket.client_ids[78] = "autoclose-1794672"
+        t = self.make()
+        tr = await self._close_sol(t, 78, pnl="-60")
+        self.assertEqual(tr["forced"], "liquidation")
+        self.assertIn("daily loss limit", t.can_enter())
+
+    async def test_trades_closed_before_the_check_existed_are_rechecked(self):
+        self.ticket.client_ids[77] = "adl_autoclose"
+        t = self.make()
+        t.s["trades"].append(dict(symbol="SOLUSDT", side="buy", pnl=-944.3, closed_ms=int(NOW * 1000) + 50_000,
+                                  opened_ms=int(NOW * 1000), why="stop or target"))
+        self.ticket.fills["SOLUSDT"] = [{"side": "SELL", "time": int(NOW * 1000) + 50_000, "price": "50", "qty": "6",
+                                         "realizedPnl": "-944", "orderId": 77}]
+        self.assertIn("daily loss limit", t.can_enter())
+        await t.step()
+        self.assertEqual(t.s["trades"][0]["forced"], "adl")
+        self.assertEqual(t.realized_today(), 0)
 
     async def test_its_stop_and_target_trigger_on_the_mark_price(self):
         await self.make().step()

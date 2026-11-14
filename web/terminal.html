@@ -1911,8 +1911,9 @@ function sigAuto() {
     autoMaxCell(a, open.length) +
     cell("Its open P&amp;L", sgMoney(upnl) + " $", cls(upnl)) +
     (S.acct ? cell("Whole account", `${S.acct.positions.length} pos · ${(S.acct.orders || []).length} orders`, "", "Every position and order on the testnet account, including the swing mirror's: listed below") : "") +
-    cell("Today", sgMoney(st.today) + " $", cls(st.today), `daily loss limit $${a.daily_loss_usd}`) +
-    cell("Realised", sgMoney(st.realized) + " $", cls(st.realized)) +
+    cell("Today", sgMoney(st.today) + " $", cls(st.today), `Today's result for the daily loss limit ($${a.daily_loss_usd}). Trades closed by Binance's auto-deleveraging are not counted here.`) +
+    cell("Realised", sgMoney(st.realized) + " $" + (st.adl_count ? ` <span class="mut" style="font-size:.8em">ADL ${sgMoney(st.adl_pnl)}</span>` : ""), cls(st.realized),
+         st.adl_count ? `Includes ${st.adl_count} trade(s) Binance closed itself by auto-deleveraging (${sgMoney(st.adl_pnl)} $): the exchange took a profitable position away at the price of a liquidated trader.` : "") +
     cell("Won / lost", `${st.wins} / ${st.losses}${st.win_rate != null ? ` · ${Math.round(st.win_rate * 100)}%` : ""}`) +
     autoRiskCell(a) +
     `</div>`;

@@ -78,6 +78,8 @@ Every 30 seconds it reads the signal on its timeframe, then works through these 
 - The coin isn't in a cooldown after an exit, and no other part of the bot holds it (arbitrage, swing mirror, the
   order ticket).
 - The testnet price is within 2% of mainnet. Otherwise the testnet book isn't the real market, so it skips the coin.
+- The testnet order book can take its stop: the side the stop would close into must hold 2× the position within
+  half a stop distance past the stop. Otherwise it skips the coin and tries again after the cooldown.
 
 **Sizes** the trade so hitting the stop loses about **$20** (`risk_usd`), and at most **$2,000** of position.
 
@@ -86,7 +88,9 @@ Every 30 seconds it reads the signal on its timeframe, then works through these 
 - Otherwise a **limit** order at the entry, cancelled if it hasn't filled within half the timeframe (5 min to
   4 h).
 - The **stop and the target ride on Binance** as stop-market and take-profit-market orders, so they work even if
-  the bot stops.
+  the bot stops. They trigger on the **mark price**, so one stray trade on a thin testnet book can't set them off.
+- It first sets the coin's leverage to **5x** (the order ticket's own default is 15x). Binance auto-deleverages the
+  most profitable × most leveraged positions first, so low leverage keeps its winners at the back of that queue.
 
 **Exits** when any of these happens:
 - The stop or the target fills on Binance.
@@ -106,6 +110,7 @@ the stop and target.
 | Most open trades | 3 | **Page** (1–20), or `--signal-trader-max-open` |
 | Loss at the stop per trade | $20 | **Page** or `/auto risk 30` (1–500), or `--signal-trader-risk-usd` |
 | Largest position | $2,000 | `--signal-trader-max-usd` |
+| Leverage it sets on a coin before entering | 5x | `--signal-trader-leverage` (1–20) |
 | Daily realised loss, then no new entries until the next UTC day | $100 | **Page** or `/auto daily 150` (5–5000), or `--signal-trader-daily-loss-usd` |
 | Minimum confidence | 60 | `--signal-trader-min-conf` |
 | Kill switch | — | `touch KILL` in the bot's folder: the ticket refuses every new order |
@@ -274,6 +279,7 @@ restart.
 | `ENTRIES HALTED: FAULT: startup reconciliation failed` | At startup the bot couldn't read its positions (e.g. during a ban), so it refuses new trades. | Once Binance answers again, restart once. Look for `reconciled: saved positions match the exchange`. |
 | `ClientConnectorDNSError … Temporary failure in name resolution` | This machine lost its network or DNS for a moment (Telegram fails at the same time). | Nothing: the streams reconnect by themselves. If it keeps happening, check the Wi-Fi or use the Ethernet port. |
 | Status: `3 positions / entries open` | It's at its most-open limit. | Wait for one to close, or raise **most open** on the page. |
+| A trade closed far past its stop, `why`: "closed by Binance: auto-deleveraging" | Binance's **auto-deleveraging (ADL)**: when another trader is liquidated and can't be covered, Binance closes the most profitable, most leveraged positions on the other side at that trader's price. On the testnet that price can be absurd (on 2026-11-14 a winning HYPE short was closed at 100.00 while HYPE traded near 67: −$944). | Nothing to do: it is the exchange, not the strategy. Such closes count in the totals but **not** in the daily loss limit, and the 5x leverage makes them rarer. A trade **liquidated** by Binance still counts. |
 | Status: `the daily loss limit (100 USDT) is reached` | Realised loss today reached the limit. | New entries come back at the next UTC day (05:45 local, UTC+5:45). |
 | Status: `entries are off` | Entries were switched off. | Switch them on, on the dashboard card. |
 | No **Trade …** button or **most open** list | The page is an old version, or the page has no control token. | Reload the page. |

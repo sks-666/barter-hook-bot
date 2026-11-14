@@ -48,6 +48,11 @@ WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_40
 MAX_OPEN_RANGE = (1, 20)     # the most open trades (positions + waiting limit entries) it can be set to from the page
 RISK_RANGE = (1.0, 500.0)    # USDT lost at the stop per trade, settable from the page
 DAILY_LOSS_RANGE = (5.0, 5000.0)   # USDT of realised loss in a UTC day before new entries stop, settable from the page
+# Binance's own closes, by the closing order's client id: auto-deleveraging is the exchange closing a PROFITABLE
+# position against a liquidated trader (on the testnet at absurd prices), not a loss the strategy made
+FORCED = (("adl_autoclose", "adl", "closed by Binance: auto-deleveraging"),
+          ("autoclose-", "liquidation", "liquidated by Binance"))
+CHECK_FORCED_PER_PASS = 3   # closed trades re-checked for a forced close per pass (one order lookup each)
 
 
 def _clamp(v, lo, hi):
@@ -57,7 +62,7 @@ def _clamp(v, lo, hi):
 class SignalTrader:
     def __init__(self, desk, ticket, window_s: float = 3600.0, risk_usd: float = 20.0, max_open: int = 3,
                  min_conf: int = 60, max_usd: float = 2000.0, daily_loss_usd: float = 100.0, path: Path | None = None,
-                 notify=None, clock=time.time, poll_s: float = 30.0):
+                 notify=None, clock=time.time, poll_s: float = 30.0, leverage: int = 5):
         if getattr(ticket, "venue", "") != "testnet":
             raise RuntimeError("the signal auto-trader runs on the Binance futures TESTNET only")
         if not (risk_usd > 0 and max_usd > 0 and daily_loss_usd > 0 and max_open >= 1 and 0 <= min_conf <= 100):
@@ -66,6 +71,11 @@ class SignalTrader:
         self.desk, self.ticket = desk, ticket
         self.risk_usd, self.max_open, self.min_conf = float(risk_usd), int(max_open), int(min_conf)
         self.max_usd, self.daily_loss_usd = float(max_usd), float(daily_loss_usd)
+        if not 1 <= int(leverage) <= 20:
+            raise ValueError("signal trader: leverage must be 1x to 20x")
+        # the leverage of its coins: Binance picks auto-deleveraging victims by profit x leverage, so low leverage puts
+        # its winning trades at the back of that queue (the ticket's own default is 15x)
+        self.leverage = int(leverage)
         self.path, self.notify, self.clock, self.poll_s = path, notify or (lambda text: None), clock, poll_s
         self.s = self._load() or {"enabled": True, "open": {}, "pending": {}, "cooldown": {}, "trades": []}
         for k, v in (("open", {}), ("pending", {}), ("cooldown", {}), ("trades", []), ("enabled", True)):
@@ -180,15 +190,52 @@ class SignalTrader:
 
     # ---- results ----------------------------------------------------------------------------------
     def realized_today(self) -> float:
+        """Today's (UTC) realised result for the daily loss limit. Auto-deleveraging closes are left out: the exchange
+        took a profitable position away, the strategy did not lose it (they still count in the totals)."""
         day = int(self.clock() // 86_400 * 86_400 * 1000)
-        return sum(t["pnl"] for t in self.s["trades"] if t.get("pnl") is not None and t["closed_ms"] >= day)
+        return sum(t["pnl"] for t in self.s["trades"]
+                   if t.get("pnl") is not None and t["closed_ms"] >= day and t.get("forced") != "adl")
 
     def stats(self) -> dict:
         done = [t for t in self.s["trades"] if t.get("pnl") is not None]
         wins = sum(1 for t in done if t["pnl"] > 0)
+        adl = [t for t in done if t.get("forced") == "adl"]
         return dict(closed=len(done), wins=wins, losses=len(done) - wins, realized=sum(t["pnl"] for t in done),
                     today=self.realized_today(), unsettled=sum(1 for t in self.s["trades"] if t.get("pnl") is None),
-                    win_rate=wins / len(done) if done else None)
+                    win_rate=wins / len(done) if done else None,
+                    adl_count=len(adl), adl_pnl=sum(t["pnl"] for t in adl))
+
+    async def _forced(self, t: dict, order_ids) -> None:
+        """Mark a closed trade that Binance closed itself (auto-deleveraging or liquidation), from its closing orders."""
+        lookup = getattr(self.ticket, "client_order_id", None)
+        if lookup is None:
+            return
+        for oid in sorted(set(order_ids)):
+            cid = await lookup(t["symbol"], oid)
+            hit = next((f for f in FORCED if cid.startswith(f[0])), None)
+            if hit:
+                t["forced"], t["why"] = hit[1], hit[2]
+                break
+        t["forced_checked"] = True
+
+    async def _check_forced(self) -> None:
+        """Older closed trades (settled before this check existed): look for a forced close, a few per pass."""
+        todo = [t for t in self.s["trades"] if t.get("pnl") is not None and not t.get("forced_checked")]
+        for t in todo[-CHECK_FORCED_PER_PASS:]:
+            try:
+                end = t["closed_ms"] + 60_000
+                fills = await self.ticket.fills_between(t["symbol"], max(t["opened_ms"] - 60_000, end - 6 * 86_400_000), end)
+                out_side = "SELL" if t["side"] == "buy" else "BUY"
+                was = t.get("forced")
+                await self._forced(t, [f["orderId"] for f in fills
+                                       if f.get("side") == out_side and int(f["time"]) >= t["opened_ms"] and "orderId" in f])
+                if t.get("forced") and not was:
+                    log.warning("signal trader: %s was %s (%+.2f USDT)", t["symbol"], t["why"], t["pnl"])
+            except NotSentError:
+                raise
+            except Exception as e:                                    # rate limit, network: ask again next pass
+                log.info("signal trader: could not check how %s closed (%s)", t["symbol"], e)
+                return
 
     async def _settle(self, t: dict) -> None:
         """A closed trade's real result on the testnet: realised P&L of the closing fills minus the fees of both sides."""
@@ -211,6 +258,12 @@ class SignalTrader:
         t["pnl"] = sum(float(f.get("realizedPnl") or 0) for f in exits) - t["fees"]
         if t.get("risk_usd"):
             t["r"] = t["pnl"] / t["risk_usd"]
+        try:                                                          # did Binance close it itself?
+            await self._forced(t, [f["orderId"] for f in exits if "orderId" in f])
+        except NotSentError:
+            raise
+        except Exception as e:                                        # the result stands; _check_forced asks again
+            log.info("signal trader: could not check how %s closed (%s)", t["symbol"], e)
 
     def _closed(self, sym: str, m: dict, why: str, now_ms: int) -> dict:
         t = dict(symbol=sym, side=m["side"], qty=m.get("qty"), entry=m.get("entry"), stop=m.get("stop"),
@@ -227,7 +280,9 @@ class SignalTrader:
             await self._settle(t)
             if t.get("pnl") is not None:
                 r = f" ({t['r']:+.2f}R)" if t.get("r") is not None else ""
-                self.notify(f"🤖 TESTNET signal {t['symbol']} result: {t['pnl']:+.2f} USDT{r} — {t['why']}")
+                note = " (not counted in the daily loss limit)" if t.get("forced") == "adl" else ""
+                self.notify(f"🤖 TESTNET signal {t['symbol']} result: {t['pnl']:+.2f} USDT{r} — {t['why']}{note}")
+        await self._check_forced()
         self.s["cooldown"] = {k: v for k, v in self.s["cooldown"].items() if v > now_ms}
         await self.ticket.refresh()
         view = await self.desk.view(self.window_s)
@@ -368,6 +423,8 @@ class SignalTrader:
             raise ValueError("the price has already moved past the stop or the target")
         qty = min(self.risk_usd / abs(ref - stop), self.max_usd / ref)
         self._check_exit_depth(q.get("book"), long, ref, stop, qty)
+        if getattr(self.ticket, "leverage", {}).get(sym) != self.leverage:   # low leverage: last in the ADL queue
+            await self.ticket.set_leverage(sym, self.leverage)
         # stop and target trigger on the MARK price: a stray trade on a thin testnet book can spike the last price (and
         # fill the stop there), not the mark
         order = dict(symbol=sym, side=side, qty=qty, tp=target, sl=stop, trigger="mark")
@@ -416,7 +473,7 @@ class SignalTrader:
                     max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE),
                     daily_loss_range=list(DAILY_LOSS_RANGE),
                     risk_usd=self.risk_usd,
-                    max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd,
+                    max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd, leverage=self.leverage,
                     daily_loss_usd=self.daily_loss_usd, entry_ttl_s=self.entry_ttl_s, max_hold_s=self.max_hold_s,
                     blocked=self.can_enter(), last_run=int(self.last_run * 1000), error=self.last_error,
                     open={sym: dict(m, **info(sym)) for sym, m in self.s["open"].items()},

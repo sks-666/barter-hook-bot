@@ -512,9 +512,13 @@ class CommandHandler:
             + (f" · unrealised {_money(upnl)}" if open_ else ""),
             f"Today {_money(st['today'])} (stops at -${v['daily_loss_usd']:g}) · realised {_money(st['realized'])} · "
             f"{st['wins']}W / {st['losses']}L" + (f" ({st['win_rate'] * 100:.0f}%)" if st["win_rate"] is not None else ""),
-            f"Per trade: ${v['risk_usd']:g} at the stop, at most ${v['max_usd']:g} · limit entries wait "
-            f"{_dur(v['entry_ttl_s'])} · max hold {_dur(v['max_hold_s'])}",
+            f"Per trade: ${v['risk_usd']:g} at the stop, at most ${v['max_usd']:g}"
+            + (f" at {v['leverage']}x" if v.get("leverage") else "")
+            + f" · limit entries wait {_dur(v['entry_ttl_s'])} · max hold {_dur(v['max_hold_s'])}",
         ]
+        if st.get("adl_count"):
+            lines.append(f"Closed by Binance auto-deleveraging: {st['adl_count']} trade(s), {_money(st['adl_pnl'])} "
+                         f"(in the totals, not in today's loss limit)")
         for sym, m in open_.items():
             pnl = m.get("pnl")
             lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if m['side'] == 'buy' else 'SHORT'} "

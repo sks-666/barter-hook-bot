@@ -472,8 +472,12 @@ works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md
 * **Enters** on LONG / SHORT with confidence ≥ 60, reward:risk ≥ 1.5 and the whale reading present, most confident
   coin first. The entry is a market order when the signal's entry is the price now, otherwise a limit order that is
   cancelled after half the timeframe.
-* **Sizes** each trade so the stop loses about **$20**, at most **$2,000** of position. The **stop and target sit on
-  Binance**, so they work even if the bot stops.
+* **Sizes** each trade so the stop loses about **$20**, at most **$2,000** of position, at **5x** leverage
+  (`--signal-trader-leverage`). The **stop and target sit on Binance**, triggered by the mark price, so they work even
+  if the bot stops. It skips a coin whose testnet order book is too thin for its stop.
+* **Binance's own closes:** a trade closed by the exchange's auto-deleveraging (`adl_autoclose`: a profitable
+  position taken away at a liquidated trader's price, absurd on the testnet) is marked as such and left out of the
+  daily loss limit. A liquidation still counts.
 * **Exits** on its stop or target, when the signal flips with confidence ≥ 60, or after holding **2× the timeframe it
   was opened on**.
 * **Limits:**

@@ -424,6 +424,12 @@ class TestnetTicket:
             left = round(left - piece, 12)
         return out
 
+    async def client_order_id(self, symbol: str, order_id) -> str:
+        """Who placed an order, by its client id (read-only): Binance's own closes are "adl_autoclose"
+        (auto-deleveraging) and "autoclose-..." (liquidation)."""
+        o = await self.c.get("fapi", "/fapi/v1/order", {"symbol": symbol, "orderId": int(order_id)}, signed=True)
+        return str(o.get("clientOrderId") or "")
+
     async def set_leverage(self, symbol: str, leverage) -> int:
         sym = self._check_symbol(symbol)
         try:
