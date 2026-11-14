@@ -5,7 +5,7 @@
 #   TESTNET bot  - test money. Starts right away. Dashboard http://127.0.0.1:8767
 #                  It also auto-trades the combined whale/crowd/curve/macro/news signal (SIGNAL_TRADER below).
 #   MAINNET bot  - REAL MONEY. Only if you say so here: the read-only account check must pass first, then you type the
-#                  confirmation yourself. Dashboard http://127.0.0.1:8765
+#                  confirmation yourself. Dashboard http://127.0.0.1:8770
 #
 # The testnet bot starts with arbitrage entries PAUSED (risk.start_paused); resume from the dashboard or /resume.
 # The mainnet bot NEVER opens arbitrage entries (--no-trade, monitor only: signals and alerts; Resume cannot turn
@@ -77,7 +77,7 @@ echo
 # ---- mainnet: real money, only on an explicit yes ------------------------------------------------------------------
 MAIN=no
 if running "$MAINNET"; then
-    echo "MAINNET (real money) bot is already running: http://127.0.0.1:8765"
+    echo "MAINNET (real money) bot is already running: http://127.0.0.1:8770"
     MAIN=running
 else
     read -r -p "Also start the REAL-MONEY mainnet bot? [y/N] " answer
@@ -127,7 +127,7 @@ if [[ "$MAIN" == "start" ]]; then
         nohup "$PY" run.py --live --config config.toml --no-trade --real-ticket --real-ticket-max-usd "$REAL_TICKET_MAX_USD" --lan \
         > logs/mainnet-bot.out 2>&1 &
     disown
-    wait_for logs/mainnet-bot.out "MAINNET bot" http://127.0.0.1:8765 "$MAINNET"
+    wait_for logs/mainnet-bot.out "MAINNET bot" http://127.0.0.1:8770 "$MAINNET"
 fi
 
 echo
