@@ -285,6 +285,7 @@
           <div class="seg tight" role="group" aria-label="Timeframe the auto-trader trades" id="st-tf" hidden></div>
           <label class="st-max" id="st-max-l" hidden>Most open <select id="st-max" title="The most trades it holds at once (positions + waiting entries). Lowering it closes nothing."></select></label>
           <label class="st-max" id="st-risk-l" hidden title="What a NEW trade loses if it hits its stop (its size is still capped by the largest position). Open trades keep their size.">Risk $<input type="number" id="st-risk" data-key="risk_usd" step="1"></label>
+          <label class="st-max" id="st-lev-l" hidden title="The leverage it sets on a coin before entering. Lower = later in Binance's auto-deleveraging queue and further from liquidation, but more margin per trade. Open trades keep theirs.">Leverage <select id="st-lev"></select></label>
           <label class="st-max" id="st-day-l" hidden title="After this much realised loss in a UTC day it takes no new trade until the next day. Open trades stay managed.">Day limit $<input type="number" id="st-day" data-key="daily_loss_usd" step="1"></label>
           <span class="sw-power" id="st-power" hidden><span id="st-power-l"></span><button type="button" class="sw-toggle" id="st-toggle" role="switch" aria-checked="true" aria-label="Signal auto-trader entries on or off"></button></span></div></div>
       <div id="st-body" class="empty">Loading…</div>
@@ -1481,6 +1482,13 @@ function stShow(d) {
       maxSel.innerHTML = Array.from({ length: hi - lo + 1 }, (_, i) => `<option value="${lo + i}">${lo + i}</option>`).join("");
     maxSel.value = String(d.max_open);
   }
+  const [llo, lhi] = d.leverage_range || [], levSel = $("st-lev");
+  $("st-lev-l").hidden = typeof TOKEN === "undefined" || !llo;
+  if (!$("st-lev-l").hidden && document.activeElement !== levSel) {
+    if (levSel.options.length !== lhi - llo + 1)
+      levSel.innerHTML = Array.from({ length: lhi - llo + 1 }, (_, i) => `<option value="${llo + i}">${llo + i}x</option>`).join("");
+    levSel.value = String(d.leverage); levSel.dataset.was = d.leverage;
+  }
   for (const [box, label, rng, v] of [["st-risk", "st-risk-l", d.risk_range, d.risk_usd], ["st-day", "st-day-l", d.daily_loss_range, d.daily_loss_usd]]) {
     $(label).hidden = typeof TOKEN === "undefined" || !rng;
     if ($(label).hidden || document.activeElement === $(box)) continue;      // never overwrite what is being typed
@@ -1490,7 +1498,7 @@ function stShow(d) {
   const tf = (wins.find(([, v]) => v === d.window_s) || [d.window_s + "s"])[0];
   $("st-body").className = "";
   $("st-body").innerHTML = `<div style="font-size:13px;line-height:1.6">` +
-    `<b>${tf}</b> signal · $${d.risk_usd} risk per trade · up to ${d.max_open} open · confidence ≥ ${d.min_conf}` +
+    `<b>${tf}</b> signal · $${d.risk_usd} risk per trade${d.leverage ? ` at ${d.leverage}x` : ""} · up to ${d.max_open} open · confidence ≥ ${d.min_conf}` +
     (d.blocked ? ` · <span class="warn">${esc(d.blocked)}</span>` : ` · <span class="pos">looking for entries</span>`) +
     (d.error ? ` · <span class="neg">${esc(d.error)}</span>` : "") +
     `<br>Realised <b class="${st.realized >= 0 ? "pos" : "neg"}">${money(st.realized)} USDT</b> (today ${money(st.today)}) · ${st.closed} closed: ${st.wins} won, ${st.losses} lost` +
@@ -1537,6 +1545,19 @@ for (const id of ["st-risk", "st-day"]) {
     } catch (err) { alert(`Could not change the ${what}: ` + err.message); inp.value = was; inp.disabled = false; }
   });
 }
+$("st-lev").addEventListener("change", async e => {
+  const sel = e.currentTarget, n = Number(sel.value), was = Number(sel.dataset.was);
+  if (!confirm(`Open the testnet auto-trader's new trades at ${n}x leverage (now ${was}x)?\n\nOpen trades keep their leverage. ` +
+               (n > was ? "Higher leverage puts its winners earlier in Binance's auto-deleveraging queue and liquidation closer."
+                        : "Lower leverage needs more margin per trade: with too little margin Binance refuses the entry and it skips the coin."))) { sel.value = was; return; }
+  sel.disabled = true;
+  try {
+    const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ leverage: n }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    sel.disabled = false; sel.blur(); stShow(d);
+  } catch (err) { alert("Could not change the leverage: " + err.message); sel.value = was; sel.disabled = false; }
+});
 $("st-max").addEventListener("change", async e => {
   const sel = e.currentTarget, n = Number(sel.value);
   if (!confirm(`Let the testnet auto-trader hold up to ${n} trade${n === 1 ? "" : "s"} at once?\n\nLowering it closes nothing: it just takes no new trade until fewer than that are open.`)) { stPoll(); return; }

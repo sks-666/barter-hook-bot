@@ -37,7 +37,7 @@ MENU = [
     ("confirm", "Confirm the pending /open"),
     ("cancel", "Cancel the pending /open"),
     ("close", "Close a paper position: /close BTC"),
-    ("auto", "Signal auto-trader: /auto · on|off · 30m · max 5 · risk 30 · daily 150"),
+    ("auto", "Signal auto-trader: /auto · on|off · 30m · max 5 · risk 30 · daily 150 · lev 3"),
     ("ideas", "Combined signal LONG/SHORT ideas: /ideas 30m"),
     ("account", "Testnet futures account: every position, who opened it"),
     ("setups", "Swing/trend/SMC setups waiting for the next candle"),
@@ -70,6 +70,7 @@ HELP = (
     "• /auto max 5 = hold up to 5 trades at once (1-20; lowering closes nothing)\n"
     "• /auto risk 30 = new trades lose $30 at their stop (1-500) · /auto daily 150 = stop new entries after $150 of "
     "realised loss in a UTC day (5-5000)\n"
+    "• /auto lev 3 (or /auto 3x) = new trades at 3x leverage (1-20; open trades keep theirs)\n"
     "• /auto trades = its open and last closed trades · /account = every position on the testnet account\n\n"
     "Swing toolkit (paper; only when the bot was started with --swing)\n"
     "• /setups = trend / swing / SMC setups waiting for the next candle open\n"
@@ -478,6 +479,16 @@ class CommandHandler:
                 return f"How many at most? A whole number from {lo} to {hi}, e.g. /auto max 5 (now {t.max_open})."
             t.set_max_open(int(n))
             return self._auto_status()
+        lev = re.fullmatch(r"(\d+)x", w)
+        if w in ("lev", "leverage") or lev:
+            from .signal_trader import LEVERAGE_RANGE
+            lo, hi = LEVERAGE_RANGE
+            n = lev.group(1) if lev else (words[1].rstrip("x") if len(words) > 1 else "")
+            if not n.isdigit() or not lo <= int(n) <= hi:
+                return (f"Which leverage? A whole number from {lo} to {hi}, e.g. /auto lev 3 or /auto 3x "
+                        f"(now {t.leverage}x). Lower is later in Binance's auto-deleveraging queue but needs more margin.")
+            t.set_leverage(int(n))
+            return self._auto_status()
         if w in ("risk", "daily", "loss", "dailyloss", "daily-loss"):
             from .signal_trader import DAILY_LOSS_RANGE, RISK_RANGE
             risk = w == "risk"
@@ -494,7 +505,7 @@ class CommandHandler:
             (t.set_risk_usd if risk else t.set_daily_loss_usd)(v)
             return self._auto_status()
         return ("I didn't catch that. Try /auto, /auto on, /auto off, /auto 30m, /auto max 5, /auto risk 30, "
-                f"/auto daily 150 or /auto trades.\nTimeframes: {' '.join(WINDOWS)}.")
+                f"/auto daily 150, /auto lev 3 or /auto trades.\nTimeframes: {' '.join(WINDOWS)}.")
 
     def _auto_status(self) -> str:
         t = self.signal_trader
@@ -525,7 +536,7 @@ class CommandHandler:
                          f"entry {_px(m['entry'])} · stop {_px(m['stop'])} · target {_px(m['target'])}"
                          + (f" · {_money(pnl)}" if pnl is not None else ""))
         lines.append("Change: /auto on|off · /auto 30m · /auto max 5 · /auto risk 30 · /auto daily 150 · "
-                     "trades: /auto trades")
+                     "/auto lev 3 · trades: /auto trades")
         return "\n".join(lines)
 
     def _auto_trades(self, n: int = 10) -> str:
@@ -536,8 +547,9 @@ class CommandHandler:
             lines.append("Open:")
             for sym, m in v["open"].items():
                 held = (time.time() * 1000 - m["opened_ms"]) / 1000 if m.get("opened_ms") else 0
-                lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if m['side'] == 'buy' else 'SHORT'} "
-                             f"held {_dur(held)}" + (f" · {_money(m['pnl'])}" if m.get("pnl") is not None else ""))
+                lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if m['side'] == 'buy' else 'SHORT'}"
+                             + (f" {m['leverage']}x" if m.get("leverage") else "")
+                             + f" held {_dur(held)}" + (f" · {_money(m['pnl'])}" if m.get("pnl") is not None else ""))
         for sym, p in v["pending"].items():
             lines.append(f"• {sym.removesuffix('USDT')} {'LONG' if p['side'] == 'buy' else 'SHORT'} limit "
                          f"{_px(p['entry'])} waiting to fill")
@@ -545,8 +557,8 @@ class CommandHandler:
         for tr in done:
             res = f"{_money(tr['pnl'])}" + (f" ({tr['r']:+.2f}R)" if tr.get("r") is not None else "") \
                 if tr.get("pnl") is not None else "result pending"
-            lines.append(f"• {tr['symbol'].removesuffix('USDT')} {'LONG' if tr['side'] == 'buy' else 'SHORT'} "
-                         f"{res} · {tr.get('why', '')}")
+            lines.append(f"• {tr['symbol'].removesuffix('USDT')} {'LONG' if tr['side'] == 'buy' else 'SHORT'}"
+                         + (f" {tr['leverage']}x" if tr.get("leverage") else "") + f" {res} · {tr.get('why', '')}")
         return "\n".join(lines)
 
     async def _ideas(self, arg: str) -> str:
@@ -600,7 +612,8 @@ class CommandHandler:
         for p in v["positions"]:
             src = "signal auto-trader" if signal and signal.holds(p["symbol"]) else (
                 f"swing mirror ({p['source'][6:]})" if p["source"].startswith("swing:") else names.get(p["source"], p["source"]))
-            lines.append(f"• {p['symbol'].removesuffix('USDT')} {p['side'].upper()} ${p['notional']:,.0f} · "
+            lines.append(f"• {p['symbol'].removesuffix('USDT')} {p['side'].upper()}"
+                         + (f" {p['leverage']}x" if p.get("leverage") else "") + f" ${p['notional']:,.0f} · "
                          f"entry {_px(p['entry'])} → {_px(p['mark'])} · {_money(p['pnl'])} ({p['roe']:+.1f}%) · {src}")
         if v["orders"]:
             lines.append(f"{len(v['orders'])} open order(s) (stops, targets, limits).")

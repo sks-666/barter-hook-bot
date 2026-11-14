@@ -110,7 +110,7 @@ the stop and target.
 | Most open trades | 3 | **Page** (1–20), or `--signal-trader-max-open` |
 | Loss at the stop per trade | $20 | **Page** or `/auto risk 30` (1–500), or `--signal-trader-risk-usd` |
 | Largest position | $2,000 | `--signal-trader-max-usd` |
-| Leverage it sets on a coin before entering | 5x | `--signal-trader-leverage` (1–20) |
+| Leverage it sets on a coin before entering | 5x | **Page** or `/auto lev 3` (1–20), or `--signal-trader-leverage` |
 | Daily realised loss, then no new entries until the next UTC day | $100 | **Page** or `/auto daily 150` (5–5000), or `--signal-trader-daily-loss-usd` |
 | Minimum confidence | 60 | `--signal-trader-min-conf` |
 | Kill switch | — | `touch KILL` in the bot's folder: the ticket refuses every new order |
@@ -167,11 +167,16 @@ auto-trader on.
 - **Its open trades / most**: pick a number from the list (1–20) and confirm.
 - **Risk per trade · day limit**: type the $ lost at the stop per new trade (1–500) and the day's loss limit
   (5–5000), press Enter and confirm.
+- **Leverage · new trades**: pick 1x–20x from the list and confirm.
+
+The **Lev** column in **Account positions** and **Auto-trader closed trades** shows each trade's leverage ("—" for
+trades from before it was recorded).
 
 **Dashboard** (`http://127.0.0.1:8767/`), **Signal auto-trader · testnet** card:
 - **Timeframe buttons** (1m … 1w).
 - **Most open** list.
 - **Risk $** and **Day limit $** boxes.
+- **Leverage** list.
 - **Entries ON/OFF** switch.
 
 Each change applies from the next pass (≤ 30 s), is saved, and is announced on Telegram.
@@ -193,6 +198,7 @@ The testnet bot answers these in your Telegram chat (only your configured chat):
 | `/auto max 5` | Hold up to 5 trades at once (1-20) |
 | `/auto risk 30` | New trades lose about $30 if they hit their stop (1-500) |
 | `/auto daily 150` | No new trade after $150 of realised loss in a UTC day (5-5000) |
+| `/auto lev 3` · `/auto 3x` | New trades at 3x leverage (1-20); open trades keep theirs |
 | `/auto trades` | Open trades, waiting entries, the last 10 closed with result and reason |
 | `/ideas` · `/ideas 4h` | The combined signal's coins: side, score, confidence, R:R, entry / stop / target; ✅ marks the ones the auto-trader may take |
 | `/account` | The testnet futures account: balance, equity, every position and who opened it |

@@ -1865,6 +1865,27 @@ document.addEventListener("keydown", ev => {                       // Enter appl
   if (ev.key === "Enter") inp.blur();
   else if (ev.key === "Escape") { inp.value = S.auto[inp.dataset.autoSet]; inp.blur(); }
 });
+// "Leverage": what it sets on a coin before its next entry (open trades keep theirs); settable
+function autoLevCell(a) {
+  const [lo, hi] = a.leverage_range || [];
+  const tip = "The leverage it sets on a coin before entering. Lower = later in Binance's auto-deleveraging queue and further " +
+    "from liquidation, but more margin per trade. Open trades keep the leverage they were opened at.";
+  const v = a.leverage ? (canControl() && lo
+    ? `<select class="auto-max" data-auto-lev aria-label="Leverage for new trades">` +
+      Array.from({ length: hi - lo + 1 }, (_, i) => lo + i).map(k => `<option value="${k}"${k === a.leverage ? " selected" : ""}>${k}x</option>`).join("") + `</select>`
+    : a.leverage + "x") : "—";
+  return `<div title="${esc(tip)}"><div class="l">Leverage · new trades</div><div class="v">${v}</div></div>`;
+}
+document.addEventListener("change", async ev => {
+  const sel = ev.target.closest("[data-auto-lev]");
+  if (!sel) return;
+  const n = Number(sel.value), was = S.auto.leverage;
+  if (!confirm(`Open the testnet auto-trader's new trades at ${n}x leverage (now ${was}x)?\n\n` +
+               `Open trades keep their leverage. ${n > was ? "Higher leverage puts its winners earlier in Binance's auto-deleveraging queue and liquidation closer." : "Lower leverage needs more margin per trade: with too little margin Binance refuses the entry and it skips the coin."}`)) { sel.value = was; return; }
+  sel.disabled = true;
+  try { await autoPost({ leverage: n }); }
+  catch (err) { alert("Could not change the leverage: " + err.message); sel.value = was; sel.disabled = false; }
+});
 const AUTO_SET = { risk_usd: ["risk per trade", v => `New trades will lose about $${v} if they hit their stop (open trades keep their size).`],
                    daily_loss_usd: ["daily loss limit", v => `No new trade after $${v} of realised loss in a UTC day (open trades stay managed).`] };
 document.addEventListener("change", async ev => {
@@ -1916,6 +1937,7 @@ function sigAuto() {
          st.adl_count ? `Includes ${st.adl_count} trade(s) Binance closed itself by auto-deleveraging (${sgMoney(st.adl_pnl)} $): the exchange took a profitable position away at the price of a liquidated trader.` : "") +
     cell("Won / lost", `${st.wins} / ${st.losses}${st.win_rate != null ? ` · ${Math.round(st.win_rate * 100)}%` : ""}`) +
     autoRiskCell(a) +
+    autoLevCell(a) +
     `</div>`;
 }
 function sigTrades() {
@@ -1926,28 +1948,28 @@ function sigTrades() {
     const m = mine[p.symbol], ords = (acct.orders || []).filter(o => o.symbol === p.symbol);
     const lvl = r => ords.find(o => o.reason === r)?.stop_price;
     return { symbol: p.symbol, source: p.source, long: p.side === "long", entry: p.entry, mark: p.mark, pnl: p.pnl, roe: p.roe,
-             notional: p.notional, stop: m ? m.stop : lvl("stop-loss"), target: m ? m.target : lvl("take-profit"), opened: m ? m.opened_ms : p.opened };
+             notional: p.notional, lev: p.leverage, stop: m ? m.stop : lvl("stop-loss"), target: m ? m.target : lvl("take-profit"), opened: m ? m.opened_ms : p.opened };
   }) : Object.entries(mine).map(([s, m]) => ({ symbol: s, source: "signal", long: m.side === "buy", entry: m.entry_px || m.entry,
-             mark: m.mark, pnl: m.pnl, stop: m.stop, target: m.target, opened: m.opened_ms }));
+             mark: m.mark, pnl: m.pnl, lev: m.leverage, stop: m.stop, target: m.target, opened: m.opened_ms }));
   if (!acct && !a) return `<h3>Account positions</h3><div class="mut">No futures account in this bot. The testnet bot (port 8767) trades the demo account.</div>`;
   const tag = s => s === "signal" ? `<span class="src ticket" title="Opened by the signal auto-trader">SIGNAL</span>` : srcTag(s);
   const total = rows.reduce((t, r) => t + (r.pnl || 0), 0);
   let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")} · ${rows.length} open · <span class="${cls(total)}">${sgMoney(total)} $</span></h3>`;
   const pend = a ? Object.entries(a.pending) : [];
-  h += rows.length || pend.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th>Size $</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L $</th><th>Held</th></tr></thead><tbody>` +
+  h += rows.length || pend.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th title="Leverage of the position on Binance">Lev</th><th>Size $</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L $</th><th>Held</th></tr></thead><tbody>` +
     rows.map(r => `<tr class="click${r.symbol === S.sym ? " sel" : ""}" data-sym="${esc(r.symbol)}"><td class="amb">${sgCoin(r.symbol)}</td><td>${tag(r.source)}</td>
-      <td class="${r.long ? "up" : "dn"}">${r.long ? "LONG" : "SHORT"}</td><td>${r.notional ? big(r.notional) : "—"}</td><td>${px(r.entry)}</td><td>${r.mark ? px(r.mark) : "—"}</td>
+      <td class="${r.long ? "up" : "dn"}">${r.long ? "LONG" : "SHORT"}</td><td class="mut">${r.lev ? r.lev + "x" : "—"}</td><td>${r.notional ? big(r.notional) : "—"}</td><td>${px(r.entry)}</td><td>${r.mark ? px(r.mark) : "—"}</td>
       <td class="dn">${r.stop ? px(r.stop) : "—"}</td><td class="up">${r.target ? px(r.target) : "—"}</td>
       <td class="${cls(r.pnl || 0)}">${r.pnl != null ? sgMoney(r.pnl) : "—"}${r.roe != null ? `<span class="sub mut" style="display:block;font-size:.82em">${sgn(r.roe, 1)}%</span>` : ""}</td>
       <td class="mut">${r.opened ? dur((now - r.opened) / 1000) : "—"}</td></tr>`).join("") +
-    pend.map(([s, m]) => `<tr class="click mut" data-sym="${esc(s)}"><td class="amb">${sgCoin(s)}</td><td>${tag("signal")}</td><td>${m.side === "buy" ? "LONG" : "SHORT"}</td>
+    pend.map(([s, m]) => `<tr class="click mut" data-sym="${esc(s)}"><td class="amb">${sgCoin(s)}</td><td>${tag("signal")}</td><td>${m.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${m.leverage ? m.leverage + "x" : "—"}</td>
       <td></td><td>${px(m.price || m.entry)}</td><td colspan="5">limit order waiting to fill</td></tr>`).join("") + `</tbody></table></div>`
     : `<div class="mut">No position open.</div>`;
   if (!a) return h;
   h += `<h3 style="margin-top:8px">Auto-trader closed trades</h3>` + (a.trades.length
-    ? `<table><thead><tr><th>Coin</th><th>Side</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
+    ? `<table><thead><tr><th>Coin</th><th>Side</th><th title="Leverage the trade was opened at (— for trades from before this was recorded)">Lev</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
       a.trades.slice(0, 15).map(t => `<tr class="click" data-sym="${esc(t.symbol)}"><td class="amb">${sgCoin(t.symbol)}</td>
-        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
+        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
         <td class="mut">${esc(t.why || "")}</td><td class="${cls(t.pnl || 0)}">${t.pnl != null ? sgMoney(t.pnl) : "…"}</td></tr>`).join("") + `</tbody></table>`
     : `<div class="mut">None yet.</div>`);
   return h;
@@ -1980,7 +2002,7 @@ function sigWhy(c) {
 }
 function renderSignals() {
   const sel = document.activeElement;
-  if (sel?.matches?.("[data-auto-max]:not(:disabled), [data-auto-set]:not(:disabled)")) {   // a setting is being edited: redraw once it is left
+  if (sel?.matches?.("[data-auto-max]:not(:disabled), [data-auto-set]:not(:disabled), [data-auto-lev]:not(:disabled)")) {   // a setting is being edited: redraw once it is left
     if (!sel.dataset.held) { sel.dataset.held = "1"; sel.addEventListener("blur", () => setTimeout(renderSignals), { once: true }); }
     return;
   }

@@ -266,6 +266,30 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             self.make(leverage=50)
 
+    async def test_the_leverage_can_be_set_survives_a_restart_and_is_kept_per_trade(self):
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "st.json"
+            t = self.make(path=p)                                    # 5x by default
+            await t.step()                                           # SOL opens at 5x
+            self.assertEqual(t.s["open"]["SOLUSDT"]["leverage"], 5)
+            t.set_leverage(2)
+            self.assertEqual((t.leverage, t.view()["leverage_range"]), (2, [1, 20]))
+            self.assertEqual(t.s["open"]["SOLUSDT"]["leverage"], 5)  # the open trade keeps its own
+            self.assertEqual(self.make(path=p).leverage, 2)          # saved: wins over the command line's
+            for bad in (0, 21, 2.5, True, "3"):
+                with self.assertRaises(ValueError):
+                    t.set_leverage(bad)
+            self.ticket.pos["SOLUSDT"] = 0.0                         # closed on the exchange
+            self.now[0] += 60
+            await t.step()
+            self.assertEqual(t.s["trades"][-1]["leverage"], 5)       # the closed trade remembers it
+            self.desk.rows = [row("ETHUSDT")]
+            self.now[0] += 3600
+            await t.step()
+            self.assertEqual((self.ticket.lev_set[-1], t.s["open"]["ETHUSDT"]["leverage"]), (("ETHUSDT", 2), 2))
+
     async def _close_sol(self, t, closing_order_id, pnl="-944"):
         await t.step()
         self.ticket.pos["SOLUSDT"] = 0.0

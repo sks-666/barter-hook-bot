@@ -194,7 +194,8 @@ class Dashboard:
         """Switch the auto-trader's new entries on or off ({"enabled": true|false}; open positions stay managed) and/or
         change the timeframe it trades ({"window_s": 900}, one of its timeframes) and/or the most open trades
         ({"max_open": 5}) and/or the risk limits ({"risk_usd": 30} lost at the stop per new trade,
-        {"daily_loss_usd": 150} of realised loss in a UTC day before new entries stop)."""
+        {"daily_loss_usd": 150} of realised loss in a UTC day before new entries stop) and/or the leverage set on a
+        coin before its next entry ({"leverage": 3}))."""
         if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
             raise web.HTTPForbidden(text="bad token")
         if self.signal_trader is None:
@@ -205,11 +206,11 @@ class Dashboard:
             body = None
         body = body if isinstance(body, dict) else {}
         on, win, most = body.get("enabled"), body.get("window_s"), body.get("max_open")
-        risk, daily = body.get("risk_usd"), body.get("daily_loss_usd")
-        if not isinstance(on, bool) and win is None and most is None and risk is None and daily is None:
+        risk, daily, lev = body.get("risk_usd"), body.get("daily_loss_usd"), body.get("leverage")
+        if not isinstance(on, bool) and win is None and most is None and risk is None and daily is None and lev is None:
             return web.json_response({"ok": False, "error": 'send {"enabled": true|false}, {"window_s": seconds}, '
-                                                            '{"max_open": n}, {"risk_usd": usd} and/or '
-                                                            '{"daily_loss_usd": usd}'}, status=400)
+                                                            '{"max_open": n}, {"risk_usd": usd}, '
+                                                            '{"daily_loss_usd": usd} and/or {"leverage": n}'}, status=400)
         try:
             if win is not None:
                 if not isinstance(win, int) or isinstance(win, bool):
@@ -221,6 +222,8 @@ class Dashboard:
                 self.signal_trader.set_risk_usd(risk)
             if daily is not None:
                 self.signal_trader.set_daily_loss_usd(daily)
+            if lev is not None:
+                self.signal_trader.set_leverage(lev)
             if isinstance(on, bool):
                 self.signal_trader.set_enabled(on)
         except ValueError as e:

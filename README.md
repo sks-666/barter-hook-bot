@@ -502,7 +502,14 @@ works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md
 | **Most open trades** (1–20, default 3) | The list in "Its open trades / most" | The **Most open** list |
 | **Risk per trade**: $ lost if a new trade hits its stop (1–500, default 20) | The first box in "Risk per trade · day limit" | The **Risk $** box |
 | **Daily loss limit**: no new trade after this much realised loss in a UTC day (5–5000, default 100) | The second box in "Risk per trade · day limit" | The **Day limit $** box |
+| **Leverage** for new trades (1–20x, default 5x) | The list in "Leverage · new trades" | The **Leverage** list |
 | **New entries** on / off | — | The Entries ON/OFF switch |
+
+Leverage in Telegram: `/auto lev 3` or `/auto 3x`. Lower leverage puts its winning trades later in Binance's
+auto-deleveraging queue and liquidation further away, but needs more margin per trade: with too little margin
+Binance refuses the entry and it skips the coin. Open trades keep the leverage they were opened at. The **Lev**
+column in the terminal's "Account positions" and "Auto-trader closed trades" tables shows each one's leverage
+("—" for trades from before it was recorded); `/auto trades` and `/account` show it too.
 
 The panel's timeframe buttons on their own only change what the table shows. The auto-trader trades one timeframe,
 its own. Each change asks first, applies within 30 s and is announced on Telegram:
@@ -514,11 +521,12 @@ its own. Each change asks first, applies within 30 s and is announced on Telegra
 **Set with flags (restart needed):**
 - `--signal-trader-max-usd` (2000)
 - `--signal-trader-min-conf` (60)
-- `--signal-trader-window` (1h), `--signal-trader-max-open` (3), `--signal-trader-risk-usd` (20) and
-  `--signal-trader-daily-loss-usd` (100), which only apply until you pick a value on the page or in Telegram
+- `--signal-trader-window` (1h), `--signal-trader-max-open` (3), `--signal-trader-risk-usd` (20),
+  `--signal-trader-daily-loss-usd` (100) and `--signal-trader-leverage` (5), which only apply until you pick a value
+  on the page or in Telegram
 
 State: `data/signal-trader-testnet.json`. API: `GET /api/signal-trader`; `POST /api/signal-trader` with `{"enabled"}`,
-`{"window_s"}`, `{"max_open"}`, `{"risk_usd"}` or `{"daily_loss_usd"}`, which needs the control token.
+`{"window_s"}`, `{"max_open"}`, `{"risk_usd"}`, `{"daily_loss_usd"}` or `{"leverage"}`, which needs the control token.
 
 The terminal is otherwise a view: it can't pause, flatten or place orders. It receives the dashboard's control token
 only for these auto-trader settings, and a test checks the token is sent nowhere else.

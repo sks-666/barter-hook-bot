@@ -48,6 +48,7 @@ WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_40
 MAX_OPEN_RANGE = (1, 20)     # the most open trades (positions + waiting limit entries) it can be set to from the page
 RISK_RANGE = (1.0, 500.0)    # USDT lost at the stop per trade, settable from the page
 DAILY_LOSS_RANGE = (5.0, 5000.0)   # USDT of realised loss in a UTC day before new entries stop, settable from the page
+LEVERAGE_RANGE = (1, 20)     # the leverage it sets on a coin before entering, settable from the page
 # Binance's own closes, by the closing order's client id: auto-deleveraging is the exchange closing a PROFITABLE
 # position against a liquidated trader (on the testnet at absurd prices), not a loss the strategy made
 FORCED = (("adl_autoclose", "adl", "closed by Binance: auto-deleveraging"),
@@ -71,8 +72,8 @@ class SignalTrader:
         self.desk, self.ticket = desk, ticket
         self.risk_usd, self.max_open, self.min_conf = float(risk_usd), int(max_open), int(min_conf)
         self.max_usd, self.daily_loss_usd = float(max_usd), float(daily_loss_usd)
-        if not 1 <= int(leverage) <= 20:
-            raise ValueError("signal trader: leverage must be 1x to 20x")
+        if not LEVERAGE_RANGE[0] <= int(leverage) <= LEVERAGE_RANGE[1]:
+            raise ValueError(f"signal trader: leverage must be {LEVERAGE_RANGE[0]}x to {LEVERAGE_RANGE[1]}x")
         # the leverage of its coins: Binance picks auto-deleveraging victims by profit x leverage, so low leverage puts
         # its winning trades at the back of that queue (the ticket's own default is 15x)
         self.leverage = int(leverage)
@@ -90,6 +91,9 @@ class SignalTrader:
             saved = self.s.get(key)
             if isinstance(saved, (int, float)) and not isinstance(saved, bool) and lo <= saved <= hi:
                 setattr(self, key, float(saved))
+        saved = self.s.get("leverage")                              # and the leverage
+        if isinstance(saved, int) and not isinstance(saved, bool) and LEVERAGE_RANGE[0] <= saved <= LEVERAGE_RANGE[1]:
+            self.leverage = saved
         self.last_error, self.last_run, self.note = "", 0.0, ""
         self.last_signals: list[dict] = []
         self._halted_day = None
@@ -148,6 +152,18 @@ class SignalTrader:
         self._save()
         log.info("signal auto-trader: timeframe set to %s", label)
         self.notify(f"🤖 TESTNET signal auto-trader: now trading the {label} signal")
+
+    def set_leverage(self, n) -> None:
+        """The leverage it sets on a coin before its NEXT entry (saved). Open trades keep theirs. Lower = less margin
+        efficient but later in Binance's auto-deleveraging queue and further from liquidation."""
+        lo, hi = LEVERAGE_RANGE
+        if not (isinstance(n, int) and not isinstance(n, bool) and lo <= n <= hi):
+            raise ValueError(f"the leverage must be a whole number from {lo} to {hi}")
+        self.leverage = n
+        self.s["leverage"] = n
+        self._save()
+        log.info("signal auto-trader: leverage set to %dx", n)
+        self.notify(f"🤖 TESTNET signal auto-trader: new trades at {n}x leverage (open trades keep theirs)")
 
     def set_max_open(self, n) -> None:
         """The most positions and waiting limit entries it holds at once (saved, so it survives a restart). Lowering it
@@ -268,7 +284,8 @@ class SignalTrader:
     def _closed(self, sym: str, m: dict, why: str, now_ms: int) -> dict:
         t = dict(symbol=sym, side=m["side"], qty=m.get("qty"), entry=m.get("entry"), stop=m.get("stop"),
                  target=m.get("target"), risk_usd=m.get("risk_usd"), score=m.get("score"), confidence=m.get("confidence"),
-                 opened_ms=m["opened_ms"], closed_ms=now_ms, why=why, exit=None, pnl=None, fees=None)
+                 opened_ms=m["opened_ms"], closed_ms=now_ms, why=why, exit=None, pnl=None, fees=None,
+                 leverage=m.get("leverage"))
         self.s["trades"] = (self.s["trades"] + [t])[-KEEP_TRADES:]
         self.s["cooldown"][sym] = now_ms + int(self.cooldown_s * 1000)
         return t
@@ -435,7 +452,7 @@ class SignalTrader:
         o = await self.ticket.place_order(order)
         rec = dict(side=side, entry=o.get("filled_px") or ref, stop=stop, target=target, score=r["score"],
                    confidence=r["confidence"], risk_usd=qty * abs(ref - stop), order_id=o.get("id"),
-                   window_s=self.window_s)
+                   window_s=self.window_s, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage)
         if o.get("status") == "filled":
             self.s["open"][sym] = dict(rec, qty=o.get("qty"), opened_ms=now_ms)
             self.notify(f"🤖 TESTNET signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
@@ -470,7 +487,7 @@ class SignalTrader:
     def view(self) -> dict:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
         return dict(venue="testnet", enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
-                    max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE),
+                    max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE), leverage_range=list(LEVERAGE_RANGE),
                     daily_loss_range=list(DAILY_LOSS_RANGE),
                     risk_usd=self.risk_usd,
                     max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd, leverage=self.leverage,
