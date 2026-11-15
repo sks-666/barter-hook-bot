@@ -8,7 +8,7 @@ import asyncio
 import re
 import time
 
-from .binance_client import BinanceClient
+from .binance_client import BinanceClient, BinanceError
 
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{2,20}USDT$")
 INTERVALS = ("1m", "5m", "15m", "1h", "4h", "1d", "1w")
@@ -89,8 +89,19 @@ class MarketData:
         finally:
             del self._inflight[key]
 
-    def _get(self, path: str, params: dict | None = None):
-        return self.client.get("fapi", path, params, timeout=8.0)
+    async def _get(self, path: str, params: dict | None = None):
+        try:
+            return await self.client.get("fapi", path, params, timeout=8.0)
+        except BinanceError as e:
+            sym = (params or {}).get("symbol")
+            if e.code != -1121 or not sym:
+                raise
+            # A coin this exchange does not list: the signals and the whale tape read mainnet, which lists coins
+            # (stock and metal perpetuals, new listings) the testnet does not have. Say so plainly.
+            env = getattr(self.client, "env", "")
+            raise ValueError(f"{sym} is not listed on the Binance {env + ' ' if env else ''}futures exchange"
+                             + (" (it trades on mainnet only), so there is no chart, order book or trades for it here"
+                                if env == "testnet" else "")) from None
 
     async def klines(self, symbol: str, interval: str) -> list[list]:
         symbol = self.check_symbol(symbol)

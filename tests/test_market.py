@@ -6,6 +6,7 @@ from types import SimpleNamespace
 
 from aiohttp.test_utils import TestClient, TestServer
 
+from arbbot.binance_client import BinanceError
 from arbbot.market import TTL, MarketData
 from arbbot.server import Dashboard
 
@@ -129,6 +130,17 @@ class MarketDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["symbol"] for r in mv["gainers"]], ["AAAUSDT", "CCCUSDT", "BBBUSDT"])
         self.assertEqual(mv["losers"][0]["symbol"], "BBBUSDT")
         self.assertEqual(mv["volume"][0]["symbol"], "CCCUSDT")
+
+    async def test_a_coin_the_exchange_does_not_list_gets_a_plain_message(self):
+        self.api.env = "testnet"
+        self.api.fail = BinanceError(400, -1121, "Invalid symbol.", "/fapi/v1/depth")
+        with self.assertRaises(ValueError) as ctx:
+            await self.m.depth("SPCXUSDT", 100)
+        self.assertIn("SPCXUSDT is not listed on the Binance testnet futures exchange", str(ctx.exception))
+        self.assertIn("mainnet only", str(ctx.exception))
+        self.api.fail = BinanceError(429, -1003, "Too many requests.", "/fapi/v1/depth")
+        with self.assertRaises(BinanceError):                     # any other Binance error passes through as it was
+            await self.m.depth("BTCUSDT")
 
     async def test_bad_input_never_reaches_binance(self):
         for bad in ("", "BTC/USDT", "BTCUSDC", "../x", "A" * 40 + "USDT"):

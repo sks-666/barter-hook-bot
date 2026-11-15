@@ -1186,7 +1186,7 @@ function renderLog() {
 // ---- rendering: market data for the loaded coin -------------------------------------------------------------
 function render(kind) {
   ({ info: renderQuote, klines: drawChart, depth: renderBook, trades: renderTape, sent: renderSent, movers: renderMovers,
-     symbols: () => { if (!$("sugg").hidden) suggest(); }, whales: () => { renderWhales(); renderFlow(); },
+     symbols: () => { if (!$("sugg").hidden) suggest(); renderSignals(); }, whales: () => { renderWhales(); renderFlow(); },
      daily: drawChart, marks: drawChart, desk: renderDesk, curve: renderCurve, macro: renderMacro, btcd: renderMacro,
      news: renderNews, combo: renderSignals })[kind]();
 }
@@ -1838,6 +1838,10 @@ $("sig").addEventListener("click", ev => { const tr = ev.target.closest("tr[data
 { const saved = Number(lsGet("term-sig")); if (SIG_TF.some(([, v]) => v === saved)) S.sgw = saved; }
 
 const sgCoin = s => esc(s.replace(/USDT$/, ""));
+// The signals read mainnet, which lists coins (stock and metal perpetuals, new listings) this bot's exchange may not:
+// tag them, since clicking one shows no chart and the auto-trader skips it. Unknown until the symbol list loads.
+const notListed = s => S.symbols?.length && !S.symbols.some(c => c.symbol === s)
+  ? `<span class="sub" title="Not listed on this bot's ${esc(S.snap?.env || "")} futures exchange: no chart or order book here, and the auto-trader cannot trade it">${S.snap?.env === "testnet" ? "mainnet only" : "not listed"}</span>` : "";
 const sgMoney = v => (v >= 0 ? "+" : "−") + Math.abs(v).toFixed(2);
 const pctOf = (a, b) => sgn((a / b - 1) * 100, 2) + "%";
 function sbar(v) {                                   // −1 … +1 as a bar growing left (red) or right (green) from the middle
@@ -2187,7 +2191,7 @@ function renderSignals() {
       SIG_F.map(([k, l]) => `<th class="f xw" title="${l} score, −100 to +100 (hover a cell for why)">${l}</th>`).join("") +
       `<th title="The testnet auto-trader holds this coin">Auto</th></tr></thead><tbody>` +
       rows.map(x => { const L = x.bias === "long", wait = x.bias === "wait", h = held(x.symbol);
-        return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb">${sgCoin(x.symbol)}</td>
+        return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb">${sgCoin(x.symbol)}${notListed(x.symbol)}</td>
           <td class="bias ${wait ? "mut" : L ? "up" : "dn"}">${wait ? "· WAIT" : L ? "▲ LONG" : "▼ SHORT"}</td>${verdict(x)}
           <td class="${cls(x.score)}">${sbar(x.score)}${sgn(x.score * 100, 0)}</td>
           <td class="${wait ? "mut" : x.confidence >= 70 ? "big" : x.confidence < 40 ? "mut" : ""}">${wait ? "—" : x.confidence}</td>
