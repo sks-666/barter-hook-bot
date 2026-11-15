@@ -3,12 +3,15 @@
 Every `poll_s` it reads the combined signal over its timeframe and, through the order ticket (arbbot/testnet_ticket.py,
 which refuses any non-testnet client), it:
 
-* ENTERS a coin whose signal is LONG or SHORT with confidence >= min_conf, the whale reading present, enough of the
-  sources readable (coverage) and reward:risk >= MIN_RR. Sized so the loss at the stop is `risk_usd` (capped at
-  `max_usd` of position value). The entry is a market order when the signal's entry is the price now, otherwise a limit
-  order at the whales' price that is cancelled if it has not filled within the ENTRY_TTL share of the timeframe. The stop
-  and target ride on the exchange (stop-market / take-profit-market, closePosition).
-* EXITS when the exchange stop or target fills, when the signal turns to the other side with confidence >= min_conf,
+* ENTERS a coin whose signal passed the quality check (verdict TRADE: regime, four pillars, guardrails, structural
+  stop, TP1 >= 1.8R, pre-mortem; arbbot/quality.py) with confidence >= min_conf, the whale reading present and enough
+  of the sources readable (coverage). Sized so the loss at the stop is `risk_usd` (capped at `max_usd` of position
+  value). The entry is a market order when the signal's entry is the price now, otherwise a limit order at the whales'
+  price that is cancelled if it has not filled within the ENTRY_TTL share of the timeframe. The stop and the runner
+  target (TP2) ride on the exchange (stop-market / take-profit-market, closePosition), plus a reduce-only take-profit
+  for TP1_SHARE of the position at TP1.
+* After TP1 fills, the stop moves to the entry (breakeven) once the mark is past it.
+* EXITS when the exchange stop or TP2 fills, when the signal turns to the other side with confidence >= min_conf,
   or after holding HOLD_X x the timeframe.
 
 The signal is read from mainnet data (whales, crowd, curve, candles) while orders fill at testnet prices, so every level
@@ -34,6 +37,7 @@ from .binance_client import BinanceError, NotSentError
 
 log = logging.getLogger("signal-trader")
 MIN_RR = 1.5
+TP1_SHARE = 0.5              # the share of the position closed at TP1; the rest runs to TP2 with the stop at breakeven
 MIN_COVERAGE = 0.6           # share of the full weight that had something to read
 MARKET_WITHIN_PCT = 0.10     # the signal's entry this close to the price: take it with a market order
 ENTRY_TTL = 0.5              # a limit entry waits at most this share of the timeframe (between 5 min and 4 h)
@@ -285,7 +289,8 @@ class SignalTrader:
         t = dict(symbol=sym, side=m["side"], qty=m.get("qty"), entry=m.get("entry"), stop=m.get("stop"),
                  target=m.get("target"), risk_usd=m.get("risk_usd"), score=m.get("score"), confidence=m.get("confidence"),
                  opened_ms=m["opened_ms"], closed_ms=now_ms, why=why, exit=None, pnl=None, fees=None,
-                 leverage=m.get("leverage"))
+                 leverage=m.get("leverage"), tp1=m.get("tp1"), tp1_hit=m.get("tp1_hit"), quality=m.get("quality"),
+                 regime=m.get("regime"))
         self.s["trades"] = (self.s["trades"] + [t])[-KEEP_TRADES:]
         self.s["cooldown"][sym] = now_ms + int(self.cooldown_s * 1000)
         return t
@@ -323,6 +328,7 @@ class SignalTrader:
                     await self._cancel(p["order_id"])
                 self.notify(f"🤖 TESTNET signal {p['side'].upper()} {sym} filled at {self.s['open'][sym]['entry']:.6g} "
                             f"(stop {p['stop']:.6g}, target {p['target']:.6g})")
+                await self._place_tp1(sym, self.s["open"][sym])
             elif str(p["order_id"]) not in ids:
                 del self.s["pending"][sym]
                 log.info("signal trader: the limit entry on %s is gone without a fill", sym)
@@ -343,6 +349,7 @@ class SignalTrader:
                 del self.s["open"][sym]
                 self._closed(sym, m, "stop or target", now_ms)
                 continue
+            await self._breakeven(sym, m)
             row = rows.get(sym)
             flipped = (row and row["bias"] not in ("wait", "long" if m["side"] == "buy" else "short")
                        and row["confidence"] >= self.min_conf)
@@ -358,6 +365,45 @@ class SignalTrader:
             del self.s["open"][sym]
             self._closed(sym, m, why, now_ms)
             self.notify(f"🤖 TESTNET signal {sym} closed: {why}")
+
+    async def _place_tp1(self, sym: str, m: dict) -> None:
+        """The reduce-only take-profit for TP1_SHARE of a just-filled position. A refusal only means no partial exit:
+        the stop and TP2 already protect the position."""
+        place = getattr(self.ticket, "place_take_profit", None)
+        if not m.get("tp1") or place is None or m.get("tp1_placed"):
+            return
+        try:
+            await place(sym, m["side"], (m.get("qty") or 0) * TP1_SHARE, m["tp1"], trigger="mark")
+            m["tp1_placed"] = True
+        except NotSentError:
+            raise
+        except (ValueError, BinanceError) as e:
+            m["tp1_placed"] = False
+            log.warning("signal trader: no TP1 on %s (%s); the stop and TP2 still stand", sym, getattr(e, "msg", None) or e)
+
+    async def _breakeven(self, sym: str, m: dict) -> None:
+        """TP1 filled (the position shrank): move the stop to the entry, once the mark is past the entry (a stop
+        Binance would trigger at once is refused, and the old one is already cancelled by then)."""
+        if not m.get("tp1") or m.get("tp1_hit") or not m.get("qty"):
+            return
+        if abs(self.ticket.position(sym)) > m["qty"] * (1 - TP1_SHARE / 2):
+            return
+        mark = (self.ticket.position_info(sym) or {}).get("mark")
+        long = m["side"] == "buy"
+        if not mark or (mark <= m["entry"] if long else mark >= m["entry"]):
+            return                                                    # not past the entry now: try again next pass
+        replace = getattr(self.ticket, "replace_stop", None)
+        if replace is None:
+            return
+        try:
+            await replace(sym, m["side"], m["entry"])
+        except NotSentError:
+            raise
+        except (ValueError, BinanceError) as e:
+            log.warning("signal trader: could not move the %s stop to breakeven: %s", sym, getattr(e, "msg", None) or e)
+            return
+        m.update(tp1_hit=True, stop=m["entry"])
+        self.notify(f"🤖 TESTNET signal {sym}: TP1 hit, half closed; stop moved to breakeven {m['entry']:.6g}")
 
     def can_enter(self) -> str:
         """Why no new entry may be made now ('' = it may)."""
@@ -376,7 +422,8 @@ class SignalTrader:
         out = []
         for r in rows:
             whale = next((f for f in r.get("factors", []) if f["key"] == "whales"), None)
-            if (r["bias"] in ("long", "short") and r["confidence"] >= self.min_conf and r.get("entry")
+            if (r["bias"] in ("long", "short") and r.get("verdict") == "trade" and r["confidence"] >= self.min_conf
+                    and r.get("entry")
                     and (r.get("rr") or 0) >= MIN_RR and (r.get("coverage") or 0) >= MIN_COVERAGE
                     and whale and whale["weight"] > 0):
                 out.append(r)
@@ -434,6 +481,7 @@ class SignalTrader:
         long = r["bias"] == "long"
         side = "buy" if long else "sell"
         entry, stop, target = r["entry"] * k, r["stop"] * k, r["target"] * k
+        tp1 = r["tp1"] * k if r.get("tp1") else None
         market = abs(r["entry"] / r["mark"] - 1) * 100 < MARKET_WITHIN_PCT
         ref = (q["ask"] if long else q["bid"]) if market else entry
         if long and not stop < ref < target or not long and not target < ref < stop:
@@ -452,11 +500,15 @@ class SignalTrader:
         o = await self.ticket.place_order(order)
         rec = dict(side=side, entry=o.get("filled_px") or ref, stop=stop, target=target, score=r["score"],
                    confidence=r["confidence"], risk_usd=qty * abs(ref - stop), order_id=o.get("id"),
-                   window_s=self.window_s, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage)
+                   window_s=self.window_s, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage,
+                   tp1=tp1, quality=(r.get("quality") or {}).get("quality"),
+                   regime=((r.get("quality") or {}).get("regime") or {}).get("name"))
         if o.get("status") == "filled":
             self.s["open"][sym] = dict(rec, qty=o.get("qty"), opened_ms=now_ms)
             self.notify(f"🤖 TESTNET signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
-                        f"(score {r['score'] * 100:+.0f}, conf {r['confidence']}) stop {stop:.6g} target {target:.6g}")
+                        f"(score {r['score'] * 100:+.0f}, conf {r['confidence']}, quality {rec['quality']}) stop {stop:.6g}"
+                        f"{f' TP1 {tp1:.6g}' if tp1 else ''} TP2 {target:.6g}")
+            await self._place_tp1(sym, self.s["open"][sym])
         elif o.get("status") == "new":
             self.s["pending"][sym] = dict(rec, qty=qty, placed_ms=now_ms,
                                           expires_ms=now_ms + int(self.entry_ttl_s * 1000))

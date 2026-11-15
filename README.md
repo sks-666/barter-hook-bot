@@ -424,7 +424,7 @@ Type in plain words or use the `/` menu (registered automatically):
 | `/positions` · `/pnl` · `/top 10` | Open positions (one summary each) · profit/loss and last trades · best markets by edge |
 | `/positions BTC` (or "show me the BTC position") | **Full detail of one open trade:** AUTO or MANUAL, size, the spot and perp quantities and prices paid, time held, entry basis, fees paid, funding earned, the model's z and expected net at entry, the unwind basis now, P&L if closed now, and the exit rules with how far each is (convergence z, timeout countdown, P&L stop, basis stop) |
 | `/pause` · `/resume` | Stop / allow new entries. The pause (also the dashboard's Pause and Flatten buttons) is saved in the state database, so a restart keeps entries paused until you resume; the bot says so in its log, its event list and on Telegram. **By default every start begins paused** (`[risk] start_paused = true` in `config.toml`; set it to `false` to start trading straight away) |
-| `/ideas` · `/ideas 30m` | The **combined signal** (whales, crowd, curve, macro, news), as on the terminal's Signals panel: each busy coin's LONG / SHORT / WAIT, score, confidence, agreement, R:R and entry / stop / target, marked ✅ when the auto-trader may take it. Without a timeframe: the auto-trader's (1h when it doesn't run) |
+| `/ideas` · `/ideas 30m` | The **combined signal** (whales, crowd, curve, macro, news) with the quality check, as on the terminal's Signals panel: each busy coin's side, TRADE / NO TRADE, score, confidence, quality, regime, R:R, and for a TRADE the entry / stop / TP1 / TP2 and its pre-mortem (for a NO TRADE, why not), marked ✅ when the auto-trader may take it. Without a timeframe: the auto-trader's (1h when it doesn't run) |
 | `/auto` (or "how is the auto trader?") | The **signal auto-trader** (testnet bot only): entries on/off, its timeframe, open / most open, status (looking for entries, or why not), today's and total result, win rate, the per-trade rules and each open trade with its entry, stop, target and P&L |
 | `/auto on` · `/auto off` | New entries on or off. Open trades stay managed: stop, target, signal flip, maximum hold |
 | `/auto 30m` (or `/auto tf 30m`) | Trade the 30m signal from the next pass (1m 5m 15m 30m 1h 4h 1d 1w). Open trades keep the maximum hold of their own timeframe |
@@ -469,22 +469,25 @@ and opens nothing. Send `/confirm` within 60 s to open it, or `/cancel`. Then `/
 ## Signal auto-trader (testnet only)
 
 The terminal's Signals panel (`/terminal`) scores each coin from five readings (whales, crowd, futures curve, macro,
-news) into LONG / SHORT / WAIT with an entry, stop and target. With `--live --testnet --signal-trader` the bot trades
-the confident ones on the Binance futures **testnet** (test money; it refuses any other account). **How the signal
+news) into LONG / SHORT / WAIT, then a **quality check** (`arbbot/quality.py`) says TRADE or NO TRADE: market regime
+(trend / range / chop), four scored pillars (structure & liquidity, momentum, volume, derivatives & BTC), the
+guardrails learned from losing trades ([REGIME] ADX > 30 against mean reversion, [FAKEOUT] breakouts need 1.5× volume,
+[FUNDING] no crowded side while spot volume falls, [SESSION] −20% in thin hours or near a high-impact US release), a
+structural stop with TP1 ≥ 1.8R and TP2 ≥ 3R, and a pre-mortem. With `--live --testnet --signal-trader` the bot trades
+the TRADE rows on the Binance futures **testnet** (test money; it refuses any other account). **How the signal
 works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md](docs/SIGNAL-AUTO-TRADER.md).**
 
 **What it does**
 
-* **Enters** on LONG / SHORT with confidence ≥ 60, reward:risk ≥ 1.5 and the whale reading present, most confident
-  coin first. The entry is a market order when the signal's entry is the price now, otherwise a limit order that is
+* **Enters** on a **TRADE** verdict with confidence ≥ 60 and the whale reading present, most confident coin first. The entry is a market order when the signal's entry is the price now, otherwise a limit order that is
   cancelled after half the timeframe.
 * **Sizes** each trade so the stop loses about **$20**, at most **$2,000** of position, at **5x** leverage
-  (`--signal-trader-leverage`). The **stop and target sit on Binance**, triggered by the mark price, so they work even
-  if the bot stops. It skips a coin whose testnet order book is too thin for its stop.
+  (`--signal-trader-leverage`). The **stop and TP2 sit on Binance**, triggered by the mark price, so they work even
+  if the bot stops. **Half closes at TP1**, then the stop moves to breakeven. It skips a coin whose testnet order book is too thin for its stop.
 * **Binance's own closes:** a trade closed by the exchange's auto-deleveraging (`adl_autoclose`: a profitable
   position taken away at a liquidated trader's price, absurd on the testnet) is marked as such and left out of the
   daily loss limit. A liquidation still counts.
-* **Exits** on its stop or target, when the signal flips with confidence ≥ 60, or after holding **2× the timeframe it
+* **Exits** on its stop or TP2, when the signal flips with confidence ≥ 60, or after holding **2× the timeframe it
   was opened on**.
 * **Limits:**
   * the most open trades (positions plus waiting entries),

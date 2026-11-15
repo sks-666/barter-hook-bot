@@ -220,6 +220,13 @@
   .ladder .mk { position: absolute; top: 4px; width: 2px; height: 24px; transform: translateX(-1px); }
   .ladder .mk span { position: absolute; top: 25px; left: 50%; transform: translateX(-50%); font-size: 10px; white-space: nowrap; }
   .ladder .mk b { position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%); font-size: 10px; white-space: nowrap; font-weight: 600; }
+  .vd { display: inline-block; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-size: .82em; font-weight: 700; letter-spacing: .4px; }
+  .q-p { display: flex; gap: 8px; align-items: center; padding: 2px 0; white-space: nowrap; }
+  .q-p .n { width: 150px; overflow: hidden; text-overflow: ellipsis; }
+  .q-p .bar { position: relative; flex: 0 0 70px; height: 6px; background: color-mix(in srgb, var(--line) 80%, transparent); }
+  .q-p .bar i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--amber); }
+  .q-gates { margin: 4px 0; padding-left: 16px; color: var(--neg); font-size: .9em; }
+  .q-gates li { margin: 1px 0; }
   @media (max-width: 1100px) { .sg-low { grid-template-columns: minmax(0, 1fr); } .sg-low > div + div { border-left: 0; border-top: 1px solid var(--line); } }
   @media (max-width: 720px) { table.sgt .xw { display: none; } }
   #p-curve { grid-area: curve; } #p-cmp { grid-area: cmp; } #p-risk { grid-area: risk; }
@@ -362,7 +369,7 @@
     <div class="ph"><h2>Signals</h2><span class="k" id="sg-k"></span>
       <div class="r"><span class="grp" id="sg-tf" role="group" aria-label="Signal timeframe"></span>
         <span class="grp" id="sg-f" role="group" aria-label="Show"><button type="button" data-sgf="all" aria-pressed="true">All</button>
-          <button type="button" data-sgf="trade" aria-pressed="false" title="Only coins with a LONG or SHORT idea">Ideas</button>
+          <button type="button" data-sgf="trade" aria-pressed="false" title="Only coins whose idea passed the quality check (TRADE)">Trades</button>
           <button type="button" data-sgf="long" aria-pressed="false">Long</button>
           <button type="button" data-sgf="short" aria-pressed="false">Short</button></span></div></div>
     <div class="pb" id="sig"></div>
@@ -1851,7 +1858,7 @@ async function autoPost(body, what) {
 // "Risk": USDT lost at the stop per new trade, and the day's realised loss after which it takes no new trade; settable
 function autoRiskCell(a) {
   const tip = `Risk: what a NEW trade loses if it hits its stop (its size is still capped at $${a.max_usd} of position). ` +
-    `Day: after this much realised loss in a UTC day it takes no new trade until the next day. Confidence ≥ ${a.min_conf} · ` +
+    `Day: after this much realised loss in a UTC day it takes no new trade until the next day. Takes TRADE verdicts with confidence ≥ ${a.min_conf}; half closes at TP1, then the stop moves to breakeven · ` +
     `entry order lives ${dur(a.entry_ttl_s)} · max hold ${dur(a.max_hold_s)}`;
   const box = (key, v, [lo, hi], label) => `<input type="number" class="auto-usd" data-auto-set="${key}" value="${v}" min="${lo}" max="${hi}" step="1" aria-label="${label}">`;
   const edit = canControl() && a.risk_range && a.daily_loss_range;
@@ -1978,11 +1985,25 @@ function sigTrades() {
 function sigWhy(c) {
   const me = c.rows.find(x => x.symbol === S.sym);
   if (!me) return `<h3>Why · ${sgCoin(S.sym)}</h3><div class="mut">No signal for ${sgCoin(S.sym)} over ${flowLabel(S.sgw)}: it needs whale orders in that time. Click a row above.</div>`;
-  const wait = me.bias === "wait";
+  const wait = me.bias === "wait", ok = me.verdict === "trade";
   let h = `<h3>Why · ${sgCoin(S.sym)} <span class="${wait ? "mut" : cls(me.score)}">${me.bias.toUpperCase()} ${sgn(me.score * 100, 0)}</span>
+    <span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>
     <span class="mut" style="text-transform:none;letter-spacing:0">· confidence ${wait ? "—" : me.confidence} · sources agree ${Math.round(me.agree * 100)}% · data ${Math.round(me.coverage * 100)}%</span></h3>`;
-  if (!wait) {
-    const pts = [["stop", me.stop, "--neg"], ["entry", me.entry, "--amber"], ["now", me.mark, "--text"], ["target", me.target, "--pos"]];
+  if (me.gates?.length) h += `<ul class="q-gates">${me.gates.map(g => `<li>${esc(g)}</li>`).join("")}</ul>`;
+  const qq = me.quality;
+  if (qq) {
+    const P = [["structure", "Structure & liquidity"], ["momentum", "Momentum & divergence"], ["volume", "Volume & volatility"], ["derivs", "Derivatives & cross-market"]];
+    h += `<div class="mut" style="font-size:.9em;margin:2px 0 4px">Quality <b class="${qq.quality >= c.min_quality ? "up" : "dn"}">${qq.quality}/100</b> (needs ${c.min_quality}) ·
+      regime <b>${esc(qq.regime.name)}</b> (${esc(qq.intervals.htf)} ADX ${qq.regime.adx ?? "—"}, ranges ${qq.regime.vol}x usual) · setup <b>${esc(qq.setup.replace("_", " "))}</b> ·
+      candles ${esc(qq.intervals.ltf)} / ${esc(qq.intervals.mid)} / ${esc(qq.intervals.htf)}</div>` +
+      P.map(([k, l]) => { const p = qq.pillars[k];
+        return `<div class="q-p"><span class="n">${l}</span><span class="bar"><i style="width:${p.pts / 25 * 100}%"></i></span><b style="width:42px">${p.pts}/25</b>
+          <span class="mut" style="white-space:normal;font-size:.85em">${esc(p.why.join(" · "))}</span></div>`; }).join("") +
+      `<div style="margin:4px 0;font-size:.9em"><b class="${qq.premortem.severity === "none" ? "mut" : "dn"}">Pre-mortem${qq.premortem.severity === "none" ? "" : qq.premortem.severity === "cancel" ? " (cancels it)" : " (−15 confidence)"}:</b> ${esc(qq.premortem.text)}</div>
+      <div class="mut" style="font-size:.9em;margin-bottom:4px">Session: ${qq.session.penalty ? `<span class="wrn">x0.8 — ${esc(qq.session.why)}</span>` : esc(qq.session.why)}${qq.session.calendar ? "" : " (economic calendar unavailable)"}</div>`;
+  }
+  if (!wait && me.target) {
+    const pts = [["stop", me.stop, "--neg"], ["entry", me.entry, "--amber"], ["now", me.mark, "--text"], ["TP1", me.tp1, "--pos"], ["TP2", me.target, "--pos"]].filter(p => p[1]);
     const lo = Math.min(...pts.map(p => p[1])), hi = Math.max(...pts.map(p => p[1])), at = v => hi > lo ? (v - lo) / (hi - lo) * 100 : 50;
     const L = me.bias === "long", loss = at(me.stop), win = at(me.target);
     h += `<div class="ladder" title="${L ? "Long" : "Short"}: risk ${pctOf(me.stop, me.entry)} to the stop, reward ${pctOf(me.target, me.entry)} to the target (R:R ${me.rr.toFixed(1)})">
@@ -1992,7 +2013,7 @@ function sigWhy(c) {
         .map(([n, v, col]) => { const x = at(v), al = x < 8 ? "left:0;transform:none" : x > 92 ? "left:auto;right:0;transform:none" : "";
           const name = n === "entry" && Math.abs(at(me.mark) - x) < 6 ? "entry = now" : n;
           return `<div class="mk" style="left:${x}%;background:var(${col})"><b style="color:var(${col});${al}">${name}</b><span style="${al}">${px(v)}</span></div>`; }).join("") + `</div>`;
-    h += `<div class="mut" style="font-size:.9em;margin-bottom:4px">Entry ${px(me.entry)} (${me.to_entry_pct ? sgn(me.to_entry_pct, 2) + "% from now" : "at the price"}) · stop ${px(me.stop)} (${pctOf(me.stop, me.entry)}) · target ${px(me.target)} (${pctOf(me.target, me.entry)}) · R:R ${me.rr.toFixed(1)}${me.atr ? ` · ATR ${esc(me.atr_interval)} ${px(me.atr)}` : ""}</div>`;
+    h += `<div class="mut" style="font-size:.9em;margin-bottom:4px">Entry ${px(me.entry)} (${me.to_entry_pct ? sgn(me.to_entry_pct, 2) + "% from now" : "at the price"}) · stop ${px(me.stop)} (${pctOf(me.stop, me.entry)}) ·${me.tp1 ? ` TP1 ${px(me.tp1)} (${me.rr1.toFixed(1)}R, half closes) ·` : ""} TP2 ${px(me.target)} (${pctOf(me.target, me.entry)}, ${me.rr.toFixed(1)}R)${me.htf_level ? ` · HTF level ${px(me.htf_level)} (${me.room_r.toFixed(1)}R)` : ""}${me.atr ? ` · ATR ${esc(me.atr_interval)} ${px(me.atr)}` : ""}</div>`;
   }
   h += me.factors.map(f => `<div class="sg-f"><div class="t"><span class="n">${esc(f.label)} <span class="mut">${Math.round(f.weight * 100)}%</span></span>${sbar(f.score)}
       <span class="${f.score == null ? "mut" : cls(f.score)}" style="width:36px;text-align:right">${f.score == null ? "no data" : sgn(f.score * 100, 0)}</span>
@@ -2013,28 +2034,34 @@ function renderSignals() {
   $("sg-k").innerHTML = `over <b>${tf}</b> · ${c.rows.length} coins · weights ${SIG_F.filter(([k]) => w[k]).map(([k, l]) => `${l.toLowerCase()} ${Math.round(w[k] * 100)}%`).join(" · ")}` +
     ` · <span title="Crowd and curve: ${esc(c.steps.crowd)} / ${esc(c.steps.curve)} rows (step x how many back); stop from the ATR of ${esc(c.steps.atr)} candles. LONG at a score of +15 or more, SHORT at −15 or less. A heuristic, not a forecast or advice; nothing has been backtested.">heuristic, not advice ⓘ</span>`;
   const a = S.auto, held = s => a && (a.open[s] ? "open" : a.pending[s] ? "waiting" : "");
-  const rows = c.rows.filter(x => S.sgf === "all" || (S.sgf === "trade" ? x.bias !== "wait" : x.bias === S.sgf));
+  const rows = c.rows.filter(x => S.sgf === "all" || (S.sgf === "trade" ? x.verdict === "trade" : x.bias === S.sgf));
+  const verdict = x => { const qq = x.quality, ok = x.verdict === "trade";
+    const tip = ok ? `TRADE: quality ${qq.quality}/100, ${qq.regime.name}, ${qq.setup}. Pre-mortem: ${qq.premortem.text}` : (x.gates || []).join(" · ");
+    return `<td title="${esc(tip)}"><span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>${qq ? `<span class="sub">Q ${qq.quality} · ${esc(qq.regime.name.replace("_MEAN_REVERSION", "").replace("TRENDING_", "").replace("VOLATILE_", "").toLowerCase())}</span>` : ""}</td>`; };
   const fx = (x, k) => { const f = x.factors.find(f => f.key === k);
     return !f || f.score == null ? `<td class="f xw mut">—</td>` : `<td class="f xw ${cls(f.score)}" title="${esc(f.label)} (${Math.round(f.weight * 100)}%): ${esc(f.why)}">${sgn(f.score * 100, 0)}</td>`; };
   const table = rows.length ? `<div class="sg-tw"><table class="sgt"><thead><tr><th>Coin</th><th>Signal</th>
-      <th title="Combined score, −100 (bearish) to +100 (bullish)">Score</th><th title="0-100: how strong the score is, how many sources agree, how much data there was">Conf</th>
+      <th title="The quality check: TRADE or NO TRADE (hover for why), its quality score 0-100 and the HTF regime">Verdict</th>
+      <th title="Combined score, −100 (bearish) to +100 (bullish)">Score</th><th title="0-100: 40% the score's strength / agreement / data, 60% the quality score; x0.8 in thin hours or near a high-impact release, −15 for an active pre-mortem risk">Conf</th>
       <th class="xw" title="Weight of the sources that point the same way as the score">Agree</th><th class="xw" title="Share of the weights that had data">Data</th>
-      <th>Price</th><th title="Limit entry; % from the price now">Entry</th><th>Stop</th><th>Target</th><th title="Reward : risk">R:R</th>
+      <th>Price</th><th title="Limit entry; % from the price now">Entry</th><th title="Past the last swing + 0.25 ATR, off round numbers">Stop</th><th title="TP1: half the position closes here (at least 1.8R); the stop then moves to breakeven">TP1</th><th title="TP2: the runner (at least 3R)">TP2</th><th title="Reward : risk to TP2">R:R</th>
       <th class="xw" title="Average true range: one candle's typical move">ATR</th>` +
       SIG_F.map(([k, l]) => `<th class="f xw" title="${l} score, −100 to +100 (hover a cell for why)">${l}</th>`).join("") +
       `<th title="The testnet auto-trader holds this coin">Auto</th></tr></thead><tbody>` +
       rows.map(x => { const L = x.bias === "long", wait = x.bias === "wait", h = held(x.symbol);
         return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb">${sgCoin(x.symbol)}</td>
-          <td class="bias ${wait ? "mut" : L ? "up" : "dn"}">${wait ? "· WAIT" : L ? "▲ LONG" : "▼ SHORT"}</td>
+          <td class="bias ${wait ? "mut" : L ? "up" : "dn"}">${wait ? "· WAIT" : L ? "▲ LONG" : "▼ SHORT"}</td>${verdict(x)}
           <td class="${cls(x.score)}">${sbar(x.score)}${sgn(x.score * 100, 0)}</td>
           <td class="${wait ? "mut" : x.confidence >= 70 ? "big" : x.confidence < 40 ? "mut" : ""}">${wait ? "—" : x.confidence}</td>
           <td class="xw">${Math.round(x.agree * 100)}%</td><td class="xw ${x.coverage < 0.6 ? "wrn" : ""}">${Math.round(x.coverage * 100)}%</td>
           <td>${px(x.mark)}</td>` +
-          (wait ? `<td colspan="4" class="mut">no clear side</td>` :
+          (wait || !x.entry ? `<td colspan="5" class="mut">no clear side</td>` : !x.target ?
+          `<td>${px(x.entry)}</td><td class="dn">${x.stop ? px(x.stop) : "—"}</td><td colspan="3" class="mut">no valid targets</td>` :
           `<td>${px(x.entry)}<span class="sub">${Math.abs(x.to_entry_pct) < 0.1 ? "at the price" : sgn(x.to_entry_pct, 2) + "%"}</span></td>
           <td class="dn">${px(x.stop)}<span class="sub">${pctOf(x.stop, x.entry)}</span></td>
+          <td class="up">${x.tp1 ? px(x.tp1) + `<span class="sub">${x.rr1.toFixed(1)}R</span>` : "—"}</td>
           <td class="up">${px(x.target)}<span class="sub">${pctOf(x.target, x.entry)}</span></td>
-          <td class="${x.rr >= 2 ? "up" : ""}">${x.rr.toFixed(1)}</td>`) +
+          <td class="${x.rr >= 3 ? "up" : ""}">${x.rr.toFixed(1)}</td>`) +
           `<td class="xw mut">${x.atr ? px(x.atr) + `<span class="sub">${esc(x.atr_interval)}</span>` : "—"}</td>` +
           SIG_F.map(([k]) => fx(x, k)).join("") +
           `<td>${h ? `<span class="amb" title="the auto-trader's position on the testnet">● ${h}</span>` : ""}</td></tr>`; }).join("") + `</tbody></table></div>`

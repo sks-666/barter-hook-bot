@@ -42,7 +42,7 @@ HISTORY_MAX_SYMBOLS = 6
 # kind -> seconds an answer is reused. Binance weights (per call): klines 2, depth(20) 2, trades 5, 24hr(all) 40,
 # exchangeInfo 1. "data" makes five /futures/data calls; "curve" about eight.
 TTL = {"klines": 2.0, "depth": 1.0, "trades": 1.5, "info": 5.0, "data": 30.0, "movers": 15.0, "symbols": 60.0,
-       "exinfo": 300.0, "curve": 30.0, "history": 600.0}
+       "exinfo": 300.0, "curve": 30.0, "history": 600.0, "spot": 60.0}
 
 
 class MarketData:
@@ -103,6 +103,21 @@ class MarketData:
             return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]), float(r[7]), float(r[10])]
                     for r in rows]
         return await self._cached(("klines", symbol, interval), load)
+
+    async def spot_klines(self, symbol: str, interval: str) -> list[list]:
+        """Binance SPOT candles of the same pair (mainnet, public), same row layout as klines(): the signal's
+        [FUNDING] guardrail compares spot volume. Raises when the coin has no spot market."""
+        symbol = self.check_symbol(symbol)
+        if interval not in INTERVALS:
+            raise ValueError(f"interval must be one of {', '.join(INTERVALS)}")
+        api = self.stats_client or self.client
+
+        async def load():
+            rows = await api.get("spot", "/api/v3/klines", {"symbol": symbol, "interval": interval, "limit": 30},
+                                 timeout=8.0)
+            return [[int(r[0]), float(r[1]), float(r[2]), float(r[3]), float(r[4]), float(r[5]), float(r[7]), float(r[10])]
+                    for r in rows]
+        return await self._cached(("spot", symbol, interval), load)
 
     async def depth(self, symbol: str, limit: int = 20) -> dict:
         """Top `limit` levels a side: 20 (weight 2) for the ladder, or 100 (weight 5) to find the walls."""

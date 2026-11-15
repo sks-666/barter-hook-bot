@@ -128,7 +128,7 @@ class Desk(unittest.IsolatedAsyncioTestCase):
     async def test_everything_agrees_long_on_the_timeframes_own_steps(self):
         m = FakeMarket()
         v = await SignalDesk(self.w, m, Macro(), clock=lambda: self.now[0], wall=lambda: self.now[0]).view(86_400)
-        self.assertEqual(v["steps"], {"crowd": "4h x6", "curve": "4h x6", "atr": "4h"})
+        self.assertEqual(v["steps"], {"crowd": "4h x6", "curve": "4h x6", "atr": "4h", "ltf": "4h", "mid": "1d", "htf": "1w"})
         self.assertIn(("data", "DOGEUSDT", "4h"), m.calls)
         r = v["rows"][0]
         self.assertEqual((r["symbol"], r["bias"]), ("DOGEUSDT", "long"))
@@ -136,10 +136,11 @@ class Desk(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(f["macro"]["score"])                         # FRED down: macro drops out, the rest still count
         self.assertGreater(f["whales"]["score"], 0)
         self.assertGreater(f["crowd"]["score"], 0)
-        self.assertLessEqual(r["entry"], 0.2015)                       # a pullback toward where the whales bought
-        self.assertAlmostEqual(r["entry"] - r["stop"], 0.004)          # the 4h ATR is wider than the whales' spread
-        self.assertGreater(r["target"], r["entry"])
         self.assertGreater(r["confidence"], 50)
+        # 20 candles are too few for the quality check: never a TRADE on a check that could not run
+        self.assertEqual(r["verdict"], "no_trade")
+        self.assertIn("candles", r["gates"][0])
+        self.assertLessEqual(r["to_entry_pct"], 0)                     # a pullback toward where the whales bought
 
     async def test_the_whale_reading_is_live_while_binance_answers_are_reused(self):
         m = FakeMarket()

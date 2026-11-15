@@ -22,9 +22,9 @@ class Desk:
 
 
 def row(sym="SOLUSDT", bias="long", mark=100.0, entry=100.0, stop=98.0, target=104.0, conf=70, coverage=1.0,
-        whale_w=0.35, score=0.4):
+        whale_w=0.35, score=0.4, verdict="trade", tp1=None):
     return dict(symbol=sym, bias=bias, mark=mark, entry=entry, stop=stop, target=target, confidence=conf,
-                coverage=coverage, score=score, rr=abs(target - entry) / abs(entry - stop),
+                coverage=coverage, score=score, rr=abs(target - entry) / abs(entry - stop), verdict=verdict, tp1=tp1,
                 factors=[{"key": "whales", "weight": whale_w, "score": 0.5}])
 
 
@@ -36,6 +36,12 @@ class Ticket:
         self.kill, self.taken = "", set()
         self.open_orders = []
         self.leverage, self.lev_set, self.client_ids, self.lookups = {}, [], {}, []
+
+    async def place_take_profit(self, sym, side, qty, price, trigger="mark"):
+        self.partials = getattr(self, "partials", []) + [(sym, side, qty, price, trigger)]
+
+    async def replace_stop(self, sym, side, stop):
+        self.stops = getattr(self, "stops", []) + [(sym, side, stop)]
 
     async def set_leverage(self, sym, lev):
         self.lev_set.append((sym, lev))
@@ -82,7 +88,8 @@ class Ticket:
         return self.pos.get(sym, 0.0)
 
     def position_info(self, sym):
-        return {"amount": self.pos[sym], "entry_px": self.px, "pnl": 1.5} if self.pos.get(sym) else {}
+        return ({"amount": self.pos[sym], "entry_px": self.px, "pnl": 1.5, "mark": getattr(self, "mark", self.px)}
+                if self.pos.get(sym) else {})
 
     async def close_position(self, sym):
         self.closed.append(sym)
@@ -119,6 +126,34 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         self.assertAlmostEqual(o["qty"] * (101.01 - 98.0 * k), 20.0)   # $20 lost at the stop
         self.assertIn("SOLUSDT", t.s["open"])
         self.assertTrue(t.holds("SOLUSDT"))
+
+    async def test_only_a_trade_verdict_is_entered(self):
+        self.desk.rows = [row(verdict="no_trade")]                   # the quality check said NO_TRADE
+        t = self.make()
+        await t.step()
+        self.assertEqual(self.ticket.sent, [])
+
+    async def test_half_is_taken_at_tp1_then_the_stop_moves_to_breakeven(self):
+        self.desk.rows = [row(stop=98.0, tp1=103.6, target=106.0)]
+        t = self.make()
+        await t.step()
+        m = t.s["open"]["SOLUSDT"]
+        qty = self.ticket.sent[0]["qty"]
+        (sym, side, q, px, trig), = self.ticket.partials
+        self.assertEqual((sym, side, trig), ("SOLUSDT", "buy", "mark"))
+        self.assertAlmostEqual(q, qty * 0.5)                           # half of the position
+        self.assertAlmostEqual(px, 103.6 * 1.01)                       # moved onto the testnet price like the rest
+        self.assertTrue(m["tp1_placed"])
+        self.ticket.pos["SOLUSDT"] = qty * 0.5                          # TP1 filled...
+        self.ticket.mark = 100.0                                       # ...but the mark is back under the entry
+        await t.step()
+        self.assertFalse(getattr(self.ticket, "stops", []))            # a stop there would trigger at once: wait
+        self.ticket.mark = 104.0
+        await t.step()
+        self.assertEqual(self.ticket.stops, [("SOLUSDT", "buy", m["entry"])])
+        self.assertTrue(t.s["open"]["SOLUSDT"]["tp1_hit"])
+        await t.step()
+        self.assertEqual(len(self.ticket.stops), 1)                    # once
 
     async def test_size_is_capped_by_the_largest_position(self):
         t = self.make(max_usd=100)

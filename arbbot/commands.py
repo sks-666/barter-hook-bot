@@ -517,7 +517,7 @@ class CommandHandler:
         lines = [
             f"🤖 Signal auto-trader · TESTNET {self._tag()}".rstrip(),
             f"Entries {'ON' if v['enabled'] else 'OFF'} · {self._tf(v['window_s'])} signal · "
-            f"confidence ≥ {v['min_conf']}",
+            f"TRADE verdicts only · confidence ≥ {v['min_conf']}",
             f"Status: {state}",
             f"Open {len(open_)} / most {v['max_open']}" + (f" · {len(pend)} waiting to fill" if pend else "")
             + (f" · unrealised {_money(upnl)}" if open_ else ""),
@@ -582,17 +582,25 @@ class CommandHandler:
             if r["bias"] == "wait":
                 lines.append(f"• {coin} WAIT (score {r['score'] * 100:+.0f}) · no clear side")
                 continue
-            take = trader is not None and w == trader.window_s and r["confidence"] >= trader.min_conf \
-                and (r.get("rr") or 0) >= 1.5
-            lines.append(f"• {coin} {r['bias'].upper()} score {r['score'] * 100:+.0f} · conf {r['confidence']}"
-                         + (f" · agree {r['agree'] * 100:.0f}%" if r.get("agree") is not None else "")
+            ok = r.get("verdict") == "trade"
+            take = trader is not None and w == trader.window_s and ok and r["confidence"] >= trader.min_conf
+            qq = r.get("quality") or {}
+            lines.append(f"• {coin} {r['bias'].upper()} {'TRADE' if ok else 'NO TRADE'} · score {r['score'] * 100:+.0f}"
+                         f" · conf {r['confidence']}"
+                         + (f" · quality {qq['quality']} · {qq['regime']['name']}" if qq else "")
                          + (f" · R:R {r['rr']:.1f}" if r.get("rr") else "")
                          + (" · ✅ auto-trader may take it" if take else ""))
-            if r.get("entry"):
-                lines.append(f"  entry {_px(r['entry'])} · stop {_px(r['stop'])} · target {_px(r['target'])}")
+            if ok and r.get("entry"):
+                lines.append(f"  entry {_px(r['entry'])} · stop {_px(r['stop'])}"
+                             + (f" · TP1 {_px(r['tp1'])}" if r.get("tp1") else "") + f" · TP2 {_px(r['target'])}")
+                if qq.get("premortem"):
+                    lines.append(f"  pre-mortem: {qq['premortem']['text']}")
+            elif r.get("gates"):
+                lines.append(f"  why not: {r['gates'][0]}")
         if trader is not None and w != trader.window_s:
             lines.append(f"(The auto-trader trades {self._tf(trader.window_s)}, not {tf}: /auto {tf} to switch it.)")
-        lines.append("A heuristic from whales, crowd, curve, macro and news. Not advice; nothing backtested.")
+        lines.append("A heuristic: whales, crowd, curve, macro and news pick the side; the quality check (regime, structure, "
+                     "momentum, volume, derivatives, guardrails, pre-mortem) says TRADE or NO TRADE. Not advice; nothing backtested.")
         return "\n".join(lines)
 
     def _account(self) -> str:

@@ -6,9 +6,12 @@ entry, a stop and a target. The **signal auto-trader** takes the best of those i
 testnet.
 
 ```
-mainnet market data ──▶ arbbot/signals.py  (5 readings → LONG / SHORT / WAIT + entry, stop, target)
+mainnet market data ──▶ arbbot/signals.py  (5 readings → LONG / SHORT / WAIT)
  (whales, crowd,              │
-  curve, macro, news)         ▼
+  curve, macro, news,         ▼
+  candles, funding,  arbbot/quality.py  (regime, 4 pillars, guardrails, stop / TP1 / TP2, pre-mortem → TRADE / NO TRADE)
+  calendar)                   │
+                              ▼
                      arbbot/signal_trader.py  (filters, sizing, limits; every 30 s)
                               │
                               ▼
@@ -46,14 +49,84 @@ A reading with no data (e.g. fewer than 3 whale orders) is left out, and the oth
    - the score is strong,
    - the readings agree with each other (the **AGREE** column), and
    - most of the weight had data to read (the **DATA** column).
-4. **The trade plan** (LONG or SHORT only):
-   - **Entry** is the price now, or a pullback to the whales' price at most one risk away ("at the price" in the
-     panel means now).
-   - **Risk** is the larger of the whales' level, the coin's ATR on candles that fit the timeframe, and 0.3% of the
-     price, capped at 5%.
-   - **Stop** is one risk from the entry.
-   - **Target** is the whales' other level if that's at least 1.5 risks away, otherwise 2 risks. **R:R** is
-     target distance ÷ stop distance.
+4. **Entry** is the price now, or a pullback to the whales' price at most one ATR away ("at the price" in the
+   panel means now).
+
+The side only says which way the flow leans. Whether to trade it is the quality check's job.
+
+### The quality check: TRADE or NO TRADE
+
+`arbbot/quality.py` checks every LONG or SHORT against the chart, the derivatives market and the clock. A marginal
+or choppy setup is **NO TRADE**. The auto-trader only takes **TRADE** rows.
+
+It reads three candle sets picked from the timeframe:
+
+| Timeframe | LTF (trigger) | MID | HTF (context) |
+|---|---|---|---|
+| 5m | 1m | 15m | 1h |
+| 15m | 1m | 15m | 1h |
+| 1h | 15m | 1h | 4h |
+| 4h | 1h | 4h | 1d |
+| 1d | 4h | 1d | 1w |
+
+**Step 1: the regime (HTF candles)**
+
+| Regime | When |
+|---|---|
+| `TRENDING_BULL` / `TRENDING_BEAR` | ADX ≥ 25, EMA 21 above / below EMA 55, price on that side |
+| `VOLATILE_CHOP` | Candle ranges ≥ 1.4× their 100-candle average with no trend, or a strong ADX with the EMAs mixed. **Never traded.** |
+| `RANGING_MEAN_REVERSION` | ADX < 25 |
+
+The **setup** is a *breakout* (the last closed LTF candle closed past the 20-candle high/low), a *trend* trade (with
+the HTF trend), *mean reversion* (against it) or a *range* trade.
+
+**Step 2: four pillars, 0–25 points each (the quality score, 0–100)**
+
+| Pillar | Points for |
+|---|---|
+| Structure & liquidity | a break of structure (BOS) its way (10), a liquidity sweep of a swing (8), a fair value gap retest (7) |
+| Momentum & divergence | RSI in the right zone (8), MACD histogram its way / building (4 / 7), EMA 8/21/55 ribbon stacked (6), HTF trend agrees (4), RSI divergence its way (4) |
+| Volume & volatility | trigger candle RVOL ≥ 1.5× (9, or 4 at ≥ 1×), ATR contracted before the trigger (6), right side of the 24h VWAP (6), taker buys its way (4) |
+| Derivatives & cross-market | open interest rising with the move (7), funding not against it (6), premium trend agrees (5), BTC agrees (7; for BTC itself: S&P / dollar) |
+
+Missing data scores half, so one dead source doesn't veto everything. **A TRADE needs 55 or more.**
+
+**Step 3: the guardrails** (learned from losing trades)
+
+| Guardrail | Rule |
+|---|---|
+| **[REGIME]** | No mean-reversion or range trade when ADX > 30 on the MID or HTF candles, unless there's a break of structure its way. |
+| **[FAKEOUT]** | No breakout when the trigger candle's volume is under 1.5× its 20-candle average. |
+| **[FUNDING]** | No long when funding is above 0.03% per 8h **and** spot volume is falling (last 6 MID candles under 85% of the 6 before; futures volume when the coin has no spot market). The mirror for shorts. |
+| **[SESSION]** | Confidence × 0.8 at weekends, 21:00–24:00 UTC, or within 15 minutes of a high-impact US release (this week's calendar, from Forex Factory's public feed, read once an hour). |
+
+**Step 4: stop and targets from structure**
+
+- **Stop:** past the nearest swing behind the entry (at least 1 LTF ATR away), plus **0.25 ATR**, and pushed off
+  round numbers (e.g. not 97,000 on BTC). A structural stop further than 5% is **NO TRADE**: it is never pulled inside
+  the structure.
+- **TP1:** the first unbroken swing level at least **1.8R** away (otherwise exactly 1.8R). **Half the position closes
+  there**, then the stop moves to breakeven.
+- **TP2:** the runner, the first unbroken level from **3R** to 5R (otherwise 3R).
+- An unbroken HTF swing level in the way closer than **1.5R** (or under 1.8R, so TP1 can't fit) is **NO TRADE**.
+
+**Step 5: the pre-mortem.** It names the most likely reason this trade would hit its stop, checked in this order:
+
+| Risk | If active |
+|---|---|
+| It fights the HTF trend with no break of structure | **NO TRADE** |
+| BTC trends the other way on the MID candles (alts only) | **NO TRADE** |
+| Momentum stretched (RSI > 75 / < 25) or diverging against it | confidence −15 |
+| Its side is crowded (funding past 0.03%) | confidence −15 |
+| The stop is inside one normal MID candle's range | confidence −15 |
+
+If none is active it names the default risk (a sudden BTC-led move) and how many ATRs away the stop is.
+
+**Confidence** is then 40% the score's own confidence + 60% the quality score, × 0.8 for the session penalty, −15
+for an active pre-mortem risk.
+
+On the panel: the **Verdict** column (hover for why), **TP1** / **TP2**, and under *Why* the quality score, regime,
+each pillar's points and reasons, every failed guardrail, the pre-mortem and the session.
 
 ### The panel's timeframe vs the auto-trader's
 
@@ -70,8 +143,7 @@ The **1m … 1w buttons at the top of the Signals panel only change what the tab
 Every 30 seconds it reads the signal on its timeframe, then works through these steps.
 
 **Enters** a coin when all of these hold, most confident coin first:
-- The side is LONG or SHORT, with confidence **≥ 60**.
-- R:R is **≥ 1.5**.
+- The quality check says **TRADE**, with confidence **≥ 60**.
 - At least **60%** of the weight had data, and the whale reading is present.
 - It holds fewer trades than its **most open** limit, which counts positions plus waiting limit entries.
 - Today's realised loss is under the **daily loss limit** (UTC day).
@@ -87,13 +159,15 @@ Every 30 seconds it reads the signal on its timeframe, then works through these 
 - A **market** order when the entry is the price now. It's refused if it would slip more than 0.3%.
 - Otherwise a **limit** order at the entry, cancelled if it hasn't filled within half the timeframe (5 min to
   4 h).
-- The **stop and the target ride on Binance** as stop-market and take-profit-market orders, so they work even if
+- The **stop and TP2 ride on Binance** as stop-market and take-profit-market orders, so they work even if
   the bot stops. They trigger on the **mark price**, so one stray trade on a thin testnet book can't set them off.
+- Once the position is open it adds a **reduce-only take-profit for half** of it at **TP1**. When TP1 fills, it
+  moves the stop to the entry (**breakeven**) as soon as the mark is past the entry.
 - It first sets the coin's leverage to **5x** (the order ticket's own default is 15x). Binance auto-deleverages the
   most profitable × most leveraged positions first, so low leverage keeps its winners at the back of that queue.
 
 **Exits** when any of these happens:
-- The stop or the target fills on Binance.
+- The stop or TP2 fills on Binance (after TP1, the stop sits at breakeven).
 - The signal flips to the other side with confidence ≥ 60.
 - It has held the trade for **2× the timeframe it was opened on** (30 min to 7 days).
 

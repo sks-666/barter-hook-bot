@@ -356,6 +356,21 @@ class TestnetTicket:
                 self.notify(f"⚠️ {self.venue.upper()} {sym}: the {kind.replace('_', ' ').lower()} could not be placed ({e.msg}). "
                             f"The position is open without it.")
 
+    async def place_take_profit(self, symbol: str, side: str, qty: float, price: float, trigger: str = "mark") -> None:
+        """A PARTIAL take-profit on the `side` ("buy" = long) position: a reduce-only take-profit-market for `qty` at
+        `price` (the signal auto-trader's TP1; its closePosition target stays for the rest). Raises when refused."""
+        sym = self._check_symbol(symbol)
+        async with self._lock:
+            await self._ensure_filters()
+            q = self._qty(sym, qty)
+            if q <= 0:
+                raise ValueError("the partial take-profit quantity rounds to zero")
+            await self.c.post("fapi", "/fapi/v1/algoOrder", {
+                "algoType": "CONDITIONAL", "symbol": sym, "side": "SELL" if side == "buy" else "BUY",
+                "type": "TAKE_PROFIT_MARKET", "triggerPrice": _fmt(self._px(sym, price)), "quantity": _fmt(q),
+                "reduceOnly": "true", "workingType": "MARK_PRICE" if trigger == "mark" else "CONTRACT_PRICE"})
+        await self._safe_refresh()
+
     async def cancel(self, order_id) -> dict:
         async with self._lock:
             o = next((x for x in self.open_orders if str(x.get("orderId")) == str(order_id)), None)
@@ -484,7 +499,8 @@ class TestnetTicket:
                 self.s["tpsl"].pop(oid, None)
         flat = {p["symbol"] for p in risk if float(p["positionAmt"]) == 0}
         for o in orders:                                 # a closed position leaves its TP/SL behind: tidy them up
-            if o["symbol"] in flat and o["symbol"] not in arb and o.get("closePosition") in (True, "true"):
+            if o["symbol"] in flat and o["symbol"] not in arb and (o.get("closePosition") in (True, "true") or
+                                                                  "_algo" in o and o.get("reduceOnly") in (True, "true")):
                 try:
                     if "_algo" in o:
                         await self.c.request("fapi", "DELETE", "/fapi/v1/algoOrder", {"algoId": o["_algo"]}, signed=True)

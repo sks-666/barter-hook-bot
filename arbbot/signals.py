@@ -10,8 +10,10 @@ The timeframe is the Whale flow panel's (1 second to 1 week). It picks how each 
   news     Headlines of the timeframe (at least the last hour) about this coin or crypto, by bullish / bearish words
 
 Each reading is a score from -1 (bearish) to +1 (bullish) with a reason; their weights depend on the timeframe. The
-combined score picks LONG / SHORT / WAIT; entry, stop and target come from the whales' own prices and the coin's ATR
-on candles that fit the timeframe. A heuristic for the page: nothing here trades and nothing has been backtested.
+combined score picks the side (LONG / SHORT / WAIT). Then the quality check (arbbot/quality.py) decides TRADE or
+NO_TRADE for that side: market regime, four scored pillars (structure, momentum, volume, derivatives), the learned
+guardrails, a structural stop with TP1 / TP2, and a pre-mortem. The entry is the price or a pullback to the whales'
+price. A heuristic: nothing here has been backtested (the testnet auto-trader takes TRADE rows only).
 """
 import asyncio
 import logging
@@ -19,6 +21,7 @@ import math
 import re
 import time
 
+from . import quality
 from .market import CURVE_PERIODS, INTERVALS, SENT_PERIODS, SENT_ROWS
 
 log = logging.getLogger("signals")
@@ -192,39 +195,70 @@ class SignalDesk:
             coins.append(symbol)
         sent_p, sent_k = step_for(w, SENT_PERIODS, SENT_ROWS)
         curve_p, curve_k = step_for(w, CURVE_PERIODS, 60)
-        iv = max((i for i in INTERVALS if STEP_S[i] <= max(w / 4, 60)), key=lambda i: STEP_S[i])
-        macro, news = await self._shared(w)
-        rows = await asyncio.gather(*(self._coin(c, w, whale_rows.get(c), (sent_p, sent_k), (curve_p, curve_k), iv,
-                                                 macro, news) for c in coins))
+        ivs = quality.intervals(w)
+        iv = ivs["ltf"]
+        macro, news, events = await self._shared(w)
+        leader = await self._leader(ivs["mid"])
+        rows = await asyncio.gather(*(self._coin(c, w, whale_rows.get(c), (sent_p, sent_k), (curve_p, curve_k), ivs,
+                                                 macro, news, events, leader) for c in coins))
         rows = [r for r in rows if r]
-        rows.sort(key=lambda r: (r["bias"] == "wait", -r["confidence"]))
-        return {"window_s": w, "steps": {"crowd": f"{sent_p} x{sent_k}", "curve": f"{curve_p} x{curve_k}", "atr": iv},
-                "weights": weights(w), "rows": rows}
+        rows.sort(key=lambda r: (r["bias"] == "wait", r.get("verdict") != "trade", -r["confidence"]))
+        return {"window_s": w, "steps": {"crowd": f"{sent_p} x{sent_k}", "curve": f"{curve_p} x{curve_k}", "atr": iv,
+                                         "ltf": ivs["ltf"], "mid": ivs["mid"], "htf": ivs["htf"]},
+                "weights": weights(w), "rows": rows, "calendar": events is not None,
+                "min_quality": quality.MIN_QUALITY}
 
     async def _shared(self, w: float):
-        """Macro and news are the same for every coin: fetch them once per request (MacroNews caches them)."""
+        """Macro, news and the economic calendar are the same for every coin: fetched once per request (MacroNews
+        caches them). None = unavailable."""
         if self.macro is None:
-            return None, None
-        got = await asyncio.gather(self.macro.macro(), self.macro.news(), return_exceptions=True)
+            return None, None, None
+        cal = getattr(self.macro, "calendar", None)
+        got = await asyncio.gather(self.macro.macro(), self.macro.news(),
+                                   cal() if cal else asyncio.sleep(0, result=None), return_exceptions=True)
         return tuple(None if isinstance(g, BaseException) else g for g in got)
 
-    async def _coin(self, sym, w, whale, sent, curve, iv, macro, news) -> dict | None:
+    async def _leader(self, mid_iv: str) -> list | None:
+        """BTC's MID candles: the market leader the quality check compares every other coin with."""
+        key = ("leader", mid_iv)
+        hit = self._cache.get(key)
+        if hit and self.clock() - hit[0] < TTL_S:
+            return hit[1]
         try:
-            fetched = await self._fetch(sym, sent[0], curve[0], iv)
-            return self._score(sym, w, whale, sent, curve, iv, macro, news, *fetched)
+            kl = await self.market.klines("BTCUSDT", mid_iv)
+        except Exception:                                             # noqa: BLE001 - scored as "unknown"
+            return None
+        self._cache[key] = (self.clock(), kl)
+        return kl
+
+    async def _coin(self, sym, w, whale, sent, curve, ivs, macro, news, events=None, leader=None) -> dict | None:
+        try:
+            fetched = await self._fetch(sym, sent[0], curve[0], ivs)
+            funding = (self.whales.marks.get(sym) or (None, None))[1]
+            spot = None
+            if funding is not None and abs(funding) > quality.FUNDING_EXTREME:   # only then is spot volume needed
+                try:
+                    spot = await self.market.spot_klines(sym, ivs["mid"])
+                except Exception:                                     # noqa: BLE001 - no spot pair: futures volume
+                    spot = None
+            return self._score(sym, w, whale, sent, curve, ivs["ltf"], macro, news, *fetched,
+                               ivs=ivs, events=events, leader=leader, funding=funding, spot=spot)
         except Exception as e:                                        # one coin failing never hides the rest
             log.warning("signal for %s failed: %s: %s", sym, type(e).__name__, e)
             return None
 
-    async def _fetch(self, sym, sent_p, curve_p, iv) -> tuple:
-        """The coin's Binance readings (Whales vs crowd rows, futures curve, candles), reused for TTL_S: only these are
-        cached, so the score itself is worked out afresh from the live whale log on every request."""
-        key = (sym, sent_p, curve_p, iv)
+    async def _fetch(self, sym, sent_p, curve_p, ivs) -> tuple:
+        """The coin's Binance readings (Whales vs crowd rows, futures curve, LTF / MID / HTF candles), reused for TTL_S:
+        only these are cached, so the score is worked out afresh from the live whale log on every request."""
+        if isinstance(ivs, str):
+            ivs = {"ltf": ivs, "mid": ivs, "htf": ivs}
+        key = (sym, sent_p, curve_p, ivs["ltf"], ivs["mid"], ivs["htf"])
         hit = self._cache.get(key)
         if hit and self.clock() - hit[0] < TTL_S:
             return hit[1]
         got = tuple(await asyncio.gather(self.market.trading_data(sym, sent_p), self.market.curve(sym, curve_p),
-                                         self.market.klines(sym, iv), return_exceptions=True))
+                                         self.market.klines(sym, ivs["ltf"]), self.market.klines(sym, ivs["mid"]),
+                                         self.market.klines(sym, ivs["htf"]), return_exceptions=True))
         if all(isinstance(g, BaseException) for g in got):           # Binance unreachable: ask again next time
             return got
         self._cache[key] = (self.clock(), got)
@@ -233,7 +267,8 @@ class SignalDesk:
                 del self._cache[k]
         return got
 
-    def _score(self, sym, w, whale, sent, curve, iv, macro, news, crowd_d, curve_d, kl) -> dict:
+    def _score(self, sym, w, whale, sent, curve, iv, macro, news, crowd_d, curve_d, kl, mid_kl=None, htf_kl=None, *,
+               ivs=None, events=None, leader=None, funding=None, spot=None) -> dict:
         wt = weights(w)
         factors = []
 
@@ -270,24 +305,44 @@ class SignalDesk:
             mark = float(kl[-1][4]) if isinstance(kl, list) and kl else (whale or {}).get("mark")
         a = atr(kl) if isinstance(kl, list) else None
         row = {"symbol": sym, "mark": mark, "score": round(score, 3), "bias": bias, "confidence": conf if bias != "wait" else 0,
+               "base_confidence": conf if bias != "wait" else 0,
                "agree": round(agree, 2), "coverage": round(coverage, 2), "factors": factors, "atr": a, "atr_interval": iv,
-               "entry": None, "stop": None, "target": None, "rr": None}
+               "entry": None, "stop": None, "target": None, "tp1": None, "rr": None, "rr1": None,
+               "verdict": "no_trade", "gates": [], "quality": None}
         if bias == "wait" or not mark:
+            row["gates"] = ["no clear side: the combined score is between -15 and +15"] if bias == "wait" else ["no price"]
             return row
         long = bias == "long"
         lv = self.whales.levels(sym, long, w) if whale else None
-        risk = max(x for x in ((lv or {}).get("risk"), a, mark * 0.003) if x)
-        risk = min(risk, mark * 0.05)
+        pull = min(x for x in (a, (lv or {}).get("risk"), mark * 0.05) if x) if (a or lv) else mark * 0.003
         anchor = (lv or {}).get("anchor")
         entry = mark
-        if anchor:                                                    # a pullback to the whales' price, at most 1 risk away
-            entry = max(min(mark, anchor), mark - risk) if long else min(max(mark, anchor), mark + risk)
-        stop = entry - risk if long else entry + risk
-        other = (lv or {}).get("other")
-        far = other is not None and ((other - entry) if long else (entry - other)) >= 1.5 * risk
-        target = other if far else (entry + 2 * risk if long else entry - 2 * risk)
-        if target <= 0:
+        if anchor:                                                    # a pullback to the whales' price, at most 1 ATR away
+            entry = max(min(mark, anchor), mark - pull) if long else min(max(mark, anchor), mark + pull)
+        row["to_entry_pct"] = (entry / mark - 1) * 100
+        ok = lambda d: isinstance(d, list) and len(d) > 60            # noqa: E731
+        if not (ok(kl) and ok(mid_kl) and ok(htf_kl)):
+            row["gates"] = ["the quality check needs LTF, MID and HTF candles (not all could be read)"]
             return row
-        row.update(entry=entry, stop=stop, target=target, rr=abs(target - entry) / risk,
-                   to_entry_pct=(entry / mark - 1) * 100)
+        crowd_rows = [] if not isinstance(crowd_d, dict) else [r for r in crowd_d.get("rows", []) if r.get("oi_usd")]
+        oi_pct = None
+        if len(crowd_rows) > 1:
+            then = crowd_rows[min(sent[1], len(crowd_rows) - 1)]
+            oi_pct = (crowd_rows[0]["oi_usd"] / then["oi_usd"] - 1) * 100
+        fac = {f["key"]: f["score"] for f in factors}
+        try:
+            q = quality.assess(side=1 if long else -1, mark=mark, entry=entry, base_conf=conf, ltf=kl, mid=mid_kl,
+                               htf=htf_kl, leader_mid=leader, is_leader=sym == "BTCUSDT", macro_score=fac.get("macro"),
+                               funding=funding, spot=spot, oi_pct=oi_pct, curve_score=fac.get("curve"), events=events,
+                               now_s=self.wall(), ivs=ivs or quality.intervals(w))
+        except Exception as e:                                        # noqa: BLE001 - never trade on a broken check
+            row["gates"] = [f"quality check failed ({type(e).__name__}: {e})"]
+            return row
+        lv2 = q.pop("levels")
+        row.update(verdict=q["verdict"], gates=q["gates"], confidence=q["confidence"], quality=q,
+                   stop=lv2["stop"], htf_level=lv2["htf_level"], room_r=lv2["room_r"], risk=lv2["risk"])
+        if lv2["tp2"]:
+            row.update(entry=entry, tp1=lv2["tp1"], target=lv2["tp2"], rr1=lv2["rr1"], rr=lv2["rr2"])
+        else:                                                         # no valid targets: show the stop only
+            row.update(entry=entry)
         return row

@@ -1498,7 +1498,7 @@ function stShow(d) {
   const tf = (wins.find(([, v]) => v === d.window_s) || [d.window_s + "s"])[0];
   $("st-body").className = "";
   $("st-body").innerHTML = `<div style="font-size:13px;line-height:1.6">` +
-    `<b>${tf}</b> signal · $${d.risk_usd} risk per trade${d.leverage ? ` at ${d.leverage}x` : ""} · up to ${d.max_open} open · confidence ≥ ${d.min_conf}` +
+    `<b>${tf}</b> signal · $${d.risk_usd} risk per trade${d.leverage ? ` at ${d.leverage}x` : ""} · up to ${d.max_open} open · TRADE verdicts, confidence ≥ ${d.min_conf}` +
     (d.blocked ? ` · <span class="warn">${esc(d.blocked)}</span>` : ` · <span class="pos">looking for entries</span>`) +
     (d.error ? ` · <span class="neg">${esc(d.error)}</span>` : "") +
     `<br>Realised <b class="${st.realized >= 0 ? "pos" : "neg"}">${money(st.realized)} USDT</b> (today ${money(st.today)}) · ${st.closed} closed: ${st.wins} won, ${st.losses} lost` +

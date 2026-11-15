@@ -46,6 +46,24 @@ FEEDS = [                                   # (source, kind, url)
     ("Decrypt", "crypto", "https://decrypt.co/feed"),
 ]
 MACRO_TTL, NEWS_TTL = 900.0, 180.0
+# this week's economic calendar (Forex Factory's public JSON export): high-impact US releases, for the signal's
+# [SESSION] guardrail (arbbot/quality.py). The export asks to be read rarely: once an hour.
+CALENDAR_URL = "https://nfs.faireconomy.media/ff_calendar_thisweek.json"
+CALENDAR_TTL = 3600.0
+
+
+def parse_calendar(body) -> list[dict]:
+    """High-impact USD events as [{ts (ms), title, country}], oldest first; rows without a time are skipped."""
+    out = []
+    for e in body if isinstance(body, list) else []:
+        if not isinstance(e, dict) or e.get("impact") != "High" or e.get("country") != "USD":
+            continue
+        try:
+            ts = datetime.fromisoformat(str(e["date"])).timestamp() * 1000
+        except (KeyError, ValueError):
+            continue
+        out.append({"ts": int(ts), "title": str(e.get("title", ""))[:80], "country": "USD"})
+    return sorted(out, key=lambda e: e["ts"])
 NEWS_MAX = 120
 
 # a headline's topics, for the panel's tags and filters (whole words, case-insensitive)
@@ -210,3 +228,9 @@ class MacroNews:
                                                            for s, rows, err in got],
                     "fetched": int(self.wall() * 1000)}
         return await self._cached("news", NEWS_TTL, load)
+
+    async def calendar(self) -> list[dict]:
+        """This week's high-impact US economic releases (see parse_calendar)."""
+        async def load():
+            return parse_calendar(json.loads(await self._text(CALENDAR_URL)))
+        return await self._cached("calendar", CALENDAR_TTL, load)
