@@ -102,6 +102,8 @@ Missing data scores half, so one dead source doesn't veto everything. **A TRADE 
 
 **Step 4: stop and targets from structure**
 
+These are the defaults: each **signal type** (below) sets its own minimum stop distance, TP1, TP2 and entry.
+
 - **Stop:** past the nearest swing behind the entry (at least 1 LTF ATR away), plus **0.25 ATR**, and pushed off
   round numbers (e.g. not 97,000 on BTC). A structural stop further than 5% is **NO TRADE**: it is never pulled inside
   the structure.
@@ -125,8 +127,71 @@ If none is active it names the default risk (a sudden BTC-led move) and how many
 **Confidence** is then 40% the score's own confidence + 60% the quality score, × 0.8 for the session penalty, −15
 for an active pre-mortem risk.
 
-On the panel: the **Verdict** column (hover for why), **TP1** / **TP2**, and under *Why* the quality score, regime,
-each pillar's points and reasons, every failed guardrail, the pre-mortem and the session.
+On the panel: the **Verdict** column (hover for why) with the signal type, **TP1** / **TP2**, and under *Why* the
+type and its rules, the quality score, regime, each pillar's points and reasons, every failed guardrail, the
+pre-mortem and the session.
+
+### Signal types
+
+Every LONG / SHORT idea gets a **type**: the kind of trade it is. The type sets that kind of trade's own rules.
+Code: `arbbot/signal_types.py`.
+
+**How an idea gets its type:** it is the **first** type whose *When* conditions all hold. Your custom types are
+checked first, in the order you made them, then the built-in ones in this order:
+
+| Built-in type | When | Also needs | Entry | Stop · TP1 · TP2 | Min quality |
+|---|---|---|---|---|---|
+| **Funding squeeze** | the other side pays ≥ 0.03% funding per 8h | a break of structure its way | the price | 1 ATR · 1.8R · 3R | 50 |
+| **Sweep reversal** | a swing's stops were swept, and it isn't a breakout candle | RVOL ≥ 1× | the price | 1 ATR · 2R · 3.5R | 55 |
+| **Breakout** | the trigger candle closed past the 20-candle range | price on its side of the 24h VWAP (and [FAKEOUT]: RVOL ≥ 1.5×) | a retest of the broken level | 1 ATR · 1.8R · 3R | 55 |
+| **Trend pullback** | with the HTF trend | RSI ≤ 70 for its side (not chasing) | a pullback to the LTF EMA 21 | 1 ATR · 1.8R · 3R | 55 |
+| **Mean reversion** | anything left (the catch-all) | RSI ≤ 45 for its side **and** ≥ 0.5 ATR past the 24h VWAP | the price | 1.25 ATR · 1.8R · 3R | 60 |
+
+"RSI for its side" is the RSI for a long and 100 − RSI for a short, so "≤ 45" means oversold for a long and overbought
+for a short.
+
+**Each type's rules:**
+- **Also needs:** extra conditions. Each one that fails makes the idea NO TRADE, and the panel says which and the
+  value now (e.g. "Mean reversion needs RSI … ≤ 45 (now 52)").
+- **Entry:**
+  - `price`: the price now (a market order).
+  - `whales`: a pullback to the whales' price.
+  - `ema21`: a pullback to the LTF EMA 21, when it's within 1.5 ATR.
+  - `retest`: a retest of the broken level, when it's within 1 ATR.
+
+  Otherwise the entry is the price. A limit entry that doesn't fill is cancelled after half the timeframe.
+- **Stop ≥ ATR, TP1 R, TP2 R, min quality:** they replace the defaults above.
+- **Risk ×:** the auto-trader's risk per trade times this (0.25–2).
+
+The global guardrails ([REGIME], [FAKEOUT], [FUNDING], [SESSION]), the HTF level check and the pre-mortem apply to
+**every** type.
+
+**On / off:**
+- A switched-off **built-in** type still claims its ideas, but they become NO TRADE ("Breakout trades are switched
+  off"). A switched-off breakout is never traded as a trend pullback instead.
+- A switched-off **custom** type is skipped, as if it didn't exist. Its ideas fall through to the next type.
+
+**Results per type:** every auto-trade records its type. The *Signal types* table (under the Signals panel) and
+`/types` show each type's closed trades, wins, win rate, average R and P&L. Trades from before types existed are
+listed as "Before types". Judge a type only after about **20 closed trades**: fewer can be luck.
+
+**Make your own type** (terminal, Signals panel, *Signal types*, **+ New type**; or **Copy** on any type):
+1. Name it.
+2. *When*: the conditions that make an idea this type (at least one).
+3. *Also needs*: the extra conditions it must meet to trade (optional).
+4. Pick the entry, the stop distance, TP1, TP2, min quality and risk ×, then **Save**.
+
+Conditions come from a fixed menu, up to 8 per list:
+
+| Condition | Kind |
+|---|---|
+| HTF regime | is / is not `TRENDING_BULL`, `TRENDING_BEAR`, `RANGING_MEAN_REVERSION`, `VOLATILE_CHOP` |
+| HTF trend vs the trade · BTC vs the trade | is / is not `with`, `against`, `flat` |
+| Breakout candle · break of structure · liquidity sweep · fair value gap retest · ATR squeeze · on its side of the VWAP | yes / no |
+| RVOL · RSI for its side · ADX on HTF · ADX on MID · distance from the 24h VWAP in ATRs · funding % its side pays · open interest change % · quality score · combined score strength | ≥ / ≤ a number |
+
+Nothing is evaluated as code. Up to 20 custom types; built-in types can't be edited or deleted, only switched off or
+copied. Saved in `data/signal-types-<env>.json`, so they survive restarts.
 
 ### The panel's timeframe vs the auto-trader's
 
@@ -274,7 +339,9 @@ The testnet bot answers these in your Telegram chat (only your configured chat):
 | `/auto daily 150` | No new trade after $150 of realised loss in a UTC day (5-5000) |
 | `/auto lev 3` · `/auto 3x` | New trades at 3x leverage (1-20); open trades keep theirs |
 | `/auto trades` | Open trades, waiting entries, the last 10 closed with result and reason |
-| `/ideas` · `/ideas 4h` | The combined signal's coins: side, score, confidence, R:R, entry / stop / target; ✅ marks the ones the auto-trader may take |
+| `/ideas` · `/ideas 4h` | The combined signal's coins: side, TRADE / NO TRADE with its signal type, score, confidence, quality, R:R, entry / stop / TP1 / TP2; ✅ marks the ones the auto-trader may take |
+| `/types` | Every signal type: on/off, its rules, and its closed trades, win rate, average R and P&L |
+| `/types off breakout` · `/types on trend` | Switch a type off or on (by name or its start) |
 | `/account` | The testnet futures account: balance, equity, every position and who opened it |
 | `/status` | The bot's health, now with a one-line auto-trader summary |
 
@@ -384,7 +451,11 @@ on Telegram (🤖 messages).
 
 | File | What it is |
 |---|---|
-| `arbbot/signals.py` | The combined signal: readings, weights, side, confidence, entry / stop / target |
+| `arbbot/signals.py` | The combined signal: readings, weights, side, confidence, entry |
+| `arbbot/quality.py` | The quality check: regime, pillars, guardrails, stop / TP1 / TP2, pre-mortem, TRADE / NO TRADE |
+| `arbbot/signal_types.py` | Signal types: the built-in ones, the condition menu, custom types, on/off, saving |
+| `data/signal-types-<env>.json` | Built-in types switched off, and your custom types |
+| `GET/POST /api/signal-types` | The types, the condition menu and each type's results; POST (control token) `toggle` / `save` / `delete` |
 | `arbbot/signal_trader.py` | The auto-trader: filters, sizing, orders, exits, limits, saved settings |
 | `arbbot/server.py` | `GET/POST /api/signal-trader` (`{"enabled"}`, `{"window_s"}`, `{"max_open"}`; POST needs the control token) |
 | `web/terminal.html` | Signals panel, auto-trader strip, **Trade …** button, **most open** list |

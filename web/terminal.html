@@ -220,6 +220,22 @@
   .ladder .mk { position: absolute; top: 4px; width: 2px; height: 24px; transform: translateX(-1px); }
   .ladder .mk span { position: absolute; top: 25px; left: 50%; transform: translateX(-50%); font-size: 10px; white-space: nowrap; }
   .ladder .mk b { position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%); font-size: 10px; white-space: nowrap; font-weight: 600; }
+  table.sgt td.wrap { white-space: normal; min-width: 150px; font-size: .9em; }
+  .ty-h { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; padding: 6px 8px 2px; border-top: 1px solid var(--line); }
+  .ty-h h3, .ty-ed h3 { margin: 0; font-size: 11px; letter-spacing: 1px; color: var(--amber); text-transform: uppercase; }
+  .ty-h .mut { font-size: .85em; }
+  #sig-types .auto-tf, .ty-b, .ty-on { font: inherit; font-size: 11px; font-weight: 700; padding: 1px 6px; margin: 0 2px; cursor: pointer;
+    color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; }
+  #sig-types .auto-tf { color: var(--amber); border-color: var(--amber); }
+  .ty-on.up { color: var(--pos); border-color: var(--pos); }
+  .ty-ed { margin: 6px 8px; padding: 8px; border: 1px solid var(--amber); border-radius: 4px; display: grid; gap: 6px; }
+  .ty-ed label { display: inline-flex; gap: 4px; align-items: center; margin-right: 10px; font-size: .92em; }
+  .ty-ed label.wide input { width: min(520px, 70vw); }
+  .ty-ed input, .ty-ed select { font: inherit; font-size: 12px; color: var(--text); background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 1px 4px; max-width: 100%; }
+  .ty-ed input[type=number] { width: 5.5em; }
+  .ty-part { display: grid; gap: 3px; }
+  .ty-c { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
+  .ty-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
   .vd { display: inline-block; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-size: .82em; font-weight: 700; letter-spacing: .4px; }
   .q-p { display: flex; gap: 8px; align-items: center; padding: 2px 0; white-space: nowrap; }
   .q-p .n { width: 150px; overflow: hidden; text-overflow: ellipsis; }
@@ -373,6 +389,7 @@
           <button type="button" data-sgf="long" aria-pressed="false">Long</button>
           <button type="button" data-sgf="short" aria-pressed="false">Short</button></span></div></div>
     <div class="pb" id="sig"></div>
+    <div class="pb" id="sig-types"></div>
   </section>
 
   <section class="p" id="p-whale" aria-label="Whale tape">
@@ -801,6 +818,7 @@ async function loadAuto() {
 }
 function pollLoop() {
   if (!document.hidden && !(S.due.auto > Date.now())) loadAuto();
+  if (!document.hidden && !(S.due.types > Date.now())) loadTypes();
   if (!document.hidden && !(S.due.acct > Date.now())) loadAcct();
   if (!document.hidden && !(S.due.cmp > Date.now())) loadCmp();
   if (!(S.due.alerts > Date.now())) loadAlerts();                  // also while hidden: fired alerts still pop up
@@ -1855,6 +1873,125 @@ async function autoPost(body, what) {
   const { ok, ...view } = d; S.auto = view;
   renderSignals();
 }
+// ---- signal types (arbbot/signal_types.py): built-in + custom, each type's results, and the builder ----------------
+async function loadTypes() {
+  S.due.types = Date.now() + 30000;
+  if (S.types === false) return;                                  // this bot has no combined signal
+  try {
+    const r = await fetch("/api/signal-types", { cache: "no-store" });
+    S.types = r.ok ? await r.json() : r.status === 404 || r.status === 405 ? false : S.types;
+  } catch { /* restarting: keep the last answer */ }
+  if (!S.typeEdit) renderTypes();                                 // never redraw over a half-filled form
+}
+async function typesPost(body) {
+  const r = await fetch("/api/signal-types", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+  const { ok, ...view } = d; S.types = view;
+  S.due.combo = 0;                                                // the signal table picks the change up at once
+}
+const fmtR = v => v == null ? "—" : sgn(v, 2) + "R";
+function renderTypes() {
+  const el = $("sig-types"), T = S.types;
+  if (!T) { el.innerHTML = ""; return; }
+  const st = T.stats || {}, can = canControl();
+  let h = `<div class="ty-h"><h3>Signal types</h3><span class="mut">An idea is the FIRST type whose "when" rules match: your custom types first, then the built-in ones top to bottom.
+    A switched-off built-in type blocks its ideas; a switched-off custom type is skipped.${T.stats ? "" : " (Results: the testnet bot's auto-trader only.)"}</span>
+    ${can ? `<button type="button" class="auto-tf" data-ty-new title="Build your own signal type from the condition menu">+ New type</button>` : ""}</div>`;
+  h += `<div class="sg-tw"><table class="sgt"><thead><tr><th>Type</th><th>On</th><th>When</th><th>Also needs</th><th>Entry</th>
+    <th title="Minimum stop distance in LTF ATRs (plus the 0.25 ATR buffer) · TP1 · TP2">Stop · TP1 · TP2</th><th title="Quality score it needs">Min Q</th>
+    <th title="The auto-trader's risk per trade x this">Risk</th><th title="Closed auto-trader trades of this type">Trades</th><th>Win</th>
+    <th title="Average R per trade (auto-deleveraging closes left out)">Avg R</th><th>P&amp;L $</th><th></th></tr></thead><tbody>` +
+    T.types.map(t => { const r = st[t.key], k = esc(t.key);
+      return `<tr><td><b class="${t.custom ? "amb" : ""}" title="${esc(t.about || "")}">${esc(t.name)}</b><span class="sub">${t.custom ? "custom" : "built-in"}</span></td>
+        <td>${can ? `<button type="button" class="ty-on ${t.enabled ? "up" : "mut"}" data-ty-tog="${k}" data-on="${t.enabled ? 0 : 1}" title="Switch ${esc(t.name)} ${t.enabled ? "off" : "on"}">${t.enabled ? "ON" : "OFF"}</button>`
+          : `<span class="${t.enabled ? "up" : "mut"}">${t.enabled ? "ON" : "OFF"}</span>`}</td>
+        <td class="wrap mut">${t.rules.length ? t.rules.map(esc).join(" · ") : "anything left (the catch-all)"}</td>
+        <td class="wrap mut">${t.needs.length ? t.needs.map(esc).join(" · ") : "—"}</td>
+        <td title="${esc(T.entries[t.entry] || "")}">${esc(t.entry)}</td><td>${t.stop_atr} · ${t.tp1_r}R · ${t.tp2_r}R</td><td>${t.min_quality}</td><td>×${t.risk_mult}</td>
+        <td>${r ? r.closed : 0}</td><td>${r && r.win_rate != null ? Math.round(r.win_rate * 100) + "%" : "—"}</td>
+        <td class="${r && r.avg_r != null ? cls(r.avg_r) : "mut"}">${r ? fmtR(r.avg_r) : "—"}</td><td class="${r ? cls(r.pnl) : "mut"}">${r ? sgMoney(r.pnl) : "—"}</td>
+        <td style="white-space:nowrap">${can ? `<button type="button" class="ty-b" data-ty-copy="${k}" title="Make a custom type starting from this one">Copy</button>` +
+          (t.custom ? `<button type="button" class="ty-b" data-ty-edit="${k}">Edit</button><button type="button" class="ty-b dn" data-ty-del="${k}">Delete</button>` : "") : ""}</td></tr>`; }).join("") +
+    `</tbody></table></div>`;
+  const other = Object.entries(st).filter(([k]) => !T.types.some(t => t.key === k));
+  if (other.length) h += `<div class="mut" style="font-size:.88em;padding:2px 8px">Also closed: ${other.map(([, r]) => `${esc(r.name)}: ${r.closed} trades, ${sgMoney(r.pnl)} $${r.avg_r != null ? ", " + fmtR(r.avg_r) : ""}`).join(" · ")}</div>`;
+  if (S.typeEdit) h += typeEditor(S.typeEdit);
+  el.innerHTML = h;
+}
+const OPN = (f, o) => ({ ">=": "≥", "<=": "≤", is: f.kind === "bool" ? "yes" : "is", not: f.kind === "bool" ? "no" : "is not" })[o];
+function condRow(part, i, c) {
+  const F = S.types.fields, f = F[c.k];
+  const val = f.kind === "num" ? `<input type="number" step="any" data-tc="v" value="${c.v ?? 0}" min="${f.range[0]}" max="${f.range[1]}" aria-label="Value">`
+    : f.kind === "choice" ? `<select data-tc="v" aria-label="Value">${f.options.map(o => `<option${o === c.v ? " selected" : ""}>${esc(o)}</option>`).join("")}</select>` : "";
+  return `<div class="ty-c" data-part="${part}"><select data-tc="k" aria-label="Condition">${Object.entries(F).map(([k, x]) => `<option value="${k}"${k === c.k ? " selected" : ""}>${esc(x.label)}</option>`).join("")}</select>
+    <select data-tc="op" aria-label="Test">${f.ops.map(o => `<option value="${o}"${o === c.op ? " selected" : ""}>${OPN(f, o)}</option>`).join("")}</select>${val}
+    <button type="button" class="ty-b" data-ty-rm="${part}:${i}" aria-label="Remove this condition">✕</button></div>`;
+}
+function typeEditor(d) {
+  const T = S.types, P = T.params;
+  const num = (k, label, step, tip) => `<label title="${esc(tip)}">${label}<input type="number" step="${step}" data-tp="${k}" value="${d[k]}" min="${P[k][0]}" max="${P[k][1]}"></label>`;
+  const part = (p, title, tip) => `<div class="ty-part"><div><b>${title}</b> <span class="mut">${tip}</span></div>${d[p].map((c, i) => condRow(p, i, c)).join("")}
+    ${d[p].length < T.max_conditions ? `<div><button type="button" class="ty-b" data-ty-add="${p}">+ condition</button></div>` : ""}</div>`;
+  return `<div class="ty-ed"><h3>${d.key ? "Edit" : "New"} signal type</h3>
+    <div class="ty-row"><label>Name<input type="text" data-tp="name" maxlength="30" value="${esc(d.name || "")}"></label>
+      <label class="wide">About<input type="text" data-tp="about" maxlength="200" value="${esc(d.about || "")}" placeholder="what this setup is, in your words"></label></div>
+    ${part("when", "When", "all must hold for an idea to be this type")}
+    ${part("require", "Also needs", "each one that fails makes it NO TRADE, with the reason")}
+    <div class="ty-row"><label>Entry<select data-tp="entry">${Object.entries(T.entries).map(([k, v]) => `<option value="${k}"${k === d.entry ? " selected" : ""}>${esc(k)}: ${esc(v)}</option>`).join("")}</select></label></div>
+    <div class="ty-row">${num("stop_atr", "Stop ≥ ATR", "0.05", "The stop sits past the last swing, at least this many LTF ATRs from the entry (plus 0.25 ATR)")}
+      ${num("tp1_r", "TP1 R", "0.1", "Half closes here, then the stop moves to breakeven")}${num("tp2_r", "TP2 R", "0.1", "The runner")}
+      ${num("min_quality", "Min quality", "1", "Quality score (0-100) it needs")}${num("risk_mult", "Risk ×", "0.05", "The auto-trader's risk per trade times this")}
+      <label><input type="checkbox" data-tp="enabled"${d.enabled ? " checked" : ""}> On</label></div>
+    ${S.typeErr ? `<div class="err-line">${esc(S.typeErr)}</div>` : ""}
+    <div class="ty-row"><button type="button" class="auto-tf" data-ty-save>Save</button><button type="button" class="ty-b" data-ty-cancel>Cancel</button>
+      <span class="mut" style="font-size:.88em">The guardrails, the HTF level check and the pre-mortem still apply to every type.</span></div></div>`;
+}
+function collectDraft() {                                         // the form, read back into S.typeEdit
+  const d = S.typeEdit, ed = document.querySelector(".ty-ed");
+  if (!ed) return d;
+  ed.querySelectorAll("[data-tp]").forEach(i => { d[i.dataset.tp] = i.type === "checkbox" ? i.checked : i.type === "number" ? Number(i.value) : i.value; });
+  for (const p of ["when", "require"]) d[p] = [...ed.querySelectorAll(`.ty-c[data-part="${p}"]`)].map(row => {
+    const k = row.querySelector('[data-tc="k"]').value, f = S.types.fields[k], v = row.querySelector('[data-tc="v"]');
+    let op = row.querySelector('[data-tc="op"]').value;
+    if (!f.ops.includes(op)) op = f.ops[0];
+    let val = f.kind === "bool" ? null : f.kind === "num" ? Number(v?.value) : v?.value;
+    if (f.kind === "num" && !(val >= f.range[0] && val <= f.range[1])) val = Math.max(f.range[0], Math.min(f.range[1], 0));
+    if (f.kind === "choice" && !f.options.includes(val)) val = f.options[0];
+    return { k, op, v: val }; });
+  return d;
+}
+const draftOf = t => ({ key: t.key, name: t.name, about: t.about || "", when: structuredClone(t.when), require: structuredClone(t.require), entry: t.entry,
+  stop_atr: t.stop_atr, tp1_r: t.tp1_r, tp2_r: t.tp2_r, min_quality: t.min_quality, risk_mult: t.risk_mult, enabled: t.enabled });
+document.addEventListener("change", ev => {                       // a condition's field changed: its test and value change with it
+  if (ev.target.matches?.('.ty-ed [data-tc="k"]')) { collectDraft(); renderTypes(); }
+});
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("#sig-types button"); if (!b || !S.types) return;
+  const find = k => S.types.types.find(t => t.key === k), d = b.dataset;
+  try {
+    if ("tyNew" in d) S.typeEdit = { name: "", about: "", when: [{ k: "bos", op: "is", v: null }], require: [], entry: "whales",
+      stop_atr: 1, tp1_r: 1.8, tp2_r: 3, min_quality: 55, risk_mult: 1, enabled: true };
+    else if (d.tyCopy) { const t = draftOf(find(d.tyCopy)); delete t.key; t.name = (t.name + " (mine)").slice(0, 30);
+      if (!t.when.length) t.when = [{ k: "htf", op: "is", v: "against" }];     // the catch-all has no rule: give it one
+      S.typeEdit = t; }
+    else if (d.tyEdit) S.typeEdit = draftOf(find(d.tyEdit));
+    else if (d.tyAdd) { collectDraft(); S.typeEdit[d.tyAdd].push({ k: "rvol", op: ">=", v: 1.5 }); }
+    else if (d.tyRm) { const [p, i] = d.tyRm.split(":"); collectDraft(); S.typeEdit[p].splice(Number(i), 1); }
+    else if ("tyCancel" in d) S.typeEdit = null;
+    else if ("tySave" in d) {
+      const t = collectDraft(); b.disabled = true;
+      try { await typesPost({ action: "save", type: t }); S.typeEdit = null; S.typeErr = ""; }
+      catch (e) { S.typeErr = e.message; }
+    } else if (d.tyTog) { b.disabled = true; await typesPost({ action: "toggle", key: d.tyTog, enabled: d.on === "1" }); }
+    else if (d.tyDel) {
+      if (!confirm(`Delete the custom type "${find(d.tyDel).name}"? Its past trades keep their results.`)) return;
+      await typesPost({ action: "delete", key: d.tyDel });
+    } else return;
+    if (!("tySave" in d) && !d.tyAdd && !d.tyRm) S.typeErr = "";
+  } catch (e) { alert(`Signal types: ${e.message}`); }
+  renderTypes();
+});
 // "Risk": USDT lost at the stop per new trade, and the day's realised loss after which it takes no new trade; settable
 function autoRiskCell(a) {
   const tip = `Risk: what a NEW trade loses if it hits its stop (its size is still capped at $${a.max_usd} of position). ` +
@@ -1974,9 +2111,9 @@ function sigTrades() {
     : `<div class="mut">No position open.</div>`;
   if (!a) return h;
   h += `<h3 style="margin-top:8px">Auto-trader closed trades</h3>` + (a.trades.length
-    ? `<table><thead><tr><th>Coin</th><th>Side</th><th title="Leverage the trade was opened at (— for trades from before this was recorded)">Lev</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
+    ? `<table><thead><tr><th>Coin</th><th>Side</th><th title="Leverage the trade was opened at (— for trades from before this was recorded)">Lev</th><th title="Signal type (— for trades from before types)">Type</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
       a.trades.slice(0, 15).map(t => `<tr class="click" data-sym="${esc(t.symbol)}"><td class="amb">${sgCoin(t.symbol)}</td>
-        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
+        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${esc(t.type_name || "—")}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
         <td class="mut">${esc(t.why || "")}</td><td class="${cls(t.pnl || 0)}">${t.pnl != null ? sgMoney(t.pnl) : "…"}</td></tr>`).join("") + `</tbody></table>`
     : `<div class="mut">None yet.</div>`);
   return h;
@@ -1993,7 +2130,8 @@ function sigWhy(c) {
   const qq = me.quality;
   if (qq) {
     const P = [["structure", "Structure & liquidity"], ["momentum", "Momentum & divergence"], ["volume", "Volume & volatility"], ["derivs", "Derivatives & cross-market"]];
-    h += `<div class="mut" style="font-size:.9em;margin:2px 0 4px">Quality <b class="${qq.quality >= c.min_quality ? "up" : "dn"}">${qq.quality}/100</b> (needs ${c.min_quality}) ·
+    h += `<div class="mut" style="font-size:.9em;margin:2px 0 4px">Quality <b class="${qq.quality >= c.min_quality ? "up" : "dn"}">${qq.quality}/100</b> (needs ${qq.type?.min_quality ?? c.min_quality}) ·
+      type <b class="amb">${esc(qq.type?.name || "—")}</b>${qq.type ? ` (enters ${esc(qq.type.entry)}, stop ≥ ${qq.type.stop_atr} ATR, TP1 ${qq.type.tp1_r}R, TP2 ${qq.type.tp2_r}R, risk ×${qq.type.risk_mult})` : ""} ·
       regime <b>${esc(qq.regime.name)}</b> (${esc(qq.intervals.htf)} ADX ${qq.regime.adx ?? "—"}, ranges ${qq.regime.vol}x usual) · setup <b>${esc(qq.setup.replace("_", " "))}</b> ·
       candles ${esc(qq.intervals.ltf)} / ${esc(qq.intervals.mid)} / ${esc(qq.intervals.htf)}</div>` +
       P.map(([k, l]) => { const p = qq.pillars[k];
@@ -2036,8 +2174,8 @@ function renderSignals() {
   const a = S.auto, held = s => a && (a.open[s] ? "open" : a.pending[s] ? "waiting" : "");
   const rows = c.rows.filter(x => S.sgf === "all" || (S.sgf === "trade" ? x.verdict === "trade" : x.bias === S.sgf));
   const verdict = x => { const qq = x.quality, ok = x.verdict === "trade";
-    const tip = ok ? `TRADE: quality ${qq.quality}/100, ${qq.regime.name}, ${qq.setup}. Pre-mortem: ${qq.premortem.text}` : (x.gates || []).join(" · ");
-    return `<td title="${esc(tip)}"><span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>${qq ? `<span class="sub">Q ${qq.quality} · ${esc(qq.regime.name.replace("_MEAN_REVERSION", "").replace("TRENDING_", "").replace("VOLATILE_", "").toLowerCase())}</span>` : ""}</td>`; };
+    const tip = ok ? `TRADE · ${qq.type?.name || ""}: quality ${qq.quality}/100, ${qq.regime.name}. Pre-mortem: ${qq.premortem.text}` : (x.gates || []).join(" · ");
+    return `<td title="${esc(tip)}"><span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>${qq ? `<span class="sub">${esc(qq.type?.name || "")} · Q ${qq.quality} · ${esc(qq.regime.name.replace("_MEAN_REVERSION", "").replace("TRENDING_", "").replace("VOLATILE_", "").toLowerCase())}</span>` : ""}</td>`; };
   const fx = (x, k) => { const f = x.factors.find(f => f.key === k);
     return !f || f.score == null ? `<td class="f xw mut">—</td>` : `<td class="f xw ${cls(f.score)}" title="${esc(f.label)} (${Math.round(f.weight * 100)}%): ${esc(f.why)}">${sgn(f.score * 100, 0)}</td>`; };
   const table = rows.length ? `<div class="sg-tw"><table class="sgt"><thead><tr><th>Coin</th><th>Signal</th>

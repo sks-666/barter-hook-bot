@@ -182,8 +182,9 @@ LABELS = {"whales": "Whale flow", "crowd": "Whales vs crowd", "curve": "Futures 
 
 
 class SignalDesk:
-    def __init__(self, whales, market, macro=None, clock=time.monotonic, wall=time.time):
+    def __init__(self, whales, market, macro=None, clock=time.monotonic, wall=time.time, types=None):
         self.whales, self.market, self.macro, self.clock, self.wall = whales, market, macro, clock, wall
+        self.types = types                                            # an arbbot.signal_types.TypeBook (None: built-ins)
         self._cache: dict[tuple, tuple[float, dict]] = {}
 
     async def view(self, window_s: float, symbol: str | None = None) -> dict:
@@ -334,12 +335,16 @@ class SignalDesk:
             q = quality.assess(side=1 if long else -1, mark=mark, entry=entry, base_conf=conf, ltf=kl, mid=mid_kl,
                                htf=htf_kl, leader_mid=leader, is_leader=sym == "BTCUSDT", macro_score=fac.get("macro"),
                                funding=funding, spot=spot, oi_pct=oi_pct, curve_score=fac.get("curve"), events=events,
-                               now_s=self.wall(), ivs=ivs or quality.intervals(w))
+                               now_s=self.wall(), ivs=ivs or quality.intervals(w), score=score,
+                               types=self.types.resolved() if self.types is not None else None)
         except Exception as e:                                        # noqa: BLE001 - never trade on a broken check
             row["gates"] = [f"quality check failed ({type(e).__name__}: {e})"]
             return row
         lv2 = q.pop("levels")
+        entry = q.pop("entry")
+        row["to_entry_pct"] = (entry / mark - 1) * 100
         row.update(verdict=q["verdict"], gates=q["gates"], confidence=q["confidence"], quality=q,
+                   signal_type=q["type"]["key"], signal_type_name=q["type"]["name"],
                    stop=lv2["stop"], htf_level=lv2["htf_level"], room_r=lv2["room_r"], risk=lv2["risk"])
         if lv2["tp2"]:
             row.update(entry=entry, tp1=lv2["tp1"], target=lv2["tp2"], rr1=lv2["rr1"], rr=lv2["rr2"])

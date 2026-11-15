@@ -484,7 +484,11 @@ async def amain(args: argparse.Namespace) -> None:
         if whales is not None:
             from .signals import SignalDesk
             # the combined signal reads mainnet only (a testnet bot's own candles are not the real market)
-            signal_desk = SignalDesk(whales, MarketData(stats_client or client, stats_client=stats_client), macro)
+            from .signal_types import TypeBook
+            # signal types (built-in on/off and your custom ones), saved per environment
+            types = TypeBook(ROOT / "data" / f"signal-types-{cfg.execution.env}.json", notify=alerts.send)
+            signal_desk = SignalDesk(whales, MarketData(stats_client or client, stats_client=stats_client), macro,
+                                     types=types)
         if args.signal_trader:
             from .signal_trader import SignalTrader
             trader = SignalTrader(signal_desk, ticket, WINDOWS[args.signal_trader_window.lower()],

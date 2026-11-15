@@ -179,6 +179,8 @@ class Dashboard:
         app.router.add_post("/api/swing-power", self.swing_power)
         app.router.add_get("/api/signal-trader", self.signal_trader_get)
         app.router.add_post("/api/signal-trader", self.signal_trader_post)   # before the generic /api/{action}
+        app.router.add_get("/api/signal-types", self.signal_types_get)
+        app.router.add_post("/api/signal-types", self.signal_types_post)
         app.router.add_get("/api/alerts", self.alerts_get)
         app.router.add_post("/api/alerts", self.alerts_post)
         app.router.add_post("/api/{action}", self.action)
@@ -229,6 +231,48 @@ class Dashboard:
         except ValueError as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
         return web.json_response({"ok": True, **self.signal_trader.view()})
+
+    def _types(self):
+        return getattr(self.signal_desk, "types", None)
+
+    async def signal_types_get(self, request: web.Request) -> web.Response:
+        """The signal types (arbbot/signal_types.py): built-in and custom, the condition menu for the builder, and each
+        type's closed-trade results from the testnet auto-trader (when it runs)."""
+        book = self._types()
+        if book is None:
+            return web.json_response({"error": "signal types need the combined signal (the whale watch is off)"}, status=404)
+        stats = self.signal_trader.stats_by_type() if self.signal_trader is not None else None
+        return web.json_response({**book.view(), "stats": stats}, headers={"Cache-Control": "no-store"})
+
+    async def signal_types_post(self, request: web.Request) -> web.Response:
+        """{"action": "toggle", "key": k, "enabled": bool} · {"action": "save", "type": {...}} (a custom type: new
+        without a key, replaced with one) · {"action": "delete", "key": k}."""
+        if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
+            raise web.HTTPForbidden(text="bad token")
+        book = self._types()
+        if book is None:
+            return web.json_response({"ok": False, "error": "signal types are off in this bot"}, status=404)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        body = body if isinstance(body, dict) else {}
+        try:
+            act = body.get("action")
+            if act == "toggle":
+                if not isinstance(body.get("enabled"), bool):
+                    raise ValueError("enabled must be true or false")
+                book.set_enabled(str(body.get("key", "")), body["enabled"])
+            elif act == "save":
+                book.save(body.get("type"))
+            elif act == "delete":
+                book.delete(str(body.get("key", "")))
+            else:
+                raise ValueError('action is "toggle", "save" or "delete"')
+        except ValueError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        stats = self.signal_trader.stats_by_type() if self.signal_trader is not None else None
+        return web.json_response({"ok": True, **book.view(), "stats": stats})
 
     async def market_data(self, request: web.Request) -> web.Response:
         """Public Binance futures market data for the market panel (read-only; see arbbot/market.py)."""

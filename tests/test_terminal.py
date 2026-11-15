@@ -20,12 +20,13 @@ class TerminalTests(LanTests):
             self.assertNotIn("__TOKEN__", body)
 
     def test_its_only_control_is_the_auto_trader_timeframe(self):
-        """It never pauses, flattens or places orders: the token is only ever sent to /api/signal-trader."""
+        """It never pauses, flattens or places orders: the token is only ever sent to the auto-trader's settings and the
+        signal types."""
         import re
         html = Path("web/terminal.html").read_text(encoding="utf-8")
         with_token = re.findall(r'fetch\(([^,]+),\s*\{[^}]*"X-Token"', html)
-        self.assertEqual(with_token, ['"/api/signal-trader"'])
-        self.assertEqual(html.count('"X-Token"'), 1)
+        self.assertEqual(with_token, ['"/api/signal-trader"', '"/api/signal-types"'])
+        self.assertEqual(html.count('"X-Token"'), 2)
 
     async def test_a_phone_needs_the_key(self):
         await self.start()

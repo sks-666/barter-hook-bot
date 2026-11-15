@@ -39,6 +39,7 @@ MENU = [
     ("close", "Close a paper position: /close BTC"),
     ("auto", "Signal auto-trader: /auto · on|off · 30m · max 5 · risk 30 · daily 150 · lev 3"),
     ("ideas", "Combined signal LONG/SHORT ideas: /ideas 30m"),
+    ("types", "Signal types and their results: /types · /types off breakout"),
     ("account", "Testnet futures account: every position, who opened it"),
     ("setups", "Swing/trend/SMC setups waiting for the next candle"),
     ("journal", "Swing paper journal: stats and last trades"),
@@ -71,7 +72,10 @@ HELP = (
     "• /auto risk 30 = new trades lose $30 at their stop (1-500) · /auto daily 150 = stop new entries after $150 of "
     "realised loss in a UTC day (5-5000)\n"
     "• /auto lev 3 (or /auto 3x) = new trades at 3x leverage (1-20; open trades keep theirs)\n"
-    "• /auto trades = its open and last closed trades · /account = every position on the testnet account\n\n"
+    "• /auto trades = its open and last closed trades · /account = every position on the testnet account\n"
+    "• /types = the signal types (funding squeeze, sweep reversal, breakout, trend pullback, mean reversion and yours), "
+    "on/off and each one's results · /types off breakout · /types on trend. New custom types: the terminal's Signals "
+    "panel\n\n"
     "Swing toolkit (paper; only when the bot was started with --swing)\n"
     "• /setups = trend / swing / SMC setups waiting for the next candle open\n"
     "• /swing = the three paper accounts · /journal [n] = stats and the last n trades with the reason for each\n"
@@ -171,6 +175,8 @@ class CommandHandler:
             return self._auto(arg)
         if cmd in ("/account", "/acct", "/futures"):
             return self._account()
+        if cmd in ("/types", "/type", "/setuptypes"):
+            return self._types(arg)
         return f"Unknown command {cmd}.\n\n{HELP}"
 
     def _natural(self, low: str) -> str:
@@ -585,7 +591,9 @@ class CommandHandler:
             ok = r.get("verdict") == "trade"
             take = trader is not None and w == trader.window_s and ok and r["confidence"] >= trader.min_conf
             qq = r.get("quality") or {}
-            lines.append(f"• {coin} {r['bias'].upper()} {'TRADE' if ok else 'NO TRADE'} · score {r['score'] * 100:+.0f}"
+            lines.append(f"• {coin} {r['bias'].upper()} {'TRADE' if ok else 'NO TRADE'}"
+                         + (f" ({r['signal_type_name']})" if r.get("signal_type_name") else "")
+                         + f" · score {r['score'] * 100:+.0f}"
                          f" · conf {r['confidence']}"
                          + (f" · quality {qq['quality']} · {qq['regime']['name']}" if qq else "")
                          + (f" · R:R {r['rr']:.1f}" if r.get("rr") else "")
@@ -601,6 +609,40 @@ class CommandHandler:
             lines.append(f"(The auto-trader trades {self._tf(trader.window_s)}, not {tf}: /auto {tf} to switch it.)")
         lines.append("A heuristic: whales, crowd, curve, macro and news pick the side; the quality check (regime, structure, "
                      "momentum, volume, derivatives, guardrails, pre-mortem) says TRADE or NO TRADE. Not advice; nothing backtested.")
+        return "\n".join(lines)
+
+    def _types(self, arg: str = "") -> str:
+        """/types: every signal type, on/off, its rules and its auto-trader results · /types on|off <type>."""
+        book = getattr(self.signal_desk, "types", None)
+        if book is None:
+            return "Signal types need the combined signal (the whale watch is off in this bot)."
+        words = arg.split(maxsplit=1)
+        if words and words[0].lower() in ("on", "off"):
+            if len(words) < 2:
+                return f"Which type? e.g. /types {words[0].lower()} breakout"
+            t = book.find(words[1])
+            if t is None:
+                return f"No signal type '{words[1]}'. /types lists them."
+            book.set_enabled(t["key"], words[0].lower() == "on")
+            return (f"🧩 {t['name']} is now {words[0].upper()}." +
+                    ("" if words[0].lower() == "on" else
+                     " Its ideas show as NO TRADE." if not t["custom"] else " Its ideas fall through to the next type."))
+        stats = self.signal_trader.stats_by_type() if self.signal_trader is not None else {}
+        lines = [f"🧩 Signal types {self._tag()}".rstrip(),
+                 "An idea is the first type whose rules match (custom first, then top to bottom)."]
+        for t in book.view()["types"]:
+            r = stats.get(t["key"])
+            res = (f"{r['closed']} trades, {r['wins']}W ({r['win_rate'] * 100:.0f}%), {_money(r['pnl'])}"
+                   + (f", avg {r['avg_r']:+.2f}R" if r.get("avg_r") is not None else "")) if r else "no trades yet"
+            lines.append(f"{'✅' if t['enabled'] else '⛔'} {t['name']}{' (custom)' if t['custom'] else ''} · {res}")
+            lines.append(f"   when: {' · '.join(t['rules']) or 'anything left'}"
+                         + (f" | needs: {' · '.join(t['needs'])}" if t["needs"] else ""))
+            lines.append(f"   enters {t['entry']} · stop ≥{t['stop_atr']:g} ATR · TP1 {t['tp1_r']:g}R · TP2 {t['tp2_r']:g}R"
+                         f" · quality ≥{t['min_quality']} · risk ×{t['risk_mult']:g}")
+        old = {k: r for k, r in stats.items() if not book.get(k)}
+        for r in old.values():
+            lines.append(f"• {r['name']}: {r['closed']} trades, {_money(r['pnl'])}")
+        lines.append("/types off <type> · /types on <type> · build your own on the terminal's Signals panel.")
         return "\n".join(lines)
 
     def _account(self) -> str:

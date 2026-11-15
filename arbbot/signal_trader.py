@@ -225,6 +225,28 @@ class SignalTrader:
                     win_rate=wins / len(done) if done else None,
                     adl_count=len(adl), adl_pnl=sum(t["pnl"] for t in adl))
 
+    def stats_by_type(self) -> dict:
+        """Closed trades per signal type: count, wins, win rate, realised P&L, average R. Trades from before types
+        existed are "untyped"."""
+        out: dict[str, dict] = {}
+        for t in self.s["trades"]:
+            if t.get("pnl") is None:
+                continue
+            k = t.get("type") or "untyped"
+            o = out.setdefault(k, {"name": t.get("type_name") or ("Before types" if k == "untyped" else k),
+                                   "closed": 0, "wins": 0, "pnl": 0.0, "r_sum": 0.0, "r_n": 0})
+            o["closed"] += 1
+            o["wins"] += t["pnl"] > 0
+            o["pnl"] += t["pnl"]
+            if t.get("r") is not None and t.get("forced") != "adl":
+                o["r_sum"] += t["r"]
+                o["r_n"] += 1
+        for o in out.values():
+            o["win_rate"] = o["wins"] / o["closed"] if o["closed"] else None
+            o["avg_r"] = o.pop("r_sum") / o["r_n"] if o["r_n"] else None
+            o.pop("r_n")
+        return out
+
     async def _forced(self, t: dict, order_ids) -> None:
         """Mark a closed trade that Binance closed itself (auto-deleveraging or liquidation), from its closing orders."""
         lookup = getattr(self.ticket, "client_order_id", None)
@@ -290,7 +312,7 @@ class SignalTrader:
                  target=m.get("target"), risk_usd=m.get("risk_usd"), score=m.get("score"), confidence=m.get("confidence"),
                  opened_ms=m["opened_ms"], closed_ms=now_ms, why=why, exit=None, pnl=None, fees=None,
                  leverage=m.get("leverage"), tp1=m.get("tp1"), tp1_hit=m.get("tp1_hit"), quality=m.get("quality"),
-                 regime=m.get("regime"))
+                 regime=m.get("regime"), type=m.get("type"), type_name=m.get("type_name"))
         self.s["trades"] = (self.s["trades"] + [t])[-KEEP_TRADES:]
         self.s["cooldown"][sym] = now_ms + int(self.cooldown_s * 1000)
         return t
@@ -486,7 +508,8 @@ class SignalTrader:
         ref = (q["ask"] if long else q["bid"]) if market else entry
         if long and not stop < ref < target or not long and not target < ref < stop:
             raise ValueError("the price has already moved past the stop or the target")
-        qty = min(self.risk_usd / abs(ref - stop), self.max_usd / ref)
+        mult = float(((r.get("quality") or {}).get("type") or {}).get("risk_mult") or 1.0)   # the signal type's risk x
+        qty = min(self.risk_usd * mult / abs(ref - stop), self.max_usd / ref)
         self._check_exit_depth(q.get("book"), long, ref, stop, qty)
         if getattr(self.ticket, "leverage", {}).get(sym) != self.leverage:   # low leverage: last in the ADL queue
             await self.ticket.set_leverage(sym, self.leverage)
@@ -502,11 +525,13 @@ class SignalTrader:
                    confidence=r["confidence"], risk_usd=qty * abs(ref - stop), order_id=o.get("id"),
                    window_s=self.window_s, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage,
                    tp1=tp1, quality=(r.get("quality") or {}).get("quality"),
+                   type=r.get("signal_type"), type_name=r.get("signal_type_name"),
                    regime=((r.get("quality") or {}).get("regime") or {}).get("name"))
         if o.get("status") == "filled":
             self.s["open"][sym] = dict(rec, qty=o.get("qty"), opened_ms=now_ms)
             self.notify(f"🤖 TESTNET signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
-                        f"(score {r['score'] * 100:+.0f}, conf {r['confidence']}, quality {rec['quality']}) stop {stop:.6g}"
+                        f"({rec.get('type_name') or 'signal'}, score {r['score'] * 100:+.0f}, conf {r['confidence']}, "
+                        f"quality {rec['quality']}) stop {stop:.6g}"
                         f"{f' TP1 {tp1:.6g}' if tp1 else ''} TP2 {target:.6g}")
             await self._place_tp1(sym, self.s["open"][sym])
         elif o.get("status") == "new":
@@ -546,4 +571,5 @@ class SignalTrader:
                     daily_loss_usd=self.daily_loss_usd, entry_ttl_s=self.entry_ttl_s, max_hold_s=self.max_hold_s,
                     blocked=self.can_enter(), last_run=int(self.last_run * 1000), error=self.last_error,
                     open={sym: dict(m, **info(sym)) for sym, m in self.s["open"].items()},
-                    pending=self.s["pending"], trades=self.s["trades"][-30:][::-1], stats=self.stats())
+                    pending=self.s["pending"], trades=self.s["trades"][-30:][::-1], stats=self.stats(),
+                    stats_by_type=self.stats_by_type())

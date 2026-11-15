@@ -25,12 +25,17 @@ is NO_TRADE. It runs on three candle sets picked from the timeframe (LTF trigger
    against BTC) = NO_TRADE; active and milder (exhausted momentum, crowded funding, stop inside one MID candle's
    range) = confidence -15.
 
+6. Signal type (arbbot/signal_types.py): the idea is classified (funding squeeze, sweep reversal, breakout, trend
+   pullback, mean reversion, or one of your custom types) and that type sets its own entry style, minimum stop
+   distance, TP1 / TP2, extra required conditions and quality bar.
+
 Every function here is pure (candles in, numbers out) so it can be tested without Binance. Nothing has been
 backtested: these are rules, not a forecast.
 """
 import math
 import time
 
+from . import signal_types as st
 from .market import INTERVALS
 
 STEP_S = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
@@ -435,17 +440,18 @@ def pillar_derivs(side: int, *, oi_pct: float | None, price_pct: float, funding:
 
 
 # ---- stop and targets ---------------------------------------------------------------------------------------------
-def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float) -> dict:
-    """Stop past the last swing (>= MIN_STOP_ATR from the entry) + STOP_BUFFER_ATR, off round numbers; TP1 at the
-    first unbroken structure level >= TP1_R (else TP1_R), TP2 at the first one in TP2_R..TP2_MAX_R (else TP2_R).
-    'abort' says why there is no trade."""
+def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float, stop_atr: float = MIN_STOP_ATR,
+           tp1_r: float = TP1_R, tp2_r: float = TP2_R) -> dict:
+    """Stop past the last swing (>= stop_atr LTF ATRs from the entry) + STOP_BUFFER_ATR, off round numbers; TP1 at
+    the first unbroken structure level >= tp1_r (else tp1_r), TP2 at the first one from tp2_r to
+    max(TP2_MAX_R, tp2_r + 2) (else tp2_r). 'abort' says why there is no trade."""
     side = 1 if long else -1
     buf = STOP_BUFFER_ATR * a
     _, lows = swings(ltf)
     highs, _ = swings(ltf)
     pool = [p for _, p in (lows if long else highs)[-6:] if (p < entry if long else p > entry)]
     swing = (max(pool) if long else min(pool)) if pool else None      # the nearest swing behind the entry
-    far = entry - MIN_STOP_ATR * a if long else entry + MIN_STOP_ATR * a
+    far = entry - stop_atr * a if long else entry + stop_atr * a
     base = (min(swing, far) if long else max(swing, far)) if swing is not None else far
     stop = off_round(base - buf if long else base + buf, long, buf)
     risk = abs(entry - stop)
@@ -464,12 +470,13 @@ def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float) 
         if R(cap) < HTF_CAP_R:
             out["abort"] = f"an HTF {'resistance' if long else 'support'} at {cap:.6g} caps the reward at {R(cap):.1f}R (under {HTF_CAP_R}R)"
             return out
-        if R(cap) < TP1_R:
-            out["abort"] = f"an HTF {'resistance' if long else 'support'} at {cap:.6g} leaves {R(cap):.1f}R, TP1 needs {TP1_R}R"
+        if R(cap) < tp1_r:
+            out["abort"] = f"an HTF {'resistance' if long else 'support'} at {cap:.6g} leaves {R(cap):.1f}R, TP1 needs {tp1_r:g}R"
             return out
     structure = sorted(set(unbroken(ltf, long, entry) + unbroken(mid, long, entry)), reverse=not long)
-    tp1 = next((p for p in structure if TP1_R <= R(p) < TP2_R), entry + side * TP1_R * risk)
-    tp2 = next((p for p in structure if TP2_R <= R(p) <= TP2_MAX_R and R(p) > R(tp1)), entry + side * TP2_R * risk)
+    tp1 = next((p for p in structure if tp1_r <= R(p) < tp2_r), entry + side * tp1_r * risk)
+    top = max(TP2_MAX_R, tp2_r + 2)
+    tp2 = next((p for p in structure if tp2_r <= R(p) <= top and R(p) > R(tp1)), entry + side * tp2_r * risk)
     if tp2 <= 0 or tp1 <= 0:
         out["abort"] = "the target would be below zero"
         return out
@@ -478,12 +485,29 @@ def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float) 
 
 
 # ---- everything together ------------------------------------------------------------------------------------------
+def type_entry(style: str, *, long: bool, mark: float, whale_entry: float, ltf: list, a: float,
+               level: float | None) -> float:
+    """Where a type enters: the price, the whales' pullback, the LTF EMA 21 or a retest of the broken level, each only
+    when it lies on the right side of the price and close enough to fill (else the price)."""
+    side = 1 if long else -1
+    if style == "whales":
+        return whale_entry
+    if style == "ema21":
+        e = ema([k[4] for k in ltf], 21)[-1]
+        return e if 0 < (mark - e) * side <= 1.5 * a else mark
+    if style == "retest" and level is not None:
+        e = level + side * 0.1 * a                                    # just on the broken side of it
+        return e if 0 < (mark - e) * side <= 1.0 * a else mark
+    return mark
+
+
 def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list, mid: list, htf: list,
            leader_mid: list | None, is_leader: bool, macro_score: float | None, funding: float | None,
            spot: list | None, oi_pct: float | None, curve_score: float | None, events: list[dict] | None,
-           now_s: float, ivs: dict) -> dict:
+           now_s: float, ivs: dict, score: float = 0.0, types: list[dict] | None = None) -> dict:
     """One coin's verdict for one side (+1 long, -1 short). Candles are full Binance rows (the forming one is
-    dropped here)."""
+    dropped here). `entry` is the whales' entry (used by types that enter "whales"); `types` the classification
+    order (arbbot/signal_types.TypeBook.resolved(); the built-in types when None)."""
     ltf, mid, htf = closed(ltf), closed(mid), closed(htf)
     if len(ltf) < 60 or len(mid) < 30:
         raise ValueError("not enough candles")
@@ -539,7 +563,28 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
         if spot_falling:
             gates.append(f"[FUNDING] {'longs' if long else 'shorts'} pay {abs(funding) * 100:.3f}% per 8h while spot volume declines")
 
-    lv = levels(entry, long, ltf, mid, htf, a)
+    # the signal type: classify, then its own entry, stop distance, targets, requirements and quality bar
+    r_now = rsi([k[4] for k in ltf])[-1]
+    vw = vwap(ltf, now_s * 1000 - 86_400_000)
+    features = {
+        "regime": reg["name"], "htf": "with" if htf_dir == side else "against" if htf_dir == -side else "flat",
+        "btc": None if lead_dir is None else "with" if lead_dir == side else "against" if lead_dir == -side else "flat",
+        "breakout": breakout, "bos": s_f["bos"] is not None, "sweep": sweep(ltf, side) is not None,
+        "fvg": fvg_retest(ltf, side, mark, a) is not None, "squeeze": atr_contracted(ltf),
+        "vwap_side": None if vw is None else (mark - vw) * side > 0, "rvol": v_f["rvol"],
+        "rsi": None if r_now is None else (r_now if long else 100 - r_now),
+        "adx_htf": reg["adx"], "adx_mid": None if adx_mid is None else round(adx_mid, 1),
+        "vwap_dist": None if vw is None else round((mark - vw) * side / a, 2),
+        "funding": None if funding is None else round(funding * side * 100, 4),
+        "oi": None if oi_pct is None else round(oi_pct, 2), "quality": q, "score": round(abs(score) * 100, 1),
+    }
+    t = st.classify(features, types or [dict(b, custom=False, enabled=True) for b in st.BUILTIN])
+    if not t.get("enabled", True):
+        gates.append(f"{t['name']} trades are switched off")
+    gates.extend(st.unmet(features, t))
+    level = s_f["bos"] if s_f["bos"] is not None else (max(k[2] for k in prior) if long else min(k[3] for k in prior))
+    entry = type_entry(t["entry"], long=long, mark=mark, whale_entry=entry, ltf=ltf, a=a, level=level)
+    lv = levels(entry, long, ltf, mid, htf, a, t["stop_atr"], t["tp1_r"], t["tp2_r"])
     if lv["abort"]:
         gates.append(lv["abort"])
 
@@ -566,12 +611,16 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
               "a sudden BTC-led move", "severity": "none", "active": False}
     if pm["severity"] == "cancel":
         gates.append("pre-mortem: " + pm["text"])
-    if q < MIN_QUALITY:
-        gates.append(f"quality {q}/100 (needs {MIN_QUALITY})")
+    if q < t["min_quality"]:
+        gates.append(f"quality {q}/100 ({t['name']} needs {t['min_quality']})")
 
     sess = session(now_s, events)
     conf = (0.4 * base_conf + 0.6 * q) * sess["mult"] - (PREMORTEM_DOWNGRADE if pm["severity"] == "downgrade" else 0)
     return {"verdict": "no_trade" if gates else "trade", "gates": gates, "quality": q, "pillars": pillars,
             "regime": reg, "setup": setup, "session": sess, "premortem": pm,
             "confidence": int(max(0, min(100, round(conf)))), "levels": lv, "atr_ltf": a, "intervals": ivs,
+            "entry": entry, "features": features,
+            "type": {"key": t["key"], "name": t["name"], "custom": bool(t.get("custom")), "entry": t["entry"],
+                     "risk_mult": t["risk_mult"], "min_quality": t["min_quality"], "tp1_r": t["tp1_r"],
+                     "tp2_r": t["tp2_r"], "stop_atr": t["stop_atr"], "enabled": t.get("enabled", True)},
             "adx_mid": None if adx_mid is None else round(adx_mid, 1)}
