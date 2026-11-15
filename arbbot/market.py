@@ -228,15 +228,16 @@ class MarketData:
         return weeks
 
     async def symbols(self) -> list[dict]:
-        """Every USDT perpetual trading now, busiest first: what the terminal's search box suggests."""
+        """Every USDT perpetual trading now, busiest first: what the terminal's search box suggests. Stock and metal
+        perpetuals (NVDA, XAU...) count too: Binance calls their contract type TRADIFI_PERPETUAL."""
         async def load():
             info, tickers = await asyncio.gather(self._get("/fapi/v1/exchangeInfo"), self._get("/fapi/v1/ticker/24hr"))
             t = {r["symbol"]: r for r in tickers}
             rows = []
             for s in info.get("symbols", []):
                 sym = s.get("symbol", "")
-                if (s.get("contractType") != "PERPETUAL" or s.get("status") != "TRADING" or s.get("quoteAsset") != "USDT"
-                        or not SYMBOL_RE.match(sym)):
+                if (s.get("contractType") not in ("PERPETUAL", "TRADIFI_PERPETUAL") or s.get("status") != "TRADING"
+                        or s.get("quoteAsset") != "USDT" or not SYMBOL_RE.match(sym)):
                     continue
                 r = t.get(sym, {})
                 rows.append({"symbol": sym, "base": s.get("baseAsset") or sym[:-4],

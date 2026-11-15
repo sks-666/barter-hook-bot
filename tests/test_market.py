@@ -41,6 +41,11 @@ class FakeBinance:
             return [{"symbol": s, "lastPrice": "1", "priceChangePercent": str(c), "quoteVolume": str(v)} for s, c, v in
                     [("AAAUSDT", 12, 5e7), ("BBBUSDT", -8, 9e7), ("CCCUSDT", 3, 3e8), ("THINUSDT", 90, 1e5),
                      ("BTCUSDT_261225", 50, 9e9), ("DDDUSDC", 40, 9e9)]]
+        if path == "/fapi/v1/exchangeInfo":
+            return {"symbols": [{"symbol": s, "baseAsset": s[:-4], "quoteAsset": "USDT", "contractType": c, "status": st}
+                                for s, c, st in [("AAAUSDT", "PERPETUAL", "TRADING"), ("NVDAUSDT", "TRADIFI_PERPETUAL", "TRADING"),
+                                                 ("OLDUSDT", "PERPETUAL", "SETTLING"),
+                                                 ("BTCUSDT_261225", "CURRENT_QUARTER", "TRADING")]]}
         if path == "/fapi/v1/premiumIndex":
             return {"markPrice": "100.05", "indexPrice": "100.02", "lastFundingRate": "0.0001", "nextFundingTime": 9}
         if path == "/fapi/v1/openInterest":
@@ -130,6 +135,9 @@ class MarketDataTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([r["symbol"] for r in mv["gainers"]], ["AAAUSDT", "CCCUSDT", "BBBUSDT"])
         self.assertEqual(mv["losers"][0]["symbol"], "BBBUSDT")
         self.assertEqual(mv["volume"][0]["symbol"], "CCCUSDT")
+
+    async def test_symbols_include_stock_and_metal_perpetuals_but_not_settling_or_dated(self):
+        self.assertEqual(sorted(r["symbol"] for r in await self.m.symbols()), ["AAAUSDT", "NVDAUSDT"])
 
     async def test_a_coin_the_exchange_does_not_list_gets_a_plain_message(self):
         self.api.env = "testnet"
