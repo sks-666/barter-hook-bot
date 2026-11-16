@@ -336,7 +336,8 @@ class SignalDesk:
                                htf=htf_kl, leader_mid=leader, is_leader=sym == "BTCUSDT", macro_score=fac.get("macro"),
                                funding=funding, spot=spot, oi_pct=oi_pct, curve_score=fac.get("curve"), events=events,
                                now_s=self.wall(), ivs=ivs or quality.intervals(w), score=score,
-                               types=self.types.resolved() if self.types is not None else None)
+                               types=self.types.resolved() if self.types is not None else None,
+                               hold=quality.hold_s(w))
         except Exception as e:                                        # noqa: BLE001 - never trade on a broken check
             row["gates"] = [f"quality check failed ({type(e).__name__}: {e})"]
             return row

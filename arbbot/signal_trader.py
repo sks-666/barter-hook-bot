@@ -34,6 +34,7 @@ import time
 from pathlib import Path
 
 from .binance_client import BinanceError, NotSentError
+from .quality import hold_s
 
 log = logging.getLogger("signal-trader")
 MIN_RR = 1.5
@@ -41,7 +42,6 @@ TP1_SHARE = 0.5              # the share of the position closed at TP1; the rest
 MIN_COVERAGE = 0.6           # share of the full weight that had something to read
 MARKET_WITHIN_PCT = 0.10     # the signal's entry this close to the price: take it with a market order
 ENTRY_TTL = 0.5              # a limit entry waits at most this share of the timeframe (between 5 min and 4 h)
-HOLD_X = 2.0                 # close after holding this many timeframes (between 30 min and 7 days)
 COOLDOWN_X = 0.5             # no new entry on a coin for this share of the timeframe after an exit (at least 5 min)
 MAX_DRIFT = 0.02             # testnet price this far from mainnet: skip the coin
 DEPTH_X = 2.0                # the testnet book must hold this many times the position near the stop (exit depth)...
@@ -109,7 +109,7 @@ class SignalTrader:
 
     @property
     def max_hold_s(self) -> float:
-        return _clamp(self.window_s * HOLD_X, 1800, 7 * 86_400)
+        return hold_s(self.window_s)
 
     @property
     def cooldown_s(self) -> float:
@@ -206,7 +206,7 @@ class SignalTrader:
 
     def _max_hold_of(self, m: dict) -> float:
         w = m.get("window_s") or self.window_s
-        return _clamp(w * HOLD_X, 1800, 7 * 86_400)
+        return hold_s(w)
 
     # ---- results ----------------------------------------------------------------------------------
     def realized_today(self) -> float:

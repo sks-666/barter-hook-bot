@@ -159,6 +159,22 @@ class Levels(unittest.TestCase):
         lv = q.levels(100.0, True, kl, kl, kl, a=0.5)
         self.assertIn("structural stop", lv["abort"])
 
+    def test_a_tp1_too_far_for_the_hold_time_aborts(self):
+        up = candles(trend(301, 100, 0.2))
+        entry = up[-2][4]
+        far = candles([entry - 5] * 10 + [entry + 30, entry + 40, entry + 30] + [entry - 5] * 10, wick=0.0)
+        lv = q.levels(entry, True, q.closed(up), q.closed(up), far, a=1.0)
+        need = abs(lv["tp1"] - entry)
+        lv = q.levels(entry, True, q.closed(up), q.closed(up), far, a=1.0, reach=need * 0.9, hold="2h hold")
+        self.assertIn("too far to reach in the 2h hold", lv["abort"])
+        lv = q.levels(entry, True, q.closed(up), q.closed(up), far, a=1.0, reach=need * 1.1, hold="2h hold")
+        self.assertEqual(lv["abort"], "")
+
+    def test_hold_time_follows_the_timeframe(self):
+        self.assertEqual(q.hold_s(3600), 7200)
+        self.assertEqual(q.hold_s(60), 1800)                             # at least 30 minutes
+        self.assertEqual(q.hold_s(604_800), 7 * 86_400)                  # at most 7 days
+
 
 class Calendar(unittest.TestCase):
     def test_only_high_impact_us_releases(self):

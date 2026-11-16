@@ -54,6 +54,14 @@ MIN_STOP_ATR = 1.0           # ...and at least this many LTF ATRs from the entry
 MIN_STOP_PCT = 0.003
 MAX_STOP_PCT = 0.05          # a structural stop further than this: NO_TRADE (never pulled inside the structure)
 TP1_R, TP2_R, TP2_MAX_R, HTF_CAP_R = 1.8, 3.0, 5.0, 1.5
+HOLD_X = 2.0                 # the auto-trader closes a trade after this many timeframes (between 30 min and 7 days)
+REACH_X = 1.25               # TP1 at most this x LTF ATR x sqrt(LTF candles in the hold) away: else it cannot be
+                             # reached before the time exit closes the trade (a slow loser instead of a winner)
+
+
+def hold_s(window_s: float) -> float:
+    """How long the auto-trader holds a trade of this timeframe before closing it."""
+    return max(1800.0, min(7 * 86_400.0, window_s * HOLD_X))
 PREMORTEM_DOWNGRADE = 15
 FRACTAL = 2                  # a swing high/low: higher/lower than the 2 candles on each side
 REGIMES = ("TRENDING_BULL", "TRENDING_BEAR", "RANGING_MEAN_REVERSION", "VOLATILE_CHOP")
@@ -441,10 +449,11 @@ def pillar_derivs(side: int, *, oi_pct: float | None, price_pct: float, funding:
 
 # ---- stop and targets ---------------------------------------------------------------------------------------------
 def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float, stop_atr: float = MIN_STOP_ATR,
-           tp1_r: float = TP1_R, tp2_r: float = TP2_R) -> dict:
+           tp1_r: float = TP1_R, tp2_r: float = TP2_R, reach: float | None = None, hold: str = "") -> dict:
     """Stop past the last swing (>= stop_atr LTF ATRs from the entry) + STOP_BUFFER_ATR, off round numbers; TP1 at
     the first unbroken structure level >= tp1_r (else tp1_r), TP2 at the first one from tp2_r to
-    max(TP2_MAX_R, tp2_r + 2) (else tp2_r). 'abort' says why there is no trade."""
+    max(TP2_MAX_R, tp2_r + 2) (else tp2_r). `reach`: the furthest price distance TP1 may be (how far price can
+    travel in the hold time); a TP1 beyond it aborts. 'abort' says why there is no trade."""
     side = 1 if long else -1
     buf = STOP_BUFFER_ATR * a
     _, lows = swings(ltf)
@@ -481,6 +490,9 @@ def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float, 
         out["abort"] = "the target would be below zero"
         return out
     out.update(tp1=tp1, tp2=tp2, rr1=round(R(tp1), 2), rr2=round(R(tp2), 2))
+    if reach and abs(tp1 - entry) > reach:
+        out["abort"] = (f"TP1 is {abs(tp1 - entry) / a:.1f} ATR away ({R(tp1):.1f}R behind a {risk / a:.1f} ATR stop): "
+                        f"too far to reach in the {hold or 'hold'} before the time exit (at most {reach / a:.1f} ATR)")
     return out
 
 
@@ -504,10 +516,12 @@ def type_entry(style: str, *, long: bool, mark: float, whale_entry: float, ltf: 
 def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list, mid: list, htf: list,
            leader_mid: list | None, is_leader: bool, macro_score: float | None, funding: float | None,
            spot: list | None, oi_pct: float | None, curve_score: float | None, events: list[dict] | None,
-           now_s: float, ivs: dict, score: float = 0.0, types: list[dict] | None = None) -> dict:
+           now_s: float, ivs: dict, score: float = 0.0, types: list[dict] | None = None,
+           hold: float | None = None) -> dict:
     """One coin's verdict for one side (+1 long, -1 short). Candles are full Binance rows (the forming one is
     dropped here). `entry` is the whales' entry (used by types that enter "whales"); `types` the classification
-    order (arbbot/signal_types.TypeBook.resolved(); the built-in types when None)."""
+    order (arbbot/signal_types.TypeBook.resolved(); the built-in types when None). `hold`: seconds the trade may be
+    held (hold_s()); when given, a TP1 too far to reach in that time is NO_TRADE."""
     ltf, mid, htf = closed(ltf), closed(mid), closed(htf)
     if len(ltf) < 60 or len(mid) < 30:
         raise ValueError("not enough candles")
@@ -584,7 +598,11 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
     gates.extend(st.unmet(features, t))
     level = s_f["bos"] if s_f["bos"] is not None else (max(k[2] for k in prior) if long else min(k[3] for k in prior))
     entry = type_entry(t["entry"], long=long, mark=mark, whale_entry=entry, ltf=ltf, a=a, level=level)
-    lv = levels(entry, long, ltf, mid, htf, a, t["stop_atr"], t["tp1_r"], t["tp2_r"])
+    reach = hold_label = None
+    if hold and ivs.get("ltf") in STEP_S:
+        reach = REACH_X * a * math.sqrt(max(1.0, hold / STEP_S[ivs["ltf"]]))
+        hold_label = f"{hold / 3600:g}h hold" if hold >= 3600 else f"{hold / 60:g}min hold"
+    lv = levels(entry, long, ltf, mid, htf, a, t["stop_atr"], t["tp1_r"], t["tp2_r"], reach=reach, hold=hold_label or "")
     if lv["abort"]:
         gates.append(lv["abort"])
 
