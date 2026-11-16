@@ -329,7 +329,7 @@ class SignalTrader:
                 self.notify(f"🤖 TESTNET signal {t['symbol']} result: {t['pnl']:+.2f} USDT{r} — {t['why']}{note}")
         await self._check_forced()
         self.s["cooldown"] = {k: v for k, v in self.s["cooldown"].items() if v > now_ms}
-        await self.ticket.refresh()
+        await getattr(self.ticket, "refresh_if_stale", self.ticket.refresh)()
         view = await self.desk.view(self.window_s)
         rows = {r["symbol"]: r for r in view["rows"]}
         self.last_signals = view["rows"]

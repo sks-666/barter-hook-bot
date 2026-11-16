@@ -15,6 +15,11 @@ Safety, by construction:
 Order types map onto Binance's own: LIMIT (GTC/IOC/FOK), MARKET (with a slippage pre-check against the order book),
 STOP / STOP_MARKET or TAKE_PROFIT / TAKE_PROFIT_MARKET for conditional orders (whichever triggers in the requested
 direction), on the last (CONTRACT_PRICE) or mark price. TP/SL become closePosition orders once the entry has filled.
+
+Reading the account: Binance's user-data WebSocket (a listen key) pushes every fill, order and position change, and each
+push triggers one REST read of the account; with the stream up the REST read otherwise runs only every STREAM_POLL_S
+(marks and unrealised P&L), instead of every poll_s. When the stream is down it falls back to polling every poll_s.
+Polling the account every few seconds is what got this IP banned on the testnet (HTTP 418: "use the websocket").
 """
 import asyncio
 import json
@@ -27,10 +32,19 @@ from decimal import ROUND_DOWN, ROUND_HALF_UP, Decimal
 from pathlib import Path
 from typing import Callable
 
+import aiohttp
+
 from .binance_client import BinanceError
 from .paper_futures import walk_book
 
 log = logging.getLogger("testnet-ticket")
+WS_HOSTS = {"testnet": "wss://fstream.binancefuture.com", "mainnet": "wss://fstream.binance.com"}
+WS_PATHS = ("/ws/", "/private/ws/")      # the classic user-data path, then Binance's routed one
+STREAM_POLL_S = 15.0         # with the stream up: a REST read at least this often (marks, unrealised P&L)
+STREAM_FILLS_S = 120.0       # ...and the recent fills at least this often (a fill pushed by the stream reads them now)
+KEEPALIVE_S = 30 * 60        # a listen key lives 60 min without a keepalive
+STREAM_EVENTS = ("ACCOUNT_UPDATE", "ORDER_TRADE_UPDATE", "ALGO_UPDATE", "CONDITIONAL_ORDER_TRIGGER_REJECT",
+                 "TRADE_LITE", "MARGIN_CALL")
 SYMBOL_RE = re.compile(r"^[A-Z0-9]{1,20}USDT$")   # one letter is real: TUSDT, GUSDT
 TYPES = ("limit", "market", "stop_limit", "stop_market")
 TIFS = ("GTC", "IOC", "FOK")
@@ -94,6 +108,11 @@ class TestnetTicket:
         self._fills_at = 0.0
         self._income, self._income_at = None, 0.0     # P&L report cache (pnl_events)
         self._lock = asyncio.Lock()
+        # the user-data stream: up or not, when the account was last read, and a push waiting to be read
+        self.stream_ok, self.stream_note, self.stream_events = False, "not started", 0
+        self.refreshed_at = 0.0
+        self._kick = asyncio.Event()
+        self._fills_due = True
 
     # ---- state ------------------------------------------------------------------------------------
     def _load(self) -> dict | None:
@@ -515,13 +534,97 @@ class TestnetTicket:
         self.s["owned"] = sorted(((owned & busy) | (owned - owned_before)) - arb)
         if self.s["start_balance"] is None:
             self.s["start_balance"] = self._usdt("walletBalance")
-        if self.clock() - self._fills_at > 15:
-            self._fills_at = self.clock()
+        if self._fills_due or self.clock() - self._fills_at > (STREAM_FILLS_S if self.stream_ok else 15):
+            self._fills_at, self._fills_due = self.clock(), False
             symbols = sorted({h["symbol"] for h in self.s["history"][-50:]} - arb)[:8]
             got = await asyncio.gather(*(self.c.get("fapi", "/fapi/v1/userTrades", {"symbol": s, "limit": 20}, signed=True)
                                          for s in symbols), return_exceptions=True)
             self.fills = sorted((f for g in got if isinstance(g, list) for f in g), key=lambda f: -int(f["time"]))[:50]
+        self.refreshed_at = self.clock()
         self._save()
+
+    async def refresh_if_stale(self, max_age: float = STREAM_POLL_S + 5) -> None:
+        """For the auto-traders' passes: with the stream up and nothing pushed since a read at most max_age ago, that
+        read is still current (every change would have been pushed); otherwise read the account now."""
+        if self.stream_ok and not self._kick.is_set() and self.clock() - self.refreshed_at < max_age:
+            return
+        await self.refresh()
+
+    # ---- the user-data stream -----------------------------------------------------------------------
+    def on_stream(self, msg: dict) -> None:
+        """One message from the user-data stream: a change on the account wakes the reader (run) at once."""
+        e = msg.get("e") if isinstance(msg, dict) else None
+        if e in STREAM_EVENTS:
+            self.stream_events += 1
+            if e in ("ORDER_TRADE_UPDATE", "TRADE_LITE", "ACCOUNT_UPDATE"):
+                self._fills_due = True
+            self._kick.set()
+
+    async def stream(self) -> None:
+        """Keep the user-data stream open: a listen key (renewed every 30 min), a WebSocket on it, reconnecting with a
+        growing pause. Never raises: while it is down the account is polled as before."""
+        session = getattr(self.c, "session", None)
+        if session is None:
+            self.stream_note = "no HTTP session: polling"
+            return
+        wait, path_i = 5.0, 0
+        while True:
+            paused = getattr(self.c, "paused_for", lambda: 0.0)()
+            if paused:                                            # a rate-limit pause: the listen key is a request too
+                await asyncio.sleep(paused + 1)
+            try:
+                key = (await self.c.request("fapi", "POST", "/fapi/v1/listenKey"))["listenKey"]
+                url = WS_HOSTS[self.venue] + WS_PATHS[path_i] + key
+                async with session.ws_connect(url, heartbeat=20, receive_timeout=KEEPALIVE_S + 600) as ws:
+                    self.stream_ok, self.stream_note, wait = True, "connected", 5.0
+                    log.info("%s user-data stream connected: account changes are pushed; REST reads every %gs",
+                             self.venue, STREAM_POLL_S)
+                    self._fills_due = True
+                    self._kick.set()                              # read once now: anything missed while it was down
+                    alive = asyncio.create_task(self._keepalive())
+                    try:
+                        async for m in ws:
+                            if m.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSING,
+                                          aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+                            if m.type != aiohttp.WSMsgType.TEXT:
+                                continue
+                            try:
+                                msg = json.loads(m.data)
+                            except ValueError:
+                                continue
+                            if msg.get("e") == "listenKeyExpired":
+                                self.stream_note = "listen key expired"
+                                break
+                            self.on_stream(msg)
+                    finally:
+                        alive.cancel()
+                self.stream_note = self.stream_note if self.stream_note != "connected" else "closed by Binance"
+            except asyncio.CancelledError:
+                self.stream_ok = False
+                raise
+            except aiohttp.WSServerHandshakeError as e:          # this host refused the path: try the other one next
+                self.stream_note = f"WebSocket refused ({e.status}) on {WS_PATHS[path_i]}"
+                path_i = (path_i + 1) % len(WS_PATHS)
+            except Exception as e:                                # noqa: BLE001 - never stop the bot: poll instead
+                self.stream_note = f"{type(e).__name__}: {str(e)[:120]}"
+            if self.stream_ok:
+                log.warning("%s user-data stream down (%s); polling every %gs until it reconnects",
+                            self.venue, self.stream_note, self.poll_s)
+            self.stream_ok = False
+            self._kick.set()
+            await asyncio.sleep(wait)
+            wait = min(wait * 2, 300.0)
+
+    async def _keepalive(self) -> None:
+        while True:
+            await asyncio.sleep(KEEPALIVE_S)
+            try:
+                await self.c.request("fapi", "PUT", "/fapi/v1/listenKey")
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:                                # noqa: BLE001 - the stream will say if it expires
+                log.info("%s listen key keepalive failed: %s", self.venue, e)
 
     async def _open_algo(self, symbols: list[str]) -> list[dict]:
         """Open conditional (Algo API) orders on these coins, in the same shape as regular open orders."""
@@ -554,7 +657,15 @@ class TestnetTicket:
 
     async def run(self) -> None:
         said, seen = 0.0, {}
+        streamer = asyncio.create_task(self.stream())
+        try:
+            await self._run(said, seen)
+        finally:
+            streamer.cancel()
+
+    async def _run(self, said, seen) -> None:
         while True:
+            self._kick.clear()
             await self._safe_refresh()
             if self.last_error:
                 log.warning("%s ticket refresh failed: %s", self.venue, self.last_error)
@@ -567,9 +678,15 @@ class TestnetTicket:
                 busiest = sorted(((n - seen.get(k, 0), k) for k, n in calls.items()), reverse=True)[:6]
                 seen = calls
                 (log.warning if used >= 1200 else log.info)(
-                    "%s request weight used this minute: %d of 2400%s | most requests since last: %s", self.venue, used,
-                    " (high)" if used >= 1200 else "", ", ".join(f"{k} x{n}" for n, k in busiest if n))
-            await asyncio.sleep(self.poll_s)
+                    "%s request weight used this minute: %d of 2400%s | stream %s (%d pushes) | most requests since "
+                    "last: %s", self.venue, used, " (high)" if used >= 1200 else "",
+                    "up" if self.stream_ok else f"down: {self.stream_note}", self.stream_events,
+                    ", ".join(f"{k} x{n}" for n, k in busiest if n))
+            try:                                                  # a push wakes it early; otherwise the next poll
+                await asyncio.wait_for(self._kick.wait(), STREAM_POLL_S if self.stream_ok else self.poll_s)
+                await asyncio.sleep(0.5)                          # one read for a burst of pushes (a fill + its orders)
+            except asyncio.TimeoutError:
+                pass
 
     def _usdt(self, key: str) -> float:
         a = next((x for x in (self.account or {}).get("assets", []) if x.get("asset") == "USDT"), {})
@@ -659,4 +776,5 @@ class TestnetTicket:
                     max_order_usd=self.max_order_usd, max_total_usd=self.max_total_usd,
                     taker_bps=self.taker_bps, mmr=0.005, min_notional=5.0, positions=positions, orders=orders,
                     order_history=self.s["history"][-50:][::-1], trades=trades, error=self.last_error,
+                    stream=dict(ok=self.stream_ok, note=self.stream_note, pushes=self.stream_events),
                     arb_symbols=sorted(arb))

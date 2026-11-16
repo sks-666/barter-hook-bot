@@ -169,7 +169,7 @@ class SwingMirror:
         if res is None:                                   # the swing runner has not replayed yet
             return
         want = {p["symbol"]: p for p in res.open_positions if self.copy_existing or p["entry_ts"] >= self.s["start_ts"]}
-        await self.ticket.refresh()
+        await getattr(self.ticket, "refresh_if_stale", self.ticket.refresh)()
         now_ms = int(self.clock() * 1000)
         opened = self.s["open"]
         # 1. positions that ended: the paper exited, or the exchange stop fired first
