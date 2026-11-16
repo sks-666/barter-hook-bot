@@ -197,7 +197,8 @@ class Dashboard:
         change the timeframe it trades ({"window_s": 900}, one of its timeframes) and/or the most open trades
         ({"max_open": 5}) and/or the risk limits ({"risk_usd": 30} lost at the stop per new trade,
         {"daily_loss_usd": 150} of realised loss in a UTC day before new entries stop) and/or the leverage set on a
-        coin before its next entry ({"leverage": 3}))."""
+        coin before its next entry ({"leverage": 3})). {"take": "BTCUSDT", "tf": 3600} opens that coin's signal now
+        (the Trade button; see SignalTrader.take)."""
         if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
             raise web.HTTPForbidden(text="bad token")
         if self.signal_trader is None:
@@ -207,6 +208,18 @@ class Dashboard:
         except ValueError:
             body = None
         body = body if isinstance(body, dict) else {}
+        if "take" in body:                        # the Trade button: open this coin's signal now ({"take": sym, "tf": s})
+            tf = body.get("tf")
+            if tf is not None and (not isinstance(tf, int) or isinstance(tf, bool)):
+                return web.json_response({"ok": False, "error": "tf must be a whole number of seconds"}, status=400)
+            try:
+                rec = await self.signal_trader.take(body.get("take"), tf)
+            except ValueError as e:
+                return web.json_response({"ok": False, "error": str(e)}, status=400)
+            except Exception as e:                # noqa: BLE001 - the exchange refused it: say so, never crash
+                return web.json_response({"ok": False, "error": f"{type(e).__name__}: {getattr(e, 'msg', None) or e}"},
+                                         status=502)
+            return web.json_response({"ok": True, "taken": rec, **self.signal_trader.view()})
         on, win, most = body.get("enabled"), body.get("window_s"), body.get("max_open")
         risk, daily, lev = body.get("risk_usd"), body.get("daily_loss_usd"), body.get("leverage")
         if not isinstance(on, bool) and win is None and most is None and risk is None and daily is None and lev is None:

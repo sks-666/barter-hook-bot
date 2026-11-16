@@ -456,5 +456,51 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((self.ticket.closed, t.s["trades"][-1]["why"]), (["SOLUSDT"], "held the maximum time"))
 
 
+    async def test_you_can_take_a_signal_yourself_even_a_no_trade_with_entries_off(self):
+        self.desk.rows = [row(verdict="no_trade", conf=40)]          # the auto-trader would skip it
+        t = self.make()
+        t.set_enabled(False)
+        rec = await t.take("solusdt")
+        self.assertEqual((rec["status"], rec["manual"]), ("open", True))
+        o = self.ticket.sent[0]
+        self.assertEqual((o["symbol"], o["side"], o["type"]), ("SOLUSDT", "buy", "market"))
+        self.assertAlmostEqual(o["sl"], 98.0 * 1.01)                  # the same stop and size as an automatic trade
+        self.assertAlmostEqual(o["qty"] * (101.01 - 98.0 * 1.01), 20.0)
+        self.desk.rows = []
+        self.now[0] += 2 * 3600 + 1                                  # and the same exits
+        await t.step()
+        self.assertEqual((t.s["trades"][-1]["why"], t.s["trades"][-1]["manual"]), ("held the maximum time", True))
+
+    async def test_a_taken_signal_keeps_its_own_timeframe(self):
+        t = self.make()
+        rec = await t.take("SOLUSDT", 14_400)
+        self.assertEqual(rec["window_s"], 14_400)
+        self.assertEqual(t._max_hold_of(t.s["open"]["SOLUSDT"]), 8 * 3600)
+
+    async def test_taking_a_signal_keeps_the_safety_limits(self):
+        t = self.make(max_open=1)
+        for rows, why in (([row(bias="wait")], "no clear side"), ([dict(row(), target=None)], "no valid stop and targets"),
+                          ([], "no signal for SOLUSDT")):
+            self.desk.rows = rows
+            with self.assertRaisesRegex(ValueError, why):
+                await t.take("SOLUSDT")
+        with self.assertRaisesRegex(ValueError, "timeframes"):
+            await t.take("SOLUSDT", 123)
+        self.desk.rows = [row()]
+        await t.take("SOLUSDT")
+        with self.assertRaisesRegex(ValueError, "already holds"):
+            t.set_max_open(3)
+            await t.take("SOLUSDT")
+        t.set_max_open(1)
+        self.desk.rows = [row("ETHUSDT")]
+        with self.assertRaisesRegex(ValueError, "1 positions / entries are open"):
+            await t.take("ETHUSDT")
+        t.set_max_open(3)
+        self.ticket.kill = "kill switch is on"
+        with self.assertRaisesRegex(ValueError, "kill switch"):
+            await t.take("ETHUSDT")
+        self.assertEqual(len(self.ticket.sent), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

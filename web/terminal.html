@@ -236,6 +236,7 @@
   .ty-part { display: grid; gap: 3px; }
   .ty-c { display: flex; gap: 4px; align-items: center; flex-wrap: wrap; }
   .ty-row { display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+  button.take { margin-left: 8px; padding: 1px 8px; font-weight: 700; letter-spacing: .4px; border-color: currentColor; text-transform: none; }
   .vd { display: inline-block; padding: 0 4px; border: 1px solid currentColor; border-radius: 3px; font-size: .82em; font-weight: 700; letter-spacing: .4px; }
   .q-p { display: flex; gap: 8px; align-items: center; padding: 2px 0; white-space: nowrap; }
   .q-p .n { width: 150px; overflow: hidden; text-overflow: ellipsis; }
@@ -1874,8 +1875,9 @@ async function autoPost(body, what) {
   const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.ok) throw new Error(d.error || r.status);
-  const { ok, ...view } = d; S.auto = view;
+  const { ok, taken, ...view } = d; S.auto = view;
   renderSignals();
+  return d;
 }
 // ---- signal types (arbbot/signal_types.py): built-in + custom, each type's results, and the builder ----------------
 async function loadTypes() {
@@ -2117,11 +2119,41 @@ function sigTrades() {
   h += `<h3 style="margin-top:8px">Auto-trader closed trades</h3>` + (a.trades.length
     ? `<table><thead><tr><th>Coin</th><th>Side</th><th title="Leverage the trade was opened at (— for trades from before this was recorded)">Lev</th><th title="Signal type (— for trades from before types)">Type</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
       a.trades.slice(0, 15).map(t => `<tr class="click" data-sym="${esc(t.symbol)}"><td class="amb">${sgCoin(t.symbol)}</td>
-        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${esc(t.type_name || "—")}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
+        <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${esc(t.type_name || "—")}${t.manual ? ` <span class="amb" title="You opened it with the Trade button">· you</span>` : ""}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
         <td class="mut">${esc(t.why || "")}</td><td class="${cls(t.pnl || 0)}">${t.pnl != null ? sgMoney(t.pnl) : "…"}</td></tr>`).join("") + `</tbody></table>`
     : `<div class="mut">None yet.</div>`);
   return h;
 }
+// the Trade button: open this coin's signal yourself on the testnet, with the auto-trader's stop, TP1, TP2 and sizing
+function takeBtn(me) {
+  const a = S.auto;
+  if (!a || !canControl() || me.bias === "wait" || !me.target || a.open[me.symbol] || a.pending[me.symbol]) return "";
+  if (!Object.values(a.windows || {}).includes(S.sgw)) return "";
+  const L = me.bias === "long";
+  return ` <button class="take ${L ? "up" : "dn"}" data-take="${esc(me.symbol)}" title="Open this signal yourself on the testnet now: the same entry, stop, TP1 (half closes), TP2, size and exits as an automatic trade">▶ Trade it ${L ? "LONG" : "SHORT"}</button>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-take]");
+  if (!b || b.disabled) return;
+  const sym = b.dataset.take, a = S.auto, me = (S.combo?.rows || []).find(x => x.symbol === sym);
+  if (!a || !me) return;
+  const L = me.bias === "long", mult = me.quality?.type?.risk_mult || 1, warn = [];
+  if (me.verdict !== "trade") warn.push("⚠ The quality check says NO TRADE:\n  - " + (me.gates || []).join("\n  - "));
+  if (me.confidence < a.min_conf) warn.push(`⚠ Confidence ${me.confidence} is below the auto-trader's ${a.min_conf}.`);
+  if (S.sgw !== a.window_s) warn.push(`This is the ${flowLabel(S.sgw)} signal (the auto-trader trades ${flowLabel(a.window_s)}): it closes after ${dur(Math.max(1800, Math.min(604800, 2 * S.sgw)))}.`);
+  const msg = `${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on the Binance futures TESTNET now?\n\n` +
+    `Entry ${px(me.entry)}${Math.abs(me.to_entry_pct || 0) < 0.1 ? " (market)" : " (limit, waits up to " + dur(a.entry_ttl_s) + ")"} · stop ${px(me.stop)} · ` +
+    (me.tp1 ? `TP1 ${px(me.tp1)} (half closes) · ` : "") + `TP2 ${px(me.target)}\n` +
+    `Loses about $${Math.round(a.risk_usd * mult)} at the stop · ${a.leverage}x leverage · ${me.quality?.type?.name || "signal"}` +
+    (warn.length ? "\n\n" + warn.join("\n\n") : "") +
+    `\n\nThe price is read again before it is sent: the levels may move a little.`;
+  if (!confirm(msg)) return;
+  b.disabled = true; b.textContent = "sending…";
+  try {
+    const { taken } = await autoPost({ take: sym, tf: S.sgw });
+    alert(`${sym} ${taken.status === "open" ? "opened at " + px(taken.entry) : "limit entry placed at " + px(taken.entry)} · stop ${px(taken.stop)} · TP2 ${px(taken.target)}`);
+  } catch (err) { alert(`Could not trade ${sym}: ` + err.message); b.disabled = false; b.textContent = `▶ Trade it ${L ? "LONG" : "SHORT"}`; }
+});
 // the loaded coin: where stop, entry, price and target sit, then each source's score and reason
 function sigWhy(c) {
   const me = c.rows.find(x => x.symbol === S.sym);
@@ -2129,7 +2161,7 @@ function sigWhy(c) {
   const wait = me.bias === "wait", ok = me.verdict === "trade";
   let h = `<h3>Why · ${sgCoin(S.sym)} <span class="${wait ? "mut" : cls(me.score)}">${me.bias.toUpperCase()} ${sgn(me.score * 100, 0)}</span>
     <span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>
-    <span class="mut" style="text-transform:none;letter-spacing:0">· confidence ${wait ? "—" : me.confidence} · sources agree ${Math.round(me.agree * 100)}% · data ${Math.round(me.coverage * 100)}%</span></h3>`;
+    <span class="mut" style="text-transform:none;letter-spacing:0">· confidence ${wait ? "—" : me.confidence} · sources agree ${Math.round(me.agree * 100)}% · data ${Math.round(me.coverage * 100)}%</span>${takeBtn(me)}</h3>`;
   if (me.gates?.length) h += `<ul class="q-gates">${me.gates.map(g => `<li>${esc(g)}</li>`).join("")}</ul>`;
   const qq = me.quality;
   if (qq) {

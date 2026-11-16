@@ -101,6 +101,7 @@ class SignalTrader:
         self.last_error, self.last_run, self.note = "", 0.0, ""
         self.last_signals: list[dict] = []
         self._halted_day = None
+        self._lock = asyncio.Lock()                                   # a pass and a manual take never interleave
 
     # ---- timing from the timeframe ---------------------------------------------------------------
     @property
@@ -312,7 +313,7 @@ class SignalTrader:
                  target=m.get("target"), risk_usd=m.get("risk_usd"), score=m.get("score"), confidence=m.get("confidence"),
                  opened_ms=m["opened_ms"], closed_ms=now_ms, why=why, exit=None, pnl=None, fees=None,
                  leverage=m.get("leverage"), tp1=m.get("tp1"), tp1_hit=m.get("tp1_hit"), quality=m.get("quality"),
-                 regime=m.get("regime"), type=m.get("type"), type_name=m.get("type_name"))
+                 regime=m.get("regime"), type=m.get("type"), type_name=m.get("type_name"), manual=m.get("manual"))
         self.s["trades"] = (self.s["trades"] + [t])[-KEEP_TRADES:]
         self.s["cooldown"][sym] = now_ms + int(self.cooldown_s * 1000)
         return t
@@ -493,7 +494,44 @@ class SignalTrader:
             raise ValueError(f"the testnet book is too thin for its stop: {size:.6g} within reach of the stop, "
                              f"needs {DEPTH_X:g}x the position ({DEPTH_X * qty:.6g})")
 
-    async def _open(self, sym: str, r: dict, now_ms: int) -> None:
+    async def take(self, sym: str, window_s: float | None = None) -> dict:
+        """Open the coin's signal now because YOU said so (the terminal's Trade button): the same entry, stop, TP1, TP2,
+        sizing, leverage and exits as an automatic trade, read fresh for the timeframe given (the auto-trader's when
+        None). It may take a NO TRADE verdict or one below the confidence bar (you decided), and works with automatic
+        entries off; the safety limits still hold: kill switch / rate-limit pause, daily loss, most open trades, a coin
+        already held, a signal with no side or no valid targets. Returns the trade's record; ValueError says why not."""
+        sym = str(sym or "").upper()
+        w = float(window_s) if window_s else self.window_s
+        if w not in WINDOWS.values():
+            raise ValueError("pick one of the auto-trader's timeframes (1m, 5m, 15m, 30m, 1h, 4h, 1d, 1w)")
+        async with self._lock:
+            blocked = self.ticket.blocked()
+            if blocked:
+                raise ValueError(blocked)
+            if self.realized_today() <= -self.daily_loss_usd:
+                raise ValueError(f"the daily loss limit ({self.daily_loss_usd:g} USDT) is reached")
+            if len(self.s["open"]) + len(self.s["pending"]) >= self.max_open:
+                raise ValueError(f"{self.max_open} positions / entries are open already (raise 'most open trades')")
+            if sym in self.s["open"] or sym in self.s["pending"]:
+                raise ValueError(f"the auto-trader already holds {sym}")
+            if sym in set(self.ticket.owned()) | set(self.ticket.arb_symbols()) or self.ticket.position(sym) != 0:
+                raise ValueError(f"{sym} already has a position on the testnet")
+            view = await self.desk.view(w, sym)
+            r = next((x for x in view["rows"] if x["symbol"] == sym), None)
+            if r is None:
+                raise ValueError(f"no signal for {sym} right now (it needs whale orders in that timeframe)")
+            if r["bias"] not in ("long", "short"):
+                raise ValueError(f"{sym} has no clear side right now (WAIT)")
+            if not (r.get("entry") and r.get("stop") and r.get("target")):
+                raise ValueError(f"{sym} has no valid stop and targets right now: " + "; ".join(r.get("gates") or []))
+            now_ms = int(self.clock() * 1000)
+            await self._open(sym, r, now_ms, window_s=w, manual=True)
+            self.s["cooldown"].pop(sym, None)
+            self._save()
+            rec = self.s["open"].get(sym) or self.s["pending"].get(sym) or {}
+            return dict(rec, symbol=sym, status="open" if sym in self.s["open"] else "waiting")
+
+    async def _open(self, sym: str, r: dict, now_ms: int, window_s: float | None = None, manual: bool = False) -> None:
         q = await self.ticket._quote(sym, book=True)
         here = (q["bid"] + q["ask"]) / 2
         drift = here / r["mark"] - 1
@@ -523,13 +561,13 @@ class SignalTrader:
         o = await self.ticket.place_order(order)
         rec = dict(side=side, entry=o.get("filled_px") or ref, stop=stop, target=target, score=r["score"],
                    confidence=r["confidence"], risk_usd=qty * abs(ref - stop), order_id=o.get("id"),
-                   window_s=self.window_s, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage,
+                   window_s=window_s or self.window_s, manual=manual or None, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage,
                    tp1=tp1, quality=(r.get("quality") or {}).get("quality"),
                    type=r.get("signal_type"), type_name=r.get("signal_type_name"),
                    regime=((r.get("quality") or {}).get("regime") or {}).get("name"))
         if o.get("status") == "filled":
             self.s["open"][sym] = dict(rec, qty=o.get("qty"), opened_ms=now_ms)
-            self.notify(f"🤖 TESTNET signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
+            self.notify(f"{'🖐 TESTNET YOUR' if manual else '🤖 TESTNET'} signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
                         f"({rec.get('type_name') or 'signal'}, score {r['score'] * 100:+.0f}, conf {r['confidence']}, "
                         f"quality {rec['quality']}) stop {stop:.6g}"
                         f"{f' TP1 {tp1:.6g}' if tp1 else ''} TP2 {target:.6g}")
@@ -537,7 +575,7 @@ class SignalTrader:
         elif o.get("status") == "new":
             self.s["pending"][sym] = dict(rec, qty=qty, placed_ms=now_ms,
                                           expires_ms=now_ms + int(self.entry_ttl_s * 1000))
-            self.notify(f"🤖 TESTNET signal {side.upper()} {sym}: limit {entry:.6g} for {self.entry_ttl_s / 60:.0f} min "
+            self.notify(f"{'🖐 TESTNET YOUR' if manual else '🤖 TESTNET'} signal {side.upper()} {sym}: limit {entry:.6g} for {self.entry_ttl_s / 60:.0f} min "
                         f"(score {r['score'] * 100:+.0f}, conf {r['confidence']}) stop {stop:.6g} target {target:.6g}")
         else:
             raise ValueError(f"the entry came back {o.get('status')}")
@@ -546,7 +584,8 @@ class SignalTrader:
 
     async def step_safely(self) -> None:
         try:
-            await self.step()
+            async with self._lock:
+                await self.step()
             self.last_error = ""
         except asyncio.CancelledError:
             raise
