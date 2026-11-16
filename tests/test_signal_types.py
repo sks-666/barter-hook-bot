@@ -32,7 +32,8 @@ class Book(unittest.TestCase):
 
     def test_built_in_types_in_order_ending_with_the_catch_all(self):
         keys = [t["key"] for t in self.book.resolved()]
-        self.assertEqual(keys, ["funding_squeeze", "sweep_reversal", "breakout", "trend_pullback", "mean_reversion"])
+        self.assertEqual(keys, ["funding_squeeze", "sweep_reversal", "breakout", "trend_pullback", "candle_reversal",
+                                "mean_reversion"])
         self.assertEqual(self.book.resolved()[-1]["when"], [])
 
     def test_classification_takes_the_first_match(self):
@@ -190,7 +191,7 @@ class Api(unittest.IsolatedAsyncioTestCase):
             r = await c.get("/api/signal-types", headers=h)
             d = await r.json()
             self.assertEqual(r.status, 200)
-            self.assertEqual(len(d["types"]), 5)
+            self.assertEqual(len(d["types"]), 6)
             self.assertIn("rvol", d["fields"])
             self.assertIsNone(d["stats"])                               # no auto-trader in this bot
             r = await c.post("/api/signal-types", json={"action": "save", "type": custom()}, headers=h)
@@ -205,7 +206,7 @@ class Api(unittest.IsolatedAsyncioTestCase):
             r = await c.post("/api/signal-types", json={"action": "toggle", "key": "breakout", "enabled": False}, headers=ht)
             self.assertFalse(next(t for t in (await r.json())["types"] if t["key"] == "breakout")["enabled"])
             r = await c.post("/api/signal-types", json={"action": "delete", "key": "custom_big_volume"}, headers=ht)
-            self.assertEqual(len((await r.json())["types"]), 5)
+            self.assertEqual(len((await r.json())["types"]), 6)
 
 
 class Telegram(unittest.IsolatedAsyncioTestCase):

@@ -227,6 +227,91 @@ def divergence(kl: list, r: list) -> int:
     return 0
 
 
+# ---- candlestick patterns ------------------------------------------------------------------------------------------
+# Crypto trades 24/7, so the classic gap rules (piercing line, the star's gaps) cannot apply: the patterns below are
+# the gap-free forms. Sizes are measured in LTF ATRs so a pattern of tiny candles in a dead market does not count.
+# A REVERSAL pattern only counts as a signal AT A LEVEL (its extreme within 0.5 ATR of the 20-candle low / high or of a
+# recent swing): a hammer in the middle of nowhere is a coin flip. CONTINUATION patterns need no level.
+CANDLE_FRESH = 2             # the pattern completed on one of the last this-many closed candles
+CANDLES = {                  # key -> (long name, short name, kind)
+    "engulfing": ("bullish engulfing", "bearish engulfing", "reversal"),
+    "pin_bar": ("hammer (pin bar)", "shooting star (pin bar)", "reversal"),
+    "star": ("morning star", "evening star", "reversal"),
+    "three_soldiers": ("three white soldiers", "three black crows", "continuation"),
+    "inside_break": ("inside-bar breakout", "inside-bar breakdown", "continuation"),
+}
+
+
+def _parts(k: list) -> tuple[float, float, float, float]:
+    """(signed body, range, upper wick, lower wick) of one candle."""
+    o, h, l, c = k[1], k[2], k[3], k[4]
+    return c - o, h - l, h - max(o, c), min(o, c) - l
+
+
+def _pattern_at(kl: list, j: int, side: int, a: float) -> str | None:
+    """The pattern (a CANDLES key) that completes on candle j for this side (+1 bullish, -1 bearish), or None."""
+    b, rng, up, lo = _parts(kl[j])
+    near, far = (lo, up) if side > 0 else (up, lo)                    # the wick toward the reversal / away from it
+    # three white soldiers / black crows: 3 solid candles its way, each closing further, opening inside the last body
+    if j >= 2:
+        three = [kl[j - 2], kl[j - 1], kl[j]]
+        if all(_parts(k)[0] * side >= 0.5 * a for k in three) and \
+                all((three[i][4] - three[i - 1][4]) * side > 0 for i in (1, 2)) and \
+                all(min(three[i - 1][1], three[i - 1][4]) <= three[i][1] <= max(three[i - 1][1], three[i - 1][4])
+                    for i in (1, 2)) and \
+                all((_parts(k)[2] if side > 0 else _parts(k)[3]) <= 0.35 * _parts(k)[1] for k in three):
+            return "three_soldiers"
+    # morning / evening star: a big candle against, a small one, then one its way closing past the first one's middle
+    if j >= 2:
+        b1, b2 = _parts(kl[j - 2])[0], _parts(kl[j - 1])[0]
+        if -b1 * side >= 0.8 * a and abs(b2) <= 0.3 * abs(b1) and b * side >= 0.5 * a and \
+                (kl[j][4] - (kl[j - 2][1] + kl[j - 2][4]) / 2) * side > 0:
+            return "star"
+    # engulfing: the last candle against, this one its way with a strictly bigger body that covers it, of some size
+    if j >= 1:
+        pb = _parts(kl[j - 1])[0]
+        po, pc = kl[j - 1][1], kl[j - 1][4]
+        if pb * side < 0 and b * side > abs(pb) and b * side >= 0.3 * a and \
+                (kl[j][1] - pc) * side <= 0 and (kl[j][4] - po) * side >= 0:
+            return "engulfing"
+    # hammer / shooting star: a long wick toward the reversal (rejection), a small body, almost no wick the other way
+    if rng >= 0.8 * a and near >= 2 * abs(b) and near >= 0.55 * rng and far <= 0.25 * rng:
+        return "pin_bar"
+    # inside-bar breakout: a candle inside the one before it, then a close past that mother candle
+    if j >= 2:
+        m, ins = kl[j - 2], kl[j - 1]
+        if ins[2] <= m[2] and ins[3] >= m[3] and (kl[j][4] > m[2] if side > 0 else kl[j][4] < m[3]):
+            return "inside_break"
+    return None
+
+
+def candle_pattern(kl: list, side: int, a: float) -> dict | None:
+    """The freshest candlestick pattern for this side on the last CANDLE_FRESH closed candles, or None:
+    {key, name, kind, ago (0 = the last candle), extreme (the pattern's low for a long / high for a short: the stop
+    belongs past it), at_level}. A pattern whose extreme has since been closed through no longer counts."""
+    n = len(kl)
+    for j in range(n - 1, max(n - 1 - CANDLE_FRESH, 1), -1):
+        key = _pattern_at(kl, j, side, a)
+        if key is None:
+            continue
+        span = kl[j - (2 if key in ("three_soldiers", "star", "inside_break") else 1 if key == "engulfing" else 0): j + 1]
+        extreme = min(k[3] for k in span) if side > 0 else max(k[2] for k in span)
+        if any((k[4] - extreme) * side < 0 for k in kl[j + 1:]):     # closed through since: failed
+            return None
+        before = kl[max(0, j - 20 - len(span) + 1): j - len(span) + 1]
+        _, lows = swings(kl[: j + 1])
+        highs, _ = swings(kl[: j + 1])
+        levels_ = [p for i, p in (lows if side > 0 else highs) if i >= j - 50][-6:]
+        if before:
+            levels_.append(min(k[3] for k in before) if side > 0 else max(k[2] for k in before))
+        # at a level: the extreme from 1.5 ATR through it (a dip past support that was rejected) to 0.5 ATR short of it
+        at = any(-1.5 * a <= (extreme - p) * side <= 0.5 * a for p in levels_)
+        name = CANDLES[key][0 if side > 0 else 1]
+        return {"key": key, "name": name, "kind": CANDLES[key][2], "ago": n - 1 - j, "extreme": extreme,
+                "at_level": bool(at) and CANDLES[key][2] == "reversal"}
+    return None
+
+
 def rvol(kl: list, n: int = 20) -> float | None:
     """The last candle's quote volume against the average of the n before it."""
     if len(kl) < n + 1:
@@ -449,11 +534,13 @@ def pillar_derivs(side: int, *, oi_pct: float | None, price_pct: float, funding:
 
 # ---- stop and targets ---------------------------------------------------------------------------------------------
 def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float, stop_atr: float = MIN_STOP_ATR,
-           tp1_r: float = TP1_R, tp2_r: float = TP2_R, reach: float | None = None, hold: str = "") -> dict:
+           tp1_r: float = TP1_R, tp2_r: float = TP2_R, reach: float | None = None, hold: str = "",
+           beyond: float | None = None) -> dict:
     """Stop past the last swing (>= stop_atr LTF ATRs from the entry) + STOP_BUFFER_ATR, off round numbers; TP1 at
     the first unbroken structure level >= tp1_r (else tp1_r), TP2 at the first one from tp2_r to
     max(TP2_MAX_R, tp2_r + 2) (else tp2_r). `reach`: the furthest price distance TP1 may be (how far price can
-    travel in the hold time); a TP1 beyond it aborts. 'abort' says why there is no trade."""
+    travel in the hold time); a TP1 beyond it aborts. `beyond`: a price the stop must sit past too (a candlestick
+    pattern's low for a long / high for a short). 'abort' says why there is no trade."""
     side = 1 if long else -1
     buf = STOP_BUFFER_ATR * a
     _, lows = swings(ltf)
@@ -462,6 +549,8 @@ def levels(entry: float, long: bool, ltf: list, mid: list, htf: list, a: float, 
     swing = (max(pool) if long else min(pool)) if pool else None      # the nearest swing behind the entry
     far = entry - stop_atr * a if long else entry + stop_atr * a
     base = (min(swing, far) if long else max(swing, far)) if swing is not None else far
+    if beyond is not None and (beyond < entry if long else beyond > entry):
+        base = min(base, beyond) if long else max(base, beyond)
     stop = off_round(base - buf if long else base + buf, long, buf)
     risk = abs(entry - stop)
     if risk < entry * MIN_STOP_PCT:
@@ -580,6 +669,13 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
     # the signal type: classify, then its own entry, stop distance, targets, requirements and quality bar
     r_now = rsi([k[4] for k in ltf])[-1]
     vw = vwap(ltf, now_s * 1000 - 86_400_000)
+    cp, cp_against = candle_pattern(ltf, side, a), candle_pattern(ltf, -side, a)
+    if cp:
+        where = (" at a support" if long else " at a resistance") if cp["at_level"] else ""
+        when = "the last candle" if cp["ago"] == 0 else "the candle before"
+        pillars["structure"]["why"].append(f"candles: {cp['name']}{where} ({when})")
+    if cp_against:
+        pillars["structure"]["why"].append(f"candles against it: {cp_against['name']}")
     features = {
         "regime": reg["name"], "htf": "with" if htf_dir == side else "against" if htf_dir == -side else "flat",
         "btc": None if lead_dir is None else "with" if lead_dir == side else "against" if lead_dir == -side else "flat",
@@ -591,6 +687,8 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
         "vwap_dist": None if vw is None else round((mark - vw) * side / a, 2),
         "funding": None if funding is None else round(funding * side * 100, 4),
         "oi": None if oi_pct is None else round(oi_pct, 2), "quality": q, "score": round(abs(score) * 100, 1),
+        "candle": cp is not None, "candle_at_level": bool(cp and cp["at_level"]),
+        "candle_pattern": cp["key"] if cp else "none", "candle_against": cp_against is not None,
     }
     t = st.classify(features, types or [dict(b, custom=False, enabled=True) for b in st.BUILTIN])
     if not t.get("enabled", True):
@@ -602,7 +700,9 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
     if hold and ivs.get("ltf") in STEP_S:
         reach = REACH_X * a * math.sqrt(max(1.0, hold / STEP_S[ivs["ltf"]]))
         hold_label = f"{hold / 3600:g}h hold" if hold >= 3600 else f"{hold / 60:g}min hold"
-    lv = levels(entry, long, ltf, mid, htf, a, t["stop_atr"], t["tp1_r"], t["tp2_r"], reach=reach, hold=hold_label or "")
+    uses_candle = cp and any(c["k"].startswith("candle") and c["k"] != "candle_against" for c in t["when"] + t["require"])
+    lv = levels(entry, long, ltf, mid, htf, a, t["stop_atr"], t["tp1_r"], t["tp2_r"], reach=reach, hold=hold_label or "",
+                beyond=cp["extreme"] if uses_candle else None)
     if lv["abort"]:
         gates.append(lv["abort"])
 
@@ -638,6 +738,7 @@ def assess(*, side: int, mark: float, entry: float, base_conf: float, ltf: list,
             "regime": reg, "setup": setup, "session": sess, "premortem": pm,
             "confidence": int(max(0, min(100, round(conf)))), "levels": lv, "atr_ltf": a, "intervals": ivs,
             "entry": entry, "features": features,
+            "candles": {"its_way": cp, "against": cp_against},
             "type": {"key": t["key"], "name": t["name"], "custom": bool(t.get("custom")), "entry": t["entry"],
                      "risk_mult": t["risk_mult"], "min_quality": t["min_quality"], "tp1_r": t["tp1_r"],
                      "tp2_r": t["tp2_r"], "stop_atr": t["stop_atr"], "enabled": t.get("enabled", True)},

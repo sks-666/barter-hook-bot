@@ -2154,6 +2154,23 @@ document.addEventListener("click", async ev => {
     alert(`${sym} ${taken.status === "open" ? "opened at " + px(taken.entry) : "limit entry placed at " + px(taken.entry)} · stop ${px(taken.stop)} · TP2 ${px(taken.target)}`);
   } catch (err) { alert(`Could not trade ${sym}: ` + err.message); b.disabled = false; b.textContent = `▶ Trade it ${L ? "LONG" : "SHORT"}`; }
 });
+// candlestick patterns on the trigger candles (arbbot/quality.candle_pattern): its way and against it
+const CANDLE_HELP = {
+  engulfing: "Engulfing: a candle against the move, then one the trade's way whose body covers it. Buyers (long) / sellers (short) took over within one candle.",
+  pin_bar: "Hammer / shooting star (pin bar): a long wick at least 2x the body toward the low (long) / high (short), almost no wick the other way. Price was pushed there and rejected.",
+  star: "Morning / evening star: a big candle against the move, a small undecided one, then one the trade's way closing past the middle of the first. A 3-candle turn.",
+  three_soldiers: "Three white soldiers / black crows: three solid candles the trade's way, each closing further, each opening inside the last body. Continuation.",
+  inside_break: "Inside-bar breakout: a candle inside the one before it (a pause), then a close past that mother candle. Continuation.",
+};
+function candleLine(qq, bias) {
+  const cs = qq.candles; if (!cs) return "";
+  const one = (p, against) => `<b class="${against ? "dn" : "up"}" title="${esc(CANDLE_HELP[p.key] || "")}">${esc(p.name)}</b>` +
+    (p.at_level ? ` at a ${bias === "short" ? "resistance" : "support"}` : p.kind === "reversal" ? ` <span class="mut">(not at a level: weak)</span>` : "") +
+    ` <span class="mut">(${p.ago ? "the candle before" : "the last candle"}, ${esc(p.kind)}, pattern ${(bias === "short") !== against ? "high" : "low"} ${px(p.extreme)})</span>`;
+  return `<div style="margin:4px 0;font-size:.9em"><b class="mut">Candles ${esc(qq.intervals.ltf)}:</b> ` +
+    (cs.its_way ? one(cs.its_way, false) : `<span class="mut">no pattern its way</span>`) +
+    (cs.against ? ` · against it: ${one(cs.against, true)}` : "") + `</div>`;
+}
 // the loaded coin: where stop, entry, price and target sit, then each source's score and reason
 function sigWhy(c) {
   const me = c.rows.find(x => x.symbol === S.sym);
@@ -2173,6 +2190,7 @@ function sigWhy(c) {
       P.map(([k, l]) => { const p = qq.pillars[k];
         return `<div class="q-p"><span class="n">${l}</span><span class="bar"><i style="width:${p.pts / 25 * 100}%"></i></span><b style="width:42px">${p.pts}/25</b>
           <span class="mut" style="white-space:normal;font-size:.85em">${esc(p.why.join(" · "))}</span></div>`; }).join("") +
+      candleLine(qq, me.bias) +
       `<div style="margin:4px 0;font-size:.9em"><b class="${qq.premortem.severity === "none" ? "mut" : "dn"}">Pre-mortem${qq.premortem.severity === "none" ? "" : qq.premortem.severity === "cancel" ? " (cancels it)" : " (−15 confidence)"}:</b> ${esc(qq.premortem.text)}</div>
       <div class="mut" style="font-size:.9em;margin-bottom:4px">Session: ${qq.session.penalty ? `<span class="wrn">x0.8 — ${esc(qq.session.why)}</span>` : esc(qq.session.why)}${qq.session.calendar ? "" : " (economic calendar unavailable)"}</div>`;
   }
@@ -2211,7 +2229,7 @@ function renderSignals() {
   const rows = c.rows.filter(x => S.sgf === "all" || (S.sgf === "trade" ? x.verdict === "trade" : x.bias === S.sgf));
   const verdict = x => { const qq = x.quality, ok = x.verdict === "trade";
     const tip = ok ? `TRADE · ${qq.type?.name || ""}: quality ${qq.quality}/100, ${qq.regime.name}. Pre-mortem: ${qq.premortem.text}` : (x.gates || []).join(" · ");
-    return `<td title="${esc(tip)}"><span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>${qq ? `<span class="sub">${esc(qq.type?.name || "")} · Q ${qq.quality} · ${esc(qq.regime.name.replace("_MEAN_REVERSION", "").replace("TRENDING_", "").replace("VOLATILE_", "").toLowerCase())}</span>` : ""}</td>`; };
+    return `<td title="${esc(tip)}"><span class="vd ${ok ? "up" : "mut"}">${ok ? "TRADE" : "NO TRADE"}</span>${qq ? `<span class="sub">${qq.candles?.its_way ? `<span title="${esc(qq.candles.its_way.name)}">🕯</span> ` : ""}${esc(qq.type?.name || "")} · Q ${qq.quality} · ${esc(qq.regime.name.replace("_MEAN_REVERSION", "").replace("TRENDING_", "").replace("VOLATILE_", "").toLowerCase())}</span>` : ""}</td>`; };
   const fx = (x, k) => { const f = x.factors.find(f => f.key === k);
     return !f || f.score == null ? `<td class="f xw mut">—</td>` : `<td class="f xw ${cls(f.score)}" title="${esc(f.label)} (${Math.round(f.weight * 100)}%): ${esc(f.why)}">${sgn(f.score * 100, 0)}</td>`; };
   const table = rows.length ? `<div class="sg-tw"><table class="sgt"><thead><tr><th>Coin</th><th>Signal</th>

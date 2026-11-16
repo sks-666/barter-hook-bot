@@ -7,6 +7,8 @@ conditions all hold: your custom types first (in the order you made them), then 
   sweep_reversal   a swing's stops were just swept and price closed back inside
   breakout         the trigger candle closed past the 20-candle range
   trend_pullback   with the HTF trend
+  candle_reversal  a reversal candlestick (engulfing, hammer / shooting star, morning / evening star) at a support /
+                   resistance, against the trend or in a range
   mean_reversion   everything else (against the trend, or in a range): the catch-all
 
 The type then sets the trade's own rules: its extra "require" conditions (one failing = NO_TRADE, with the reason),
@@ -39,6 +41,11 @@ FIELDS = {
     "bos": ("Break of structure its way", "bool", None),
     "sweep": ("Liquidity sweep of a swing", "bool", None),
     "fvg": ("Retesting a fair value gap", "bool", None),
+    "candle": ("A candlestick pattern its way (last 2 candles)", "bool", None),
+    "candle_at_level": ("A reversal candlestick at a support / resistance", "bool", None),
+    "candle_pattern": ("Candlestick pattern its way", "choice",
+                       ("engulfing", "pin_bar", "star", "three_soldiers", "inside_break", "none")),
+    "candle_against": ("A candlestick pattern against it", "bool", None),
     "squeeze": ("ATR contracted before the trigger", "bool", None),
     "vwap_side": ("Price on the trade's side of the 24h VWAP", "bool", None),
     "rvol": ("RVOL of the trigger candle (x average)", "num", (0.0, 20.0)),
@@ -90,6 +97,12 @@ BUILTIN = [
      "about": "With the HTF trend, not chasing a stretched RSI. Enters on a pullback to the LTF EMA 21.",
      "when": [_c("htf", "is", "with")], "require": [_c("rsi", "<=", 70)],
      "entry": "ema21", "stop_atr": 1.0, "tp1_r": 1.8, "tp2_r": 3.0, "min_quality": 55, "risk_mult": 1.0},
+    {"key": "candle_reversal", "name": "Candle reversal",
+     "about": "A reversal candlestick at a support (long) / resistance (short): bullish / bearish engulfing, hammer / "
+              "shooting star, morning / evening star. Against the trend or in a range. Needs average volume and no "
+              "pattern the other way; the stop goes past the pattern's low / high.",
+     "when": [_c("candle_at_level", "is")], "require": [_c("rvol", ">=", 1.0), _c("candle_against", "not")],
+     "entry": "price", "stop_atr": 1.0, "tp1_r": 1.8, "tp2_r": 3.0, "min_quality": 55, "risk_mult": 1.0},
     {"key": "mean_reversion", "name": "Mean reversion",
      "about": "Against the trend or in a range (the catch-all): only when stretched, RSI 45 or less for its side and "
               "at least 0.5 ATR past the 24h VWAP. Wider stop, higher quality bar.",
