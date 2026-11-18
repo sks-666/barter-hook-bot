@@ -857,7 +857,7 @@ function setSym(sym) {
   if (sym === S.sym) return;
   S.sym = sym; lsSet("term-sym", sym);
   S.info = S.klines = S.depth = S.trades = S.sent = S.daily = S.marks = S.curve = null;
-  S.hover = null;
+  S.hover = null; S.titlePx = S.titleDir = null; setTitle();
   if (S.wcoin) renderWhales();
   renderSignals();
   for (const k of ["info", "klines", "depth", "trades", "sent", "daily", "marks", "curve", "combo"]) { S.errs[k] = ""; S.due[k] = 0; render(k); }
@@ -1191,6 +1191,16 @@ function render(kind) {
      daily: drawChart, marks: drawChart, desk: renderDesk, curve: renderCurve, macro: renderMacro, btcd: renderMacro,
      news: renderNews, combo: renderSignals })[kind]();
 }
+// the browser tab shows the loaded coin's price, like an exchange: "64,395.00 ▲ | BTCUSDT +1.25% · Arb Terminal".
+// The price is the newest trade (every 2 s), else the 24h ticker's last; the arrow is the move since the last title.
+function setTitle() {
+  const t = S.trades?.[0], p = t?.price ?? S.info?.last;
+  if (p == null || !isFinite(p)) { document.title = `${S.sym} · Arb Terminal`; S.titlePx = S.titleDir = null; return; }
+  if (S.titlePx != null && p !== S.titlePx) S.titleDir = p > S.titlePx ? " ▲" : " ▼";   // kept until the price moves again
+  const arrow = S.titleDir || "", ch = S.info?.change_pct;
+  S.titlePx = p;
+  document.title = `${px(p)}${arrow} | ${S.sym}${ch == null ? "" : " " + sgn(ch, 2) + "%"} · Arb Terminal`;
+}
 function renderQuote() {
   const i = S.info, row = S.snap?.markets.find(r => r.sym === S.sym);
   const f = (l, v, c = "") => `<span class="f"><span class="l">${l}</span><span class="v ${c}">${v}</span></span>`;
@@ -1210,6 +1220,7 @@ function renderQuote() {
   else if (S.snap) html += f("Bot", "not scanned", "mut");
   $("quote").innerHTML = html;
   $("c-sym").textContent = `${S.sym} · perp`;
+  setTitle();
   if (RK.live) renderRisk();                      // a live entry follows the price
 }
 
@@ -1250,6 +1261,7 @@ function renderBook() {
 
 function renderTape() {
   const t = S.trades, el = $("tape");
+  setTitle();
   if (S.errs.trades) { el.innerHTML = `<div class="err-line">${esc(S.errs.trades)}</div>`; return; }
   if (!t) { el.innerHTML = `<div class="empty">loading…</div>`; return; }
   el.innerHTML = `<table><thead><tr><th>Time</th><th>Price</th><th>Size $</th></tr></thead><tbody>` +
