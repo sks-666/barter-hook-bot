@@ -122,6 +122,7 @@ class Dashboard:
         self.book_market = book_market            # the MarketData the BOOK overlay reads (mainnet public), else `market`
         self.book = None                          # an arbbot.orderbook.BookWatch, made on the first BOOK request
         self.heat = None                          # an arbbot.heatmap.Heatmap, made on the first heatmap request
+        self.live = None                          # an arbbot.livefeed.LiveFeed, made when a terminal first connects
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
         self.web_dir = web_dir
@@ -176,6 +177,7 @@ class Dashboard:
             from freqkit.routes import add_routes
             add_routes(app, self, self.freq)
         app.router.add_get("/ws", self.ws)
+        app.router.add_get("/ws/live", self.ws_live)        # the terminal's live trades / candle / ticker (livefeed.py)
         app.router.add_get("/api/snapshot", self.snapshot)
         app.router.add_get("/api/pnl", self.pnl)
         app.router.add_get("/api/market/{kind}", self.market_data)
@@ -614,6 +616,22 @@ class Dashboard:
                     break
         finally:
             self.clients.discard(ws)
+        return ws
+
+    async def ws_live(self, request: web.Request) -> web.WebSocketResponse:
+        """The loaded coin's market data pushed as Binance sends it (arbbot/livefeed.py), from the same exchange as
+        the chart's REST data. Without a Binance connection the socket just closes and the page keeps polling."""
+        ws = web.WebSocketResponse(heartbeat=20)
+        await ws.prepare(request)
+        client = getattr(self.market, "client", None)
+        session = getattr(client, "session", None)
+        if session is None:
+            await ws.close()
+            return ws
+        if self.live is None:
+            from .livefeed import LiveFeed
+            self.live = LiveFeed(session, getattr(client, "env", "mainnet"))
+        await self.live.serve(ws)
         return ws
 
     async def broadcast_loop(self) -> None:
