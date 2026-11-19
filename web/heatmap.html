@@ -4,17 +4,19 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Heatmap</title>
+<link rel="preconnect" href="https://fonts.googleapis.com"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
   /* a heatmap reads best on black: this page is always dark */
   :root {
-    --bg: #0b0b12; --panel: #10101a; --panel-2: #181824; --line: #23232f; --grid: rgba(255,255,255,0.045); --text: #e6e4ef; --muted: #8b8a99;
-    --amber: #ff9d2e; --amber-ink: #000; --pos: #26c6a6; --neg: #f23f5d; --accent: #8b7bff; --liq-long: #ff3d8b; --liq-short: #3de0ff;
+    --bg: #0b0d13; --panel: #0f1219; --pop: #10131b; --panel-2: #171b26; --line: #2a3040; --grid: rgba(255,255,255,0.045);
+    --text: #e9ebf1; --muted: #8a91a3; --faint: #5b6276; --amber: #ff7a1a; --amber-ink: #000; --pos: #26c6a6; --neg: #f23f5d; --accent: #8b7bff; --liq-long: #ff3d8b; --liq-short: #3de0ff;
     --buy: 38, 198, 166; --sell: 242, 63, 93;
     color-scheme: dark;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; height: 100%; }
-  body { background: var(--bg); color: var(--text); font: 12.5px/1.35 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  body { background: var(--bg); color: var(--text); font: 13px/1.35 Geist, ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
          display: flex; flex-direction: column; overflow: hidden; }
   .mono { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; }
   a { color: var(--muted); text-decoration: none; } a:hover { color: var(--text); }
@@ -44,7 +46,9 @@
   #ivs button { font-weight: 600; } #ivs button[aria-pressed="true"] { color: var(--amber); }
   .hbtn { display: inline-flex; align-items: center; gap: 6px; }
   .hbtn[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
-  .gear { padding: 3px 5px; }
+  .gear { padding: 0 5px; height: 30px; border-radius: 6px; background: rgba(255,255,255,0.055); color: var(--muted); font-size: 13px; }
+  .gear[aria-expanded="true"] { color: var(--text); }
+  .hbtn svg { width: 16px; height: 16px; fill: currentColor; }
   .stat { color: var(--muted); font-size: 11px; padding: 2px 12px; border-bottom: 1px solid var(--line); background: var(--panel); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .wrap { position: relative; flex: 1; min-height: 300px; touch-action: none; }
   canvas { display: block; width: 100%; height: 100%; }
@@ -53,15 +57,18 @@
   .chip { position: absolute; top: 8px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); background: color-mix(in srgb, var(--panel) 85%, transparent);
           border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; pointer-events: none; }
   .chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); display: inline-block; }
-  .pop { position: absolute; z-index: 5; width: 270px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px;
+  .pop { position: fixed; z-index: 30; width: 260px; background: var(--pop); border: 1px solid var(--line); border-radius: 11px; padding: 12px;
+         font-size: 13px; line-height: 1.35;
          box-shadow: 0 10px 30px rgba(0,0,0,.55); display: none; }
   .pop.open { display: block; }
-  .pop h3 { margin: 0 0 10px; font-size: 13px; }
-  .pop .r { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 8px 0; color: var(--muted); }
-  .pop input[type="checkbox"] { width: 16px; height: 16px; accent-color: var(--amber); margin: 0; }
-  .pop input[type="number"] { width: 90px; background: var(--panel-2); border: 1px solid var(--line); text-align: left; }
-  .pop input[type="range"] { width: 120px; accent-color: var(--amber); padding: 0; }
-  .pop p { color: var(--muted); font-size: 11px; margin: 10px 0 0; line-height: 1.45; }
+  .pop .ttl { margin: 0 0 6px; font-weight: 700; font-size: 13px; color: var(--text); }
+  .pop .r { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin: 7px 0; color: var(--muted); font-size: 12px; line-height: 1.35; cursor: pointer; }
+  .pop input { appearance: auto; font: inherit; }
+  .pop input[type="checkbox"] { width: 15px; height: 15px; margin: 0; padding: 0; accent-color: var(--amber); background: var(--panel-2); cursor: pointer; }
+  .pop input[type="number"] { width: 90px; padding: 4px 6px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 6px; color: var(--text); font-size: 12px; text-align: left; }
+  .pop input[type="number"]:focus { outline: none; border-color: var(--amber); }
+  .pop input[type="range"] { width: 120px; height: 16px; margin: 0; padding: 0; accent-color: var(--amber); background: transparent; border: 0; cursor: pointer; }
+  .pop p { color: var(--faint); font-size: 11.5px; line-height: 1.55; margin: 8px 0 0; }
   .help { color: var(--muted); font-size: 11px; }
   @media (max-width: 760px) { .hide-sm { display: none; } #sym { width: 84px; } }
 </style>
@@ -74,7 +81,7 @@
   <span class="sep"></span>
   <span id="ivs" role="group" aria-label="Timeframe"></span>
   <span class="sep"></span>
-  <button type="button" class="hbtn" id="b-heat" aria-pressed="true" title="Liquidity heatmap: the order book over time">▦ Heatmap</button>
+  <button type="button" class="hbtn" id="b-heat" aria-pressed="true" title="Liquidity heatmap: the order book over time"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="3" rx="1"></rect><rect x="3" y="10.5" width="12" height="3" rx="1"></rect><rect x="3" y="17" width="16" height="3" rx="1"></rect></svg><span class="hide-sm">Heatmap</span></button>
   <button type="button" class="gear" id="b-opt" aria-haspopup="true" aria-expanded="false" title="Liquidity heatmap options">⚙</button>
   <button type="button" id="b-candles" aria-pressed="true" title="Candles">Candles</button>
   <button type="button" id="b-reset" class="hide-sm" title="Reset the view (or double-click the chart)">⟲ Reset</button>
@@ -88,18 +95,18 @@
   <canvas id="cv" aria-label="Order book liquidity heatmap"></canvas>
   <div class="legend" id="legend"></div>
   <div class="chip" id="chip"><i></i><span>Order book · Binance</span></div>
-  <div class="pop" id="pop" role="dialog" aria-label="Liquidity heatmap options">
-    <h3>Liquidity heatmap</h3>
+</div>
+<div class="pop" id="pop" role="dialog" aria-label="Liquidity heatmap options">
+    <div class="ttl">Liquidity heatmap</div>
     <label class="r">Show heatmap background <input type="checkbox" data-o="heat"></label>
-    <label class="r">Price step <input type="number" data-o="step" min="0" step="any" title="The height of one heat band in price. Rounded to a multiple of the recorded band."></label>
+    <label class="r">Price step <input type="number" data-o="step" min="0" step="any" placeholder="auto" title="The height of one heat band in price. Rounded to a multiple of the recorded band."></label>
     <label class="r">Contrast <input type="range" data-o="contrast" min="0" max="100" step="1"></label>
     <label class="r">Volume bubbles <input type="range" data-o="bubbles" min="0" max="100" step="1" title="Big trades as bubbles (0 = off); higher = bigger bubbles"></label>
     <label class="r">Liquidity profile <input type="checkbox" data-o="profile"></label>
     <label class="r">Liquidations <input type="checkbox" data-o="liqs"></label>
     <label class="r">Strength level <input type="checkbox" data-o="strength"></label>
     <label class="r">Walls ≥ × median <input type="number" data-o="walls" min="1" max="50" step="0.5"></label>
-    <p>Recorded live from the Binance futures order book while a page shows the coin (kept 24 h, up to 3 coins, from when the coin was first opened). Exchanges don't provide order-book history.</p>
-  </div>
+    <p>Recorded live from the order book while the chart is open (kept up to 24 hours). Exchanges don't provide order-book history.</p>
 </div>
 
 <script>
@@ -199,14 +206,14 @@ const pop = $("pop");
 function syncPop() {
   pop.querySelectorAll("[data-o]").forEach(el => { const k = el.dataset.o;
     if (el.type === "checkbox") el.checked = !!OPT[k];
-    else if (k === "step") el.value = String(+(stepNow() || 0).toPrecision(6));
+    else if (k === "step") { if (document.activeElement !== el) el.value = stepNow() ? String(+stepNow().toPrecision(6)) : ""; }
     else el.value = String(OPT[k]); });
 }
 $("b-opt").addEventListener("click", e => {
   e.stopPropagation();
   const open = !pop.classList.contains("open");
-  if (open) { const b = $("b-opt").getBoundingClientRect(), w = $("wrap").getBoundingClientRect();
-    pop.style.left = Math.max(6, Math.min(b.left - w.left - 20, w.width - 280)) + "px"; pop.style.top = "6px"; syncPop(); }
+  if (open) { const b = $("b-opt").getBoundingClientRect();
+    pop.style.left = Math.max(6, Math.min(b.left, window.innerWidth - 266)) + "px"; pop.style.top = (b.bottom + 4) + "px"; syncPop(); }
   pop.classList.toggle("open", open); $("b-opt").setAttribute("aria-expanded", String(open));
 });
 document.addEventListener("click", e => { if (pop.classList.contains("open") && !pop.contains(e.target)) { pop.classList.remove("open"); $("b-opt").setAttribute("aria-expanded", "false"); } });
@@ -253,6 +260,7 @@ async function load() {
       for (const t of C.cols.keys()) if (t < first) { C.cols.delete(t); C.str.delete(t); }
       C.times = [...C.cols.keys()].sort((a, b) => a - b);
       H.img = null;
+      if (pop.classList.contains("open")) syncPop();
     }
     draw();
   } catch (e) { H.err = String(e); draw(); }
