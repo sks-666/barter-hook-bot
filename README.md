@@ -23,7 +23,7 @@ Open <http://127.0.0.1:8765>. Run the tests with `.venv/bin/python -m unittest t
 | `run.py --no-trade` | Monitor only. |
 | `run.py --live --testnet` | Real order flow against Binance **testnet**. Needs testnet API keys. |
 | `run.py --live` | Real money. Also needs `ARBBOT_LIVE_ACK` (see below). |
-| `Start Binance Bots.command` | Double-click (macOS): starts the testnet bot (port 8767, mirroring the trend, swing and smc accounts), and the real-money mainnet bot (port 8765) only if you say yes, its read-only `--check` passes and you type `TRADE REAL MONEY`. The testnet bot starts paused; the mainnet bot runs `--no-trade` (monitor only: it never opens arbitrage entries, and Resume cannot turn them on), so its only real orders are the ones you place in its dashboard's order ticket (`--real-ticket`). Both keep running after the window closes. `Stop Binance Bots.command` stops them. The testnet bot also runs the [signal auto-trader](#signal-auto-trader-testnet-only) (`--signal-trader`): it trades the terminal's combined signal with test money. |
+| `Start Binance Bots.command` | Double-click (macOS): starts the testnet bot (port 8767, mirroring the trend, swing and smc accounts), and the real-money mainnet bot (port 8770) only if you say yes, its read-only `--check` passes and you type `TRADE REAL MONEY`. The testnet bot starts paused; the mainnet bot runs `--no-trade` (monitor only: it never opens arbitrage entries, and Resume cannot turn them on), so its only real orders are the ones you place in its dashboard's order ticket (`--real-ticket`). Both keep running after the window closes. `Stop Binance Bots.command` stops them. The testnet bot also runs the [signal auto-trader](#signal-auto-trader-testnet-only) (`--signal-trader`): it trades the terminal's combined signal with test money. |
 | `Run Backtests.command` | Double-click (macOS): a menu for the backtests below, with no orders and no account access. It covers the swing strategies on 4h or daily candles (or your own choice of strategy, coins, candle size, days and risk), the journal summary, and the arbitrage replay, sweep and slippage over `data/recordings`. Each run is also saved to `logs/backtests/`: the report as `.txt`, swing trades as `.csv`. |
 
 Useful flags: `--max-markets N`, `--interval S`, `--min-samples N`, `--port P`, `--no-commands` (Telegram alerts
@@ -36,8 +36,9 @@ Both bots start with `--lan` from `Start Binance Bots.command`, so their dashboa
 
 | Bot | On this Mac | On your phone |
 |---|---|---|
-| MAINNET (real money) | http://127.0.0.1:8765 | `http://<Mac's Wi-Fi address>:8765/?key=<mainnet key>` |
-| TESTNET (demo, swing kit) | http://127.0.0.1:8767 | `http://<Mac's Wi-Fi address>:8767/?key=<testnet key>` |
+| MAINNET (real money) | http://127.0.0.1:8770 | `http://<computer's Wi-Fi address>:8770/?key=<mainnet key>` |
+| TESTNET (demo, swing kit, signal auto-trader) | http://127.0.0.1:8767 | `http://<computer's Wi-Fi address>:8767/?key=<testnet key>` |
+| PAPER (live prices, never an order) | http://127.0.0.1:8765 | `http://<computer's Wi-Fi address>:8765/?key=<paper key>` |
 
 The Mac's Wi-Fi address was `192.168.100.9` when this was written; it can change after a router restart.
 
@@ -49,6 +50,9 @@ The Mac's Wi-Fi address was `192.168.100.9` when this was written; it can change
 | `/arbitrage` | Summary cards, markets, open positions, recent trades, event log |
 | `/swing` | Swing kit accounts, funds, open positions (and whether each is on the demo account), setups, trades |
 | `/market` | Chart, order book, order ticket, positions and orders of the futures account |
+| `/terminal` | The dense trading terminal: live chart, signals, order book, whales, macro (see [Terminal and Heatmap](#terminal-terminal-and-heatmap-heatmap)) |
+| `/heatmap` | The liquidity heatmap: the Binance order book recorded over time under the candles |
+| `/trading` | The Freqtrade trading bot |
 
 The header (LIVE / TESTNET badge, Pause or Resume entries, Flatten all, theme) is on every page.
 
@@ -66,7 +70,7 @@ page. The phone remembers the key (a cookie for 180 days), so afterwards `http:/
 
 **The key, and why it is not written here.** The dashboard can pause, flatten and, on mainnet, place REAL-MONEY orders,
 so every device other than this Mac needs the key; without it, it only gets a "This dashboard is locked" page. The
-keys live only on this Mac, in `data/lan-key-8765.txt` (mainnet) and `data/lan-key-8767.txt` (testnet); `data/` is
+keys live only on this computer, in `data/lan-key-<port>.txt` (`8770` mainnet, `8767` testnet, `8765` paper); `data/` is
 never committed, so they are not in this README or on GitHub. Do not share a phone link: anyone with it can use that
 dashboard while on your Wi-Fi.
 
@@ -74,13 +78,58 @@ dashboard while on your Wi-Fi.
   WPA2/WPA3 password that only you use, that is fine; on a shared, office or public Wi-Fi, another device that can watch
   the traffic could copy the key and use the dashboard, including the mainnet order ticket. Do not use `--lan` there;
   the mainnet bot also prints this warning at start.
-* **Revoke access** (lost phone, shared link): delete `data/lan-key-8765.txt` and/or `data/lan-key-8767.txt`, restart
+* **Revoke access** (lost phone, shared link): delete the bot's `data/lan-key-<port>.txt`, restart
   the bots (Stop, then Start); new keys are made and the old links and cookies stop working.
 * **The phone cannot connect:** check it is on the same Wi-Fi (not mobile data); NordVPN can block local network
   traffic, so allow LAN / local network access in its settings or turn it off; after a router restart the address may
   have changed, so get the links again with the command above.
 * **Without the launcher:** add `--lan` to any `run.py` dashboard command; without `--lan` the dashboard stays on this
   Mac only (127.0.0.1).
+
+## Running the bots on this computer (Linux, `/srv/apps`)
+
+How the bots actually run here (checked 2026-11-19). The bots do **not** run from this git folder: they run from a
+second checkout, **`/srv/apps/binance-arb-bot`**, with its own `.venv`, `.env` (API keys) and `data/`. Code is changed
+and committed here, then copied over (step 2 below).
+
+| Bot | Port | Start | Stop | Status / log |
+|---|---|---|---|---|
+| **Testnet** (test money, swing mirror, signal auto-trader) | 8767 | `sudo systemctl start arbbot-testnet` | `sudo systemctl stop arbbot-testnet` | `systemctl status arbbot-testnet` · `journalctl -u arbbot-testnet -f` |
+| **Mainnet** (REAL money: monitor only + your order ticket, max 100 USDT an order) | 8770 | `~/vps-kit/apps/binance-arb-bot/mainnet.sh start` (`--no-ticket`: no order button at all) | `~/vps-kit/apps/binance-arb-bot/mainnet.sh stop` | `mainnet.sh status` · `/srv/apps/binance-arb-bot/logs/mainnet-bot.out` |
+| **Paper** (live prices, simulated fills) | 8765 | `sudo systemctl start arbbot-paper` | `sudo systemctl stop arbbot-paper` | `systemctl status arbbot-paper` |
+
+* **Run only one of them:** stop the others first, e.g. testnet only = `mainnet.sh stop`, then
+  `sudo systemctl start arbbot-testnet`; mainnet only = `sudo systemctl stop arbbot-testnet`, then `mainnet.sh start`.
+  Stopping a bot leaves its open positions open on Binance.
+* **After a reboot:** `arbbot-testnet` stays off (it is disabled at boot; `sudo systemctl enable arbbot-testnet` makes it
+  start by itself), `arbbot-paper` tries to start (it is enabled; `sudo systemctl disable arbbot-paper` stops that) and
+  the mainnet bot only ever starts by hand.
+* **The testnet unit's flags** (signal auto-trader, swing mirror, `--lan`) are in the drop-in
+  `/etc/systemd/system/arbbot-testnet.service.d/override.conf`.
+* **Read-only key check before mainnet** (sends no order):
+  `cd /srv/apps/binance-arb-bot && set -a && . ./.env && set +a && .venv/bin/python run.py --check --config config.toml`.
+  Your home IP changes from time to time; when Binance answers `-2015 Invalid API-key, IP, or permissions`, add the
+  new IP to the API key's allow-list on Binance.
+* **Which address for the phone:** `hostname -I` (the first address); it changes between networks. The phone link is
+  `http://<that address>:<port>/?key=$(cat /srv/apps/binance-arb-bot/data/lan-key-<port>.txt)`.
+
+**Deploying a change** (code is edited and committed in this folder):
+
+```bash
+# 1. test and commit here
+.venv/bin/python -m unittest discover -s tests -t .
+git commit -am "…"
+# 2. copy the commits into the running checkout (keeps its own config.toml edit)
+cd /srv/apps/binance-arb-bot && git pull --ff-only ~/Desktop/binance-arb-bot-main/binance-arb-bot main
+# 3. restart the bot that should run it (page-only changes in web/*.html are live without a restart: just reload)
+sudo systemctl restart arbbot-testnet          # testnet
+~/vps-kit/apps/binance-arb-bot/mainnet.sh restart   # mainnet (stopping can take up to ~3 minutes)
+# 4. publish
+git push origin main
+```
+
+On macOS the launcher scripts below (`Start Binance Bots.command`, `start-bots.sh`) still do the same from the project
+folder.
 
 ## The strategy, and what it can honestly deliver
 
@@ -475,11 +524,14 @@ news) into LONG / SHORT / WAIT, then a **quality check** (`arbbot/quality.py`) s
 guardrails learned from losing trades ([REGIME] ADX > 30 against mean reversion, [FAKEOUT] breakouts need 1.5× volume,
 [FUNDING] no crowded side while spot volume falls, [SESSION] −20% in thin hours or near a high-impact US release), a
 structural stop with TP1 ≥ 1.8R and TP2 ≥ 3R, and a pre-mortem. Each idea also gets a **signal type** (funding
-squeeze, sweep reversal, breakout, trend pullback, mean reversion, or a **custom type you build** from a menu of
+squeeze, sweep reversal, breakout, trend pullback, **candle reversal**, mean reversion, or a **custom type you build** from a menu of
 conditions on the terminal) that sets its own entry, stop, targets, extra conditions and risk; each type can be
 switched off, and its results are tracked (`/types` on Telegram). With `--live --testnet --signal-trader` the bot trades
 the TRADE rows on the Binance futures **testnet** (test money; it refuses any other account). **How the signal
 works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md](docs/SIGNAL-AUTO-TRADER.md).**
+
+You can also open a signal yourself with the **▶ Trade it** button in the terminal's Why header (same entry, stop,
+targets, size, exits and limits; see [Terminal and Heatmap](#terminal-terminal-and-heatmap-heatmap)).
 
 **What it does**
 
@@ -539,6 +591,94 @@ The terminal is otherwise a view: it can't pause, flatten or place orders. It re
 only for these auto-trader settings, and a test checks the token is sent nowhere else.
 
 Nothing here has been backtested: it is an experiment with test money.
+
+## Terminal (`/terminal`) and Heatmap (`/heatmap`)
+
+Both pages are read-only views of the market (the terminal's only controls are the testnet auto-trader's settings and
+its **▶ Trade it** button). Everything they show comes from public Binance data, relayed by the bot.
+
+**Terminal: live data**
+* **Live price, trades and forming candle** (`arbbot/livefeed.py`): the bot keeps one Binance stream connection per coin
+  the terminal shows (trades, candles of every interval, the 24h ticker, the mark price) and pushes the updates to the
+  page over `/ws/live` up to 10 times a second. The chart shows **● LIVE · lag 0.25 s** (how late Binance's newest
+  trade is when it leaves the bot; measured about 0.2-0.3 s); while it is live, price, candles and trades are polled
+  only every 30 s as a backstop, and without it the page polls every 5 s (**○ polling**). The stream is on the bot's own
+  exchange: mainnet on the mainnet bot, testnet on the testnet bot. No REST weight.
+* **The browser tab** shows the coin's live price: `64,529.90 ▲ | BTCUSDT -0.58% · Arb Terminal`.
+* The rest refreshes on timers: order book and tape 2 s (live trades go to the tape too), signals 15 s (each coin
+  re-read every 60 s), the BOOK overlay 5 s.
+
+**Terminal: chart overlays** (buttons above the chart: VWAP, EMA, CVD, LVL, WHL, EMA50, RSI, **BOOK**, SIG)
+* **BOOK** (`arbbot/orderbook.py`): which way the order book pushes, per timeframe. A strip at the bottom of the price
+  pane reads `5m ▲ UP +42 · 15m ● even −8 · 1h ▼ DOWN −31 · 4h …` (−100 sellers in control … +100 buyers; ±25 or more is a
+  call); hover a timeframe for its reasons. The score is 55% the book's **imbalance** (bids vs asks near the price,
+  averaged over the timeframe), 45% the **taker delta** of the timeframe's last 2 candles, plus **absorption** (heavy
+  selling while the price holds, or the reverse) and **walls** within 0.5%. A **BOOK** pane under CVD shows the
+  imbalance per candle, and the biggest walls are drawn as dashed lines on the price. The book is Binance **mainnet**
+  (500 levels, every 10 s, only for the coin shown, kept 24 h; on BTC 500 levels reach only about ±0.1%). Pressure, not
+  a forecast: walls can be pulled; not backtested.
+
+**Terminal: Signals panel**
+* **Signal types** now include **Candle reversal** (see below) and every pattern is shown on a **Candles** line in the
+  Why section (hover a pattern for what it means; rows with a pattern get a 🕯).
+* **▶ Trade it LONG / SHORT** (in the Why header of a coin with a LONG or SHORT signal, testnet bot only): opens that
+  signal yourself on the testnet with the auto-trader's entry, stop, TP1 (half closes), TP2, size and exits. It asks
+  first and warns when the quality check says NO TRADE, the confidence is under the auto-trader's minimum, or the
+  timeframe is not the auto-trader's. It keeps every limit (kill switch, daily loss, most open, coins held elsewhere);
+  your trades are marked "· you".
+* **TP1 reachability:** a signal is NO TRADE when TP1 is further than the price can usually travel before the time exit
+  (1.25 × LTF ATR × √(LTF candles in the hold)).
+
+**Candlestick patterns** (`arbbot/quality.candle_pattern`, on the signal's trigger candles, in their gap-free crypto
+forms, sized in ATRs, on the last 2 closed candles and dropped once the price closes through them):
+
+| Pattern (long / short) | Kind | What it shows |
+|---|---|---|
+| Bullish / bearish **engulfing** | reversal | a candle against, then a strictly bigger one its way that covers it |
+| **Hammer / shooting star** (pin bar) | reversal | a wick ≥ 2× the body toward the low / high, rejected |
+| **Morning / evening star** | reversal | a big candle against, a small one, then one its way past the first one's middle |
+| **Three white soldiers / black crows** | continuation | three solid candles its way, each closing further |
+| **Inside-bar breakout / breakdown** | continuation | a candle inside the one before, then a close past that mother candle |
+
+A reversal pattern only counts **at a support / resistance** (its extreme within 0.5 ATR of the 20-candle low / high or
+a recent swing, or up to 1.5 ATR through it). The built-in **Candle reversal** type (after Trend pullback, before Mean
+reversion) takes a reversal candle at a level, needs at least average volume and no pattern the other way, and puts the
+stop past the pattern. Custom types get four conditions: *candle*, *candle at level*, *which pattern*, *candle against*.
+Patterns add no quality points. Not backtested.
+
+**Heatmap (`/heatmap`, `arbbot/heatmap.py`)**
+
+The order book over time, like heatcharting.com: every price band coloured by the dollars resting there (dark → blue →
+cyan → green → yellow → orange → white), with the candles, the EMA 50, volume, liquidations and the book now on top.
+
+* **Data:** the bot keeps a live local copy of the Binance **mainnet** futures book from its diff-depth stream (one
+  1000-level snapshot when it connects, Binance's sync rules) and every **5 s** records the dollars per band (about
+  0.015% of the price: **10** on BTC, **0.5** on gold, ±2.5% around it), kept **24 h** in memory (about 12 MB a coin a
+  day), for up to **3 coins** each opened in the last 6 h. **The heat starts when a coin is first opened and a restart
+  clears it**: exchanges do not provide order-book history.
+* **Detail follows the screen:** the page asks for exactly the window it shows at about one column a pixel (5 s on 1m,
+  30 s on 5m, 2 min on 15m, 5 min on 1h …), so every timeframe looks equally fine; then only the newest columns every 3 s.
+* **Live:** the candle and price come over `/ws/live?src=book`; the status line shows **● LIVE · lag 0.27 s · book 5 s
+  old**.
+* **Mouse:** wheel zooms time at the cursor, drag pans time and price, drag or wheel the price scale stretches it, drag
+  the time scale zooms, double-click resets (on the price scale: price auto-fit back). The crosshair labels both scales;
+  the legend shows the candle, the EMA 50, the BID / ASK and spread, and the dollars resting under the cursor.
+* **⚙ Liquidity heatmap options:** show heatmap background, price step (a multiple of the recorded band), contrast,
+  volume bubbles (big trades; 0 = off), liquidity profile (the book now as thin lines at the right edge, red asks above,
+  teal bids below), liquidations (diamonds, the big ones named), strength level (a −100…+100 pane: bids vs asks within
+  ±0.5% over time) and walls ≥ × median (bands that big glow white-hot).
+* **Search:** the box suggests every mainnet USDT perpetual (busiest first; stocks and metals too) as you type.
+* Read-only; Binance only (heatcharting.com merges three venues).
+
+**Account reads (testnet and mainnet order tickets):** the bot follows its futures account over Binance's user-data
+WebSocket (a listen key): every fill, order and position change is pushed and triggers one read; otherwise it reads
+every 15 s instead of every 4 s (about 80% fewer requests; it falls back to 4 s while the stream is down). The log's
+request-weight line says `stream up (N pushes)`. Your home IP is shared with other customers of your provider, so the
+"weight used" Binance reports can be above what the bot itself sends.
+
+**API** (all read-only): `GET /api/market/book` (BOOK overlay), `GET /api/market/heatmap` (`symbol`, `interval`, `t0`,
+`t1`, `res`, `plo`, `phi`, `after`), `GET /api/market/heatmap-symbols`, WebSocket `/ws/live` (`?src=book` for the
+heatmap's exchange; send `{"sym": "BTCUSDT", "iv": "5m"}`).
 
 ## Trading bot: Freqtrade (`/trading`, `freqkit/`)
 
@@ -604,7 +744,7 @@ cp .env.example .env          # then put your own keys in .env (never share it)
 
 The phone link finds the computer's home-network address with `ip` (or `ifconfig` where `ip` is missing), leaving
 out VPN tunnels (tun, wg, NordLynx), Docker and virtual bridges. If the computer runs a firewall (`ufw`), allow the
-dashboard ports from your home network only, for example `sudo ufw allow from 192.168.0.0/16 to any port 8765:8767 proto tcp`.
+dashboard ports from your home network only, for example `sudo ufw allow from 192.168.0.0/16 to any port 8765:8770 proto tcp`.
 
 ### Running 24/7 (Linux systemd)
 
