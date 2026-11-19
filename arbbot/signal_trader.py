@@ -553,7 +553,49 @@ class SignalTrader:
             raise ValueError(f"the order book is too thin for its stop: {size:.6g} within reach of the stop, "
                              f"needs {DEPTH_X:g}x the position ({DEPTH_X * qty:.6g})")
 
-    async def take(self, sym: str, window_s: float | None = None) -> dict:
+    @staticmethod
+    def _plan(plan: dict, long: bool) -> dict:
+        """Your own levels from the trade ticket, checked: {type: market|limit, entry, stop, tp1 (or none), tp2,
+        size_usd (or none: the setting), leverage (or none: the setting), wait_s (a limit entry's life)}."""
+        if not isinstance(plan, dict):
+            raise ValueError("the trade ticket must be an object")
+        num = lambda k, need=True: SignalTrader._num(plan.get(k), k, need)     # noqa: E731
+        typ = plan.get("type", "limit")
+        if typ not in ("market", "limit"):
+            raise ValueError("the order type must be market or limit")
+        out = dict(type=typ, entry=num("entry", typ == "limit"), stop=num("stop"), tp1=num("tp1", False),
+                   tp2=num("tp2"), size_usd=num("size_usd", False))
+        lev = plan.get("leverage")
+        if lev is not None and not (isinstance(lev, int) and not isinstance(lev, bool)
+                                    and LEVERAGE_RANGE[0] <= lev <= LEVERAGE_RANGE[1]):
+            raise ValueError(f"the leverage must be a whole number from {LEVERAGE_RANGE[0]} to {LEVERAGE_RANGE[1]}")
+        out["leverage"] = lev
+        if out["size_usd"] is not None and not SIZE_RANGE[0] <= out["size_usd"] <= SIZE_RANGE[1]:
+            raise ValueError(f"the position size must be from ${SIZE_RANGE[0]:g}")
+        wait = plan.get("wait_s")
+        out["wait_s"] = None if wait in (None, "") else _clamp(float(wait), 60, 7 * 86_400)
+        e, sl, t1, t2 = out["entry"], out["stop"], out["tp1"], out["tp2"]
+        sign = 1 if long else -1                                      # long: stop < entry < TP1 <= TP2
+        if e is not None and not (sign * (e - sl) > 0 and sign * (t2 - e) > 0):
+            raise ValueError(f"for a {'LONG' if long else 'SHORT'} the stop must be {'below' if long else 'above'} the "
+                             f"entry and TP2 {'above' if long else 'below'} it")
+        if sign * (t2 - sl) <= 0:
+            raise ValueError("TP2 must be on the other side of the stop")
+        if t1 is not None and (sign * (t2 - t1) < 0 or (e is not None and sign * (t1 - e) <= 0)):
+            raise ValueError("TP1 must be between the entry and TP2")
+        return out
+
+    @staticmethod
+    def _num(v, key: str, need: bool = True):
+        if v in (None, ""):
+            if need:
+                raise ValueError(f"{key} is missing")
+            return None
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or not v > 0:
+            raise ValueError(f"{key} must be a price above 0")
+        return float(v)
+
+    async def take(self, sym: str, window_s: float | None = None, plan: dict | None = None) -> dict:
         """Open the coin's signal now because YOU said so (the terminal's Trade button): the same entry, stop, TP1, TP2,
         sizing, leverage and exits as an automatic trade, read fresh for the timeframe given (the auto-trader's when
         None). It may take a NO TRADE verdict or one below the confidence bar (you decided), and works with automatic
@@ -584,38 +626,51 @@ class SignalTrader:
             if not (r.get("entry") and r.get("stop") and r.get("target")):
                 raise ValueError(f"{sym} has no valid stop and targets right now: " + "; ".join(r.get("gates") or []))
             now_ms = int(self.clock() * 1000)
-            await self._open(sym, r, now_ms, window_s=w, manual=True)
+            if plan is not None:                                      # your levels, exactly as the ticket shows them
+                plan = self._plan(plan, r["bias"] == "long")
+                r = dict(r, entry=plan["entry"] or r["mark"], stop=plan["stop"], tp1=plan["tp1"], target=plan["tp2"])
+            await self._open(sym, r, now_ms, window_s=w, manual=True, plan=plan)
             self.s["cooldown"].pop(sym, None)
             self._save()
             rec = self.s["open"].get(sym) or self.s["pending"].get(sym) or {}
             return dict(rec, symbol=sym, status="open" if sym in self.s["open"] else "waiting")
 
-    async def _open(self, sym: str, r: dict, now_ms: int, window_s: float | None = None, manual: bool = False) -> None:
+    async def _open(self, sym: str, r: dict, now_ms: int, window_s: float | None = None, manual: bool = False,
+                    plan: dict | None = None) -> None:
         q = await self.ticket._quote(sym, book=True)
         here = (q["bid"] + q["ask"]) / 2
-        drift = here / r["mark"] - 1
-        if abs(drift) > MAX_DRIFT:
-            raise ValueError(f"the {self.venue} price is {drift * 100:+.1f}% from the signal's")
-        k = here / r["mark"]                                          # mainnet levels moved onto the testnet price
         long = r["bias"] == "long"
         side = "buy" if long else "sell"
+        if plan is not None:                                          # your ticket: its prices on this account, as given
+            k, market, lev = 1.0, plan["type"] == "market", plan["leverage"] or self.leverage
+        else:
+            drift = here / r["mark"] - 1
+            if abs(drift) > MAX_DRIFT:
+                raise ValueError(f"the {self.venue} price is {drift * 100:+.1f}% from the signal's")
+            k = here / r["mark"]                                      # mainnet levels moved onto the testnet price
+            market = abs(r["entry"] / r["mark"] - 1) * 100 < MARKET_WITHIN_PCT
+            lev = self.leverage
         entry, stop, target = r["entry"] * k, r["stop"] * k, r["target"] * k
         tp1 = r["tp1"] * k if r.get("tp1") else None
-        market = abs(r["entry"] / r["mark"] - 1) * 100 < MARKET_WITHIN_PCT
         ref = (q["ask"] if long else q["bid"]) if market else entry
         if long and not stop < ref < target or not long and not target < ref < stop:
-            raise ValueError("the price has already moved past the stop or the target")
+            raise ValueError(f"the price ({ref:.6g}) has already moved past the stop or the target")
+        if tp1 is not None and (tp1 <= ref if long else tp1 >= ref):
+            tp1 = None                                                # the price is already past TP1: no partial exit
         mult = float(((r.get("quality") or {}).get("type") or {}).get("risk_mult") or 1.0)   # the signal type's risk x
-        qty = self.position_usd(ref, stop, mult) / ref
+        if plan is not None and plan["size_usd"]:
+            qty = min(plan["size_usd"], self.max_usd) / ref
+        else:
+            qty = self.position_usd(ref, stop, mult) / ref
         avail = self.available_usd()
-        need = qty * ref / self.leverage * MARGIN_BUFFER
+        need = qty * ref / lev * MARGIN_BUFFER
         if avail is not None and need > avail:
-            raise ValueError(f"a ${qty * ref:,.2f} position at {self.leverage}x needs about {need:,.2f} USDT of margin; "
+            raise ValueError(f"a ${qty * ref:,.2f} position at {lev}x needs about {need:,.2f} USDT of margin; "
                              f"{avail:,.2f} is available. Lower the position size or raise the leverage")
         self._check_exit_depth(q.get("book"), long, ref, stop, qty)
-        await self._check_liquidation(sym, long, ref, stop, qty * ref)
-        if getattr(self.ticket, "leverage", {}).get(sym) != self.leverage:   # low leverage: last in the ADL queue
-            await self.ticket.set_leverage(sym, self.leverage)
+        await self._check_liquidation(sym, long, ref, stop, qty * ref, lev)
+        if getattr(self.ticket, "leverage", {}).get(sym) != lev:     # low leverage: last in the ADL queue
+            await self.ticket.set_leverage(sym, lev)
         # stop and target trigger on the MARK price: a stray trade on a thin testnet book can spike the last price (and
         # fill the stop there), not the mark
         order = dict(symbol=sym, side=side, qty=qty, tp=target, sl=stop, trigger="mark")
@@ -626,7 +681,8 @@ class SignalTrader:
         o = await self.ticket.place_order(order)
         rec = dict(side=side, entry=o.get("filled_px") or ref, stop=stop, target=target, score=r["score"],
                    confidence=r["confidence"], risk_usd=qty * abs(ref - stop), order_id=o.get("id"),
-                   window_s=window_s or self.window_s, manual=manual or None, leverage=getattr(self.ticket, "leverage", {}).get(sym) or self.leverage,
+                   window_s=window_s or self.window_s, manual=manual or None, leverage=getattr(self.ticket, "leverage", {}).get(sym) or lev,
+                   your_levels=True if plan is not None else None,
                    tp1=tp1, quality=(r.get("quality") or {}).get("quality"),
                    type=r.get("signal_type"), type_name=r.get("signal_type_name"),
                    regime=((r.get("quality") or {}).get("regime") or {}).get("name"))
@@ -638,27 +694,29 @@ class SignalTrader:
                         f"{f' TP1 {tp1:.6g}' if tp1 else ''} TP2 {target:.6g}")
             await self._place_tp1(sym, self.s["open"][sym])
         elif o.get("status") == "new":
-            self.s["pending"][sym] = dict(rec, qty=qty, placed_ms=now_ms,
-                                          expires_ms=now_ms + int(self.entry_ttl_s * 1000))
-            self.notify(f"{f'🖐 {self.tag} YOUR' if manual else f'🤖 {self.tag}'} signal {side.upper()} {sym}: limit {entry:.6g} for {self.entry_ttl_s / 60:.0f} min "
+            ttl = (plan or {}).get("wait_s") or self.entry_ttl_s
+            self.s["pending"][sym] = dict(rec, qty=qty, placed_ms=now_ms, expires_ms=now_ms + int(ttl * 1000))
+            self.notify(f"{f'🖐 {self.tag} YOUR' if manual else f'🤖 {self.tag}'} signal {side.upper()} {sym}: limit {entry:.6g} for {ttl / 60:.0f} min "
                         f"(score {r['score'] * 100:+.0f}, conf {r['confidence']}) stop {stop:.6g} target {target:.6g}")
         else:
             raise ValueError(f"the entry came back {o.get('status')}")
         log.info("signal trader: %s %s %s qty %g entry %g stop %g target %g", "market" if market else "limit",
                  side, sym, qty, rec["entry"], stop, target)
 
-    async def _check_liquidation(self, sym: str, long: bool, ref: float, stop: float, notional: float) -> None:
-        """Refuse a trade Binance would liquidate before its stop (isolated margin at self.leverage)."""
+    async def _check_liquidation(self, sym: str, long: bool, ref: float, stop: float, notional: float,
+                                 lev: int | None = None) -> None:
+        """Refuse a trade Binance would liquidate before its stop (isolated margin at lev, else self.leverage)."""
+        lev = lev or self.leverage
         tiers_of = getattr(self.ticket, "brackets", None)
         if tiers_of is None:
             return
         from .testnet_ticket import liquidation_price
         tiers = (await tiers_of()).get(sym)
-        if tiers and self.leverage > tiers[0][3]:
+        if tiers and lev > tiers[0][3]:
             raise ValueError(f"{sym} allows at most {tiers[0][3]:g}x leverage")
-        liq = liquidation_price(long, ref, notional, self.leverage, tiers)
+        liq = liquidation_price(long, ref, notional, lev, tiers)
         if (liq >= stop) if long else (liq <= stop):
-            raise ValueError(f"at {self.leverage}x it would be liquidated near {liq:.6g}, before its stop {stop:.6g}: "
+            raise ValueError(f"at {lev}x it would be liquidated near {liq:.6g}, before its stop {stop:.6g}: "
                              f"lower the leverage")
 
     def available_usd(self) -> float | None:

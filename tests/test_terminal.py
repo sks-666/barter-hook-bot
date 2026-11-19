@@ -28,7 +28,7 @@ class TerminalTests(LanTests):
         with_token = re.findall(r'fetch\(([^,]+),\s*\{[^}]*"X-Token"', html)
         self.assertEqual(with_token, ['"/api/accounts"', '"/api/signal-trader"', '"/api/signal-types"'])
         self.assertEqual(html.count('"X-Token"'), 3)
-        self.assertIn("autoPost({ take: sym, tf: S.sgw })", html)          # the one order it can send
+        self.assertIn("autoPost({ take: sym, tf: S.sgw, plan: p })", html)  # the one order it can send
 
     async def test_a_phone_needs_the_key(self):
         await self.start()

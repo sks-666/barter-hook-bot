@@ -138,6 +138,38 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             t.set_size_usd(2)                                    # below Binance's smallest order
 
+    async def test_the_trade_ticket_sends_exactly_your_levels(self):
+        t = self.make(max_usd=1000)                              # the ticket's price is 101, the signal's 100
+        plan = dict(type="limit", entry=99.5, stop=97.25, tp1=103.0, tp2=106.0, size_usd=50, leverage=4, wait_s=3600)
+        rec = await t.take("SOLUSDT", plan=plan)
+        o = self.ticket.sent[0]
+        self.assertEqual((o["type"], o["price"], o["sl"], o["tp"]), ("limit", 99.5, 97.25, 106.0))   # not moved by 1%
+        self.assertAlmostEqual(o["qty"] * 99.5, 50.0)            # your size
+        self.assertEqual(self.ticket.lev_set, [("SOLUSDT", 4)])  # your leverage, for this trade only
+        self.assertEqual(t.leverage, 5)
+        self.assertEqual((rec["status"], rec["tp1"], rec["your_levels"]), ("waiting", 103.0, True))
+        self.assertEqual(t.s["pending"]["SOLUSDT"]["expires_ms"] - t.s["pending"]["SOLUSDT"]["placed_ms"], 3_600_000)
+
+    async def test_a_market_ticket_fills_now_with_your_stop_and_targets(self):
+        t = self.make(max_usd=1000)
+        await t.take("SOLUSDT", plan=dict(type="market", stop=99.0, tp2=110.0, tp1=None, size_usd=20))
+        o = self.ticket.sent[0]
+        self.assertEqual((o["type"], o["sl"], o["tp"]), ("market", 99.0, 110.0))
+        self.assertIn("SOLUSDT", t.s["open"])
+
+    async def test_a_ticket_with_wrong_levels_is_refused(self):
+        t = self.make()
+        for bad in (dict(type="limit", entry=100, stop=101, tp2=106),          # stop above a LONG's entry
+                    dict(type="limit", entry=100, stop=98, tp2=99),            # TP2 below the entry
+                    dict(type="limit", entry=100, stop=98, tp1=107, tp2=106),  # TP1 past TP2
+                    dict(type="limit", stop=98, tp2=106),                      # a limit with no entry
+                    dict(type="market", stop=102, tp2=110),                    # the price (101) is under the stop
+                    dict(type="limit", entry=100, stop=98, tp2=106, leverage=61),
+                    dict(type="stop", entry=100, stop=98, tp2=106)):
+            with self.assertRaises(ValueError, msg=bad):
+                await t.take("SOLUSDT", plan=bad)
+        self.assertEqual(self.ticket.sent, [])
+
     async def test_a_trade_liquidated_before_its_stop_is_refused(self):
         t = self.make(max_usd=100)
         t.set_size_usd(30)

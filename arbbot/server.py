@@ -290,7 +290,7 @@ class Dashboard:
             if tf is not None and (not isinstance(tf, int) or isinstance(tf, bool)):
                 return web.json_response({"ok": False, "error": "tf must be a whole number of seconds"}, status=400)
             try:
-                rec = await tr.take(body.get("take"), tf)
+                rec = await tr.take(body.get("take"), tf, body.get("plan"))
             except ValueError as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400)
             except Exception as e:                # noqa: BLE001 - the exchange refused it: say so, never crash

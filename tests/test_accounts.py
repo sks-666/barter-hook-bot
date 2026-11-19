@@ -35,7 +35,7 @@ class Trader:
     def view(self):
         return {"who": self.name, "manual_only": True}
 
-    async def take(self, sym, tf):
+    async def take(self, sym, tf, plan=None):
         self.taken.append(sym)
         return {"symbol": sym, "status": "open"}
 

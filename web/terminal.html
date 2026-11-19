@@ -319,6 +319,27 @@
   .kpis .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; }
   .kpis .v { font-size: 13px; font-weight: 700; }
   .kpis.bal { margin-bottom: 4px; }
+  .tk-back { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 12px; z-index: 40; }
+  .tk-back[hidden] { display: none; }
+  .tk { background: var(--panel); border: 1px solid var(--amber); width: 100%; max-width: 640px; max-height: 94vh; overflow: auto; padding: 0 14px 12px; }
+  .tk-top { margin: 0 -14px 8px; padding: 5px 14px; font-weight: 700; background: var(--panel-2); color: var(--muted); }
+  .tk-top.real { background: var(--neg); color: #fff; }
+  .tk h3 { margin: 4px 0 6px; font-size: 14px; }
+  .tk-now { font-size: 12px; margin-bottom: 8px; display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tk-type { display: grid; gap: 3px; font-size: 12px; margin-bottom: 8px; }
+  .tk-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; margin-bottom: 8px; }
+  .tk-f { display: grid; gap: 2px; font-size: 11px; color: var(--muted); }
+  .tk-f input, .tk-f select { font: inherit; font-size: 13px; color: var(--text); background: var(--bg); border: 1px solid var(--line); padding: 4px 6px; width: 100%; box-sizing: border-box; }
+  .tk-f input:disabled { opacity: .45; }
+  .tk-f i { font-style: normal; font-size: 10px; }
+  .tk-calc { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 1px; background: var(--line); border: 1px solid var(--line); margin-bottom: 8px; }
+  .tk-calc > div { background: var(--panel-2); padding: 4px 8px; display: flex; justify-content: space-between; gap: 8px; font-size: 12px; }
+  .tk-calc span { color: var(--muted); } .tk-calc b { text-align: right; } .tk-calc i { font-style: normal; font-weight: 400; color: var(--muted); }
+  .tk-warn { font-size: 11.5px; line-height: 1.5; margin-bottom: 8px; }
+  .tk-btns { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+  .tk-btns button { font: inherit; padding: 6px 12px; cursor: pointer; }
+  .tk-btns #tk-go:disabled { opacity: .5; cursor: not-allowed; }
+  .tk-msg { font-size: 12px; margin-top: 6px; }
   #t-acct { font: inherit; font-size: 11px; font-weight: 700; color: #fff; background: var(--neg); border: 1px solid var(--neg);
             border-radius: 3px; padding: 1px 4px; cursor: pointer; }
   #t-acct option { color: #000; background: #fff; }
@@ -2353,36 +2374,148 @@ function takeBtn(me) {
   const L = me.bias === "long";
   return ` <button class="take ${L ? "up" : "dn"}" data-take="${esc(me.symbol)}" title="${a.manual_only ? "Open this signal with REAL MONEY on your Binance futures account (it asks first)" : "Open this signal yourself on the testnet now"}: the same entry, stop, TP1 (half closes), TP2, size and exits as an automatic trade">▶ Trade it ${L ? "LONG" : "SHORT"}</button>`;
 }
-document.addEventListener("click", async ev => {
+// The trade ticket (the ▶ Trade it popup): the signal's levels to check and change, every number recomputed as you
+// type, and the order is sent with exactly these prices (POST /api/signal-trader {take, tf, plan}).
+const TK = { sym: null, timer: null };
+function tkPx(sym) {                                               // the price now: the live quote for the coin shown
+  const me = (S.combo?.rows || []).find(x => x.symbol === sym);
+  return (S.sym === sym && S.info?.last) || me?.mark || null;
+}
+function tkOpen(sym) {
+  const a = S.auto, me = (S.combo?.rows || []).find(x => x.symbol === sym);
+  if (!a || !me) return;
+  TK.sym = sym; TK.me = me; TK.long = me.bias === "long";
+  const at = Math.abs(me.to_entry_pct || 0) < 0.1;                // the signal's entry is the price now
+  const d = Math.abs(me.entry - me.stop) / me.entry, mult = me.quality?.type?.risk_mult || 1;
+  const size = Math.min(a.size_usd || a.risk_usd * mult / d, a.max_usd);
+  let el = $("tk");
+  if (!el) { el = document.createElement("div"); el.id = "tk"; el.className = "tk-back"; document.body.appendChild(el); }
+  const real = a.manual_only, acct = S.accts ? S.accts.label + " account" : (real ? "mainnet account" : "TESTNET");
+  const lv = a.leverage_range || [1, 60], wait = Math.round((a.entry_ttl_s || 1800) / 60);
+  const inp = (id, v, lbl, hint = "") => `<label class="tk-f"><span>${lbl}</span><input id="${id}" type="number" step="any" min="0" value="${v ?? ""}" inputmode="decimal">${hint ? `<i>${hint}</i>` : ""}</label>`;
+  el.innerHTML = `<div class="tk" role="dialog" aria-modal="true" aria-labelledby="tk-h">
+    <div class="tk-top ${real ? "real" : ""}">${real ? "⚠ REAL MONEY · " : ""}${esc(acct)}</div>
+    <h3 id="tk-h"><span class="${TK.long ? "up" : "dn"}">${TK.long ? "▲ BUY / LONG" : "▼ SELL / SHORT"}</span> ${esc(sym)}
+      <span class="mut" style="font-size:.8em">· ${esc(me.quality?.type?.name || "signal")} · ${flowLabel(S.sgw)} · score ${sgn(me.score * 100, 0)} · conf ${me.confidence} · ${me.verdict === "trade" ? '<b class="up">TRADE</b>' : '<b class="dn">NO TRADE</b>'}</span></h3>
+    <div class="tk-now">Price now <b id="tk-now">—</b> <span class="mut">· signal entry ${px(me.entry)} · stop ${px(me.stop)} · ${me.tp1 ? "TP1 " + px(me.tp1) + " · " : ""}TP2 ${px(me.target)}</span>
+      <button type="button" class="auto-tf" id="tk-reset" title="Put the signal's levels back">signal levels</button></div>
+    <div class="tk-type" role="radiogroup" aria-label="Order type">
+      <label><input type="radio" name="tk-type" value="limit"${at ? "" : " checked"}> <b>Limit</b> at my entry price (fills only at that price or better)</label>
+      <label><input type="radio" name="tk-type" value="market"${at ? " checked" : ""}> <b>Market</b> now (fills at the price now, up to 0.3% slippage)</label>
+    </div>
+    <div class="tk-grid">
+      ${inp("tk-entry", me.entry, "Entry", "limit price")}
+      ${inp("tk-stop", me.stop, "Stop loss (SL)", "closes all, on Binance")}
+      ${inp("tk-tp1", me.tp1, "TP1", "half closes · blank = none")}
+      ${inp("tk-tp2", me.target, "TP2 (take profit)", "the rest closes")}
+      ${inp("tk-size", +size.toFixed(2), "Position size $", "at most $" + a.max_usd)}
+      <label class="tk-f"><span>Leverage</span><select id="tk-lev">${Array.from({ length: lv[1] - lv[0] + 1 }, (_, i) => lv[0] + i).map(k => `<option value="${k}"${k === a.leverage ? " selected" : ""}>${k}x</option>`).join("")}</select><i>isolated margin</i></label>
+      ${inp("tk-wait", wait, "Limit waits (min)", "then it is cancelled")}
+    </div>
+    <div id="tk-calc" class="tk-calc"></div>
+    <div id="tk-warn" class="tk-warn"></div>
+    <div class="tk-btns"><button type="button" id="tk-cancel">Cancel</button><button type="button" id="tk-go" class="take ${TK.long ? "up" : "dn"}">Confirm</button></div>
+    <div id="tk-msg" class="tk-msg" role="status"></div>
+  </div>`;
+  el.hidden = false;
+  el.oninput = tkCalc; el.onchange = tkCalc;
+  el.onclick = ev => { if (ev.target === el || ev.target.id === "tk-cancel") tkClose(); };
+  $("tk-reset").onclick = () => { $("tk-entry").value = me.entry; $("tk-stop").value = me.stop; $("tk-tp1").value = me.tp1 ?? ""; $("tk-tp2").value = me.target; tkCalc(); };
+  $("tk-go").onclick = tkSend;
+  clearInterval(TK.timer); TK.timer = setInterval(tkCalc, 1000);  // the price moves: keep every number current
+  tkCalc();
+  $("tk-stop").focus();
+}
+function tkClose() { clearInterval(TK.timer); TK.sym = null; const el = $("tk"); if (el) el.hidden = true; }
+document.addEventListener("keydown", ev => { if (ev.key === "Escape" && TK.sym) tkClose(); });
+function tkRead() {
+  const v = id => { const x = $(id).value.trim(); return x === "" ? null : Number(x); };
+  const type = document.querySelector('input[name="tk-type"]:checked').value;
+  return { type, entry: v("tk-entry"), stop: v("tk-stop"), tp1: v("tk-tp1"), tp2: v("tk-tp2"), size_usd: v("tk-size"),
+           leverage: Number($("tk-lev").value), wait_s: v("tk-wait") != null ? v("tk-wait") * 60 : null };
+}
+function tkCalc() {
+  if (!TK.sym || !$("tk-calc")) return;
+  const a = S.auto, me = TK.me, L = TK.long, sg = L ? 1 : -1, now = tkPx(TK.sym), p = tkRead();
+  $("tk-now").textContent = now ? px(now) : "—";
+  $("tk-entry").disabled = p.type === "market"; $("tk-wait").disabled = p.type === "market";
+  const E = p.type === "market" ? now : p.entry, errs = [], warns = [];
+  const bad = x => x == null || !(x > 0);
+  if (bad(E)) errs.push(p.type === "market" ? "No price yet." : "Give an entry price.");
+  if (bad(p.stop)) errs.push("Give a stop loss.");
+  if (bad(p.tp2)) errs.push("Give TP2.");
+  if (!errs.length) {
+    if (sg * (E - p.stop) <= 0) errs.push(`The stop must be ${L ? "below" : "above"} the entry for a ${L ? "LONG" : "SHORT"}.`);
+    if (sg * (p.tp2 - E) <= 0) errs.push(`TP2 must be ${L ? "above" : "below"} the entry.`);
+    if (p.tp1 != null && (sg * (p.tp1 - E) <= 0 || sg * (p.tp2 - p.tp1) < 0)) errs.push("TP1 must be between the entry and TP2.");
+  }
+  if (bad(p.size_usd) || p.size_usd < 5) errs.push("The position size must be at least $5 (Binance's smallest on most coins).");
+  let html = "";
+  if (!errs.length) {
+    const pos = Math.min(p.size_usd, a.max_usd), q = pos / E, lev = p.leverage, fee = (S.acct?.taker_bps ?? 5) / 1e4;
+    if (p.size_usd > a.max_usd) warns.push(`Size capped at $${a.max_usd} (the ticket's per-order limit).`);
+    const tiers = S.brk?.[TK.sym] || [[Infinity, 0.01, 0, 20]], coinMax = tiers[0][3];
+    if (lev > coinMax) errs.push(`${TK.sym} allows at most ${coinMax}x leverage.`);
+    const [, mmr, cum] = tiers.find(t => pos <= t[0]) || tiers[tiers.length - 1];
+    const m = pos / lev, liq = L ? Math.max(0, (m + cum - q * E) / (q * mmr - q)) : (m + cum + q * E) / (q * mmr + q);
+    const liqFirst = L ? liq >= p.stop : liq <= p.stop;
+    if (liqFirst) errs.push(`Liquidated at ${px(liq)} BEFORE the stop ${px(p.stop)}: lower the leverage or move the stop closer.`);
+    const fees = (E2 => q * (E + E2) * fee), risk = q * Math.abs(E - p.stop) + fees(p.stop);
+    const half = p.tp1 != null ? 0.5 : 0;
+    const win1 = p.tp1 != null ? q * half * Math.abs(p.tp1 - E) - q * half * (E + p.tp1) * fee : null;
+    const win2 = q * (1 - half) * Math.abs(p.tp2 - E) - q * (1 - half) * (E + p.tp2) * fee;
+    const bothWin = (win1 || 0) + win2, need = m * 1.02, avail = a.available;
+    if (avail != null && need > avail) errs.push(`Needs ~$${need.toFixed(2)} of margin; $${avail.toFixed(2)} is available.`);
+    const pct = x => sgn((x - E) / E * 100, 2) + "%";
+    if (p.type === "limit" && now) {
+      const off = (p.entry - now) / now * 100;
+      if (sg * off > 0.02) warns.push(`Your limit ${L ? "buy is above" : "sell is below"} the price now (${sgn(off, 2)}%): it fills AT ONCE near the price now, like a market order.`);
+      else warns.push(`Waits for the price to come to ${px(p.entry)} (${sgn(off, 2)}% from now), at most ${p.wait_s / 60} min, then cancels.`);
+    }
+    if (me.verdict !== "trade") warns.push("The quality check says NO TRADE: " + (me.gates || []).join(" · "));
+    if (me.confidence < a.min_conf) warns.push(`Confidence ${me.confidence} is under ${a.min_conf}.`);
+    const hold = dur(Math.max(1800, Math.min(604800, 2 * S.sgw)));
+    warns.push(a.auto_close === false ? "Auto close is OFF: only the stop, TP1, TP2 or you close it." :
+      `Auto close is ON: it also closes at market if the signal flips or after ${hold}.`);
+    const row = (l, v, c = "") => `<div><span>${l}</span><b class="${c}">${v}</b></div>`;
+    html = row("Entry", `${p.type === "market" ? "≈ " : ""}${px(E)}`) +
+      row("Stop loss", `${px(p.stop)} <i>${pct(p.stop)}</i>`, "dn") +
+      row("Loss at stop", `−$${risk.toFixed(2)} <i>incl. $${fees(p.stop).toFixed(2)} fees</i>`, "dn") +
+      (p.tp1 != null ? row("TP1 (half)", `${px(p.tp1)} <i>${pct(p.tp1)} · +$${win1.toFixed(2)} · ${(Math.abs(p.tp1 - E) / Math.abs(E - p.stop)).toFixed(2)}R</i>`, "up") : row("TP1", "none", "mut")) +
+      row(p.tp1 != null ? "TP2 (rest)" : "TP2 (all)", `${px(p.tp2)} <i>${pct(p.tp2)} · +$${win2.toFixed(2)} · ${(Math.abs(p.tp2 - E) / Math.abs(E - p.stop)).toFixed(2)}R</i>`, "up") +
+      row("Win at both targets", `+$${bothWin.toFixed(2)} <i>${(bothWin / risk).toFixed(2)} × the loss</i>`, "up") +
+      row("Position", `$${pos.toFixed(2)} <i>${num(q, q < 1 ? 6 : 3)} ${esc(TK.sym.replace(/USDT$/, ""))}</i>`) +
+      row("Margin", `$${need.toFixed(2)} <i>at ${lev}x${avail != null ? " · $" + avail.toFixed(2) + " available" : ""}</i>`, avail != null && need > avail ? "dn" : "") +
+      row("Liquidation", `${liq > 0 ? px(liq) : "none"} <i>${liq > 0 ? pct(liq) : ""} · ${liqFirst ? "⚠ before the stop" : "stop is " + (Math.abs(liq - p.stop) / E * 100).toFixed(2) + "% before it"} · maint. ${(mmr * 100).toFixed(2)}%</i>`, liqFirst ? "dn" : "") +
+      row("Fees", `~$${(fees(p.tp2)).toFixed(2)} round trip <i>taker ${(fee * 100).toFixed(3)}% each side</i>`, "mut");
+  }
+  $("tk-calc").innerHTML = html;
+  $("tk-warn").innerHTML = [...errs.map(e => `<div class="dn">✕ ${esc(e)}</div>`), ...warns.map(w => `<div>• ${esc(w)}</div>`)].join("");
+  const go = $("tk-go");
+  go.disabled = errs.length > 0 || TK.sending;
+  if (!TK.sending) go.textContent = errs.length ? "Fix the levels first" :
+    `Confirm ${L ? "BUY LONG" : "SELL SHORT"} $${Math.min(p.size_usd, a.max_usd).toFixed(2)} ${p.type === "market" ? "at market" : "limit " + px(p.entry)}${a.manual_only ? " · REAL MONEY" : ""}`;
+}
+async function tkSend() {
+  const sym = TK.sym, p = tkRead(), L = TK.long;
+  if (p.type === "market") p.entry = null;
+  if (p.tp1 == null) p.tp1 = null;
+  TK.sending = true; const go = $("tk-go"); go.disabled = true; go.textContent = "sending…";
+  $("tk-msg").textContent = "";
+  try {
+    const { taken } = await autoPost({ take: sym, tf: S.sgw, plan: p });
+    tkClose();
+    alert(`${sym} ${taken.status === "open" ? "opened at " + px(taken.entry) : "limit order placed at " + px(taken.entry)} · stop ${px(taken.stop)}` +
+          `${taken.tp1 ? " · TP1 " + px(taken.tp1) : ""} · TP2 ${px(taken.target)}`);
+  } catch (err) {
+    $("tk-msg").innerHTML = `<span class="dn">Not sent: ${esc(err.message)}</span>`;
+  }
+  TK.sending = false; tkCalc();
+}
+document.addEventListener("click", ev => {
   const b = ev.target.closest("[data-take]");
   if (!b || b.disabled) return;
-  const sym = b.dataset.take, a = S.auto, me = (S.combo?.rows || []).find(x => x.symbol === sym);
-  if (!a || !me) return;
-  const L = me.bias === "long", mult = me.quality?.type?.risk_mult || 1, warn = [];
-  if (me.verdict !== "trade") warn.push("⚠ The quality check says NO TRADE:\n  - " + (me.gates || []).join("\n  - "));
-  if (me.confidence < a.min_conf) warn.push(`⚠ Confidence ${me.confidence} is below the auto-trader's ${a.min_conf}.`);
-  const hold = dur(Math.max(1800, Math.min(604800, 2 * S.sgw)));
-  if (a.manual_only) warn.push(`It then manages itself: stop and TP2 sit on Binance, half closes at TP1 and the stop moves to breakeven` +
-    (a.auto_close !== false ? `, and it closes at market if this ${flowLabel(S.sgw)} signal flips (confidence ≥ ${a.min_conf}) or after ${hold}.` : `. Auto close is OFF: it is never closed at market by the bot; only the stop, TP1, TP2 or you.`));
-  else if (S.sgw !== a.window_s) warn.push(`This is the ${flowLabel(S.sgw)} signal (the auto-trader trades ${flowLabel(a.window_s)}): it closes after ${hold}.`);
-  const where = a.manual_only ? `your REAL ${S.accts ? S.accts.label + " " : ""}Binance futures account (REAL MONEY)` : "the Binance futures TESTNET";
-  const msg = `${a.manual_only ? "⚠ REAL MONEY ⚠\n" : ""}${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on ${where} now?\n\n` +
-    `Entry ${px(me.entry)}${Math.abs(me.to_entry_pct || 0) < 0.1 ? " (market)" : " (limit, waits up to " + dur(a.entry_ttl_s) + ")"} · stop ${px(me.stop)} · ` +
-    (me.tp1 ? `TP1 ${px(me.tp1)} (half closes) · ` : "") + `TP2 ${px(me.target)}\n` +
-    (() => { const Q = liqOf(me, a), avail = a.available;
-             return `Position about $${Q.pos.toFixed(2)}${a.size_usd ? " (your size)" : ""} · ${Q.lev}x isolated${Q.levCapped ? ` (this coin's limit, not ${a.leverage}x)` : ""} · ${me.quality?.type?.name || "signal"}\n` +
-                    `Margin about $${Q.margin.toFixed(2)}${avail != null ? ` · $${avail.toFixed(2)} available${Q.margin > avail ? " ⚠ NOT ENOUGH: it will be refused" : ""}` : ""}\n` +
-                    `Loss at the stop about $${Q.loss.toFixed(2)} (incl. ~$${Q.fees.toFixed(2)} fees)\n` +
-                    `Liquidation about ${Q.liq > 0 ? px(Q.liq) + ` (${Q.long ? "−" : "+"}${Q.dist.toFixed(1)}% from entry)` : "none"}` +
-                    (Q.safe ? ` · the stop comes first, ${Q.room.toFixed(2)}% before it` : `\n⚠ LIQUIDATED BEFORE THE STOP at ${Q.lev}x: it will be refused. Lower the leverage.`); })() +
-    (warn.length ? "\n\n" + warn.join("\n\n") : "") +
-    `\n\nThe price is read again before it is sent: the levels may move a little.`;
-  if (!confirm(msg)) return;
-  b.disabled = true; b.textContent = "sending…";
-  try {
-    const { taken } = await autoPost({ take: sym, tf: S.sgw });
-    alert(`${sym} ${taken.status === "open" ? "opened at " + px(taken.entry) : "limit entry placed at " + px(taken.entry)} · stop ${px(taken.stop)} · TP2 ${px(taken.target)}`);
-  } catch (err) { alert(`Could not trade ${sym}: ` + err.message); b.disabled = false; b.textContent = `▶ Trade it ${L ? "LONG" : "SHORT"}`; }
+  tkOpen(b.dataset.take);
 });
 // candlestick patterns on the trigger candles (arbbot/quality.candle_pattern): its way and against it
 const CANDLE_HELP = {

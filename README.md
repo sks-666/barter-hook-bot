@@ -672,6 +672,16 @@ Everything they show comes from public Binance data, relayed by the bot, plus yo
   switch, daily loss, most open, coins held elsewhere) and is refused, before anything is sent, when the margin is
   short, the leverage is over the coin's limit or Binance would liquidate it before its stop. Your trades are marked
   "· you".
+* **The trade ticket** (the popup ▶ Trade it opens; headed **⚠ REAL MONEY · SUB/MAIN account** on mainnet): pick
+  **Limit** at your entry price (waits up to the minutes you give, then cancels) or **Market** now, and check or
+  change the **entry, stop loss, TP1** (half closes; blank = none), **TP2, position size, leverage** (this trade only)
+  before anything is sent. Every number updates as you type and with the live price: the loss at the stop including
+  fees, the win at TP1 / TP2 in $ and R, the position in coins, the margin against the USDT available, the
+  **liquidation price** (and how far the stop is before it), the fees, and warnings (a limit buy above the price fills
+  at once, NO TRADE verdict, Auto close on/off). Confirm stays off while something is wrong (stop on the wrong side,
+  TP1 past TP2, too little margin, liquidated before the stop, over the coin's leverage limit). The order is sent with
+  **exactly those prices**: no re-read of the signal and no level moved (`POST /api/signal-trader {"take", "tf",
+  "plan": {type, entry, stop, tp1, tp2, size_usd, leverage, wait_s}}`; the server checks the same rules again).
 * **Position size, leverage and Auto close** (the strip at the top of the panel): your own $ size per trade (blank =
   sized by the risk), 1-60x, and whether the bot may close a trade at market on a signal flip or after the maximum
   hold (OFF: only the stop, TP1, TP2 or you). See the settings table in
