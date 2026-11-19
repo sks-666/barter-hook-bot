@@ -57,7 +57,8 @@ WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_40
 MAX_OPEN_RANGE = (1, 20)     # the most open trades (positions + waiting limit entries) it can be set to from the page
 RISK_RANGE = (1.0, 500.0)    # USDT lost at the stop per trade, settable from the page
 DAILY_LOSS_RANGE = (5.0, 5000.0)   # USDT of realised loss in a UTC day before new entries stop, settable from the page
-LEVERAGE_RANGE = (1, 20)     # the leverage it sets on a coin before entering, settable from the page
+LEVERAGE_RANGE = (1, 60)     # the leverage it sets on a coin before entering, settable from the page (each
+                             # coin's own Binance limit and the liquidation-before-stop check still apply)
 SIZE_RANGE = (5.0, 100_000.0)   # a fixed position value in USDT per trade (instead of sizing by risk), settable
 MARGIN_BUFFER = 1.02         # margin needed = position / leverage x this (fees, price moving before the fill)
 # Binance's own closes, by the closing order's client id: auto-deleveraging is the exchange closing a PROFITABLE

@@ -385,10 +385,10 @@ class Trader(unittest.IsolatedAsyncioTestCase):
             await t.step()                                           # SOL opens at 5x
             self.assertEqual(t.s["open"]["SOLUSDT"]["leverage"], 5)
             t.set_leverage(2)
-            self.assertEqual((t.leverage, t.view()["leverage_range"]), (2, [1, 20]))
+            self.assertEqual((t.leverage, t.view()["leverage_range"]), (2, [1, 60]))
             self.assertEqual(t.s["open"]["SOLUSDT"]["leverage"], 5)  # the open trade keeps its own
             self.assertEqual(self.make(path=p).leverage, 2)          # saved: wins over the command line's
-            for bad in (0, 21, 2.5, True, "3"):
+            for bad in (0, 61, 2.5, True, "3"):
                 with self.assertRaises(ValueError):
                     t.set_leverage(bad)
             self.ticket.pos["SOLUSDT"] = 0.0                         # closed on the exchange

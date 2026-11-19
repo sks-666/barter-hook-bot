@@ -71,7 +71,7 @@ HELP = (
     "• /auto max 5 = hold up to 5 trades at once (1-20; lowering closes nothing)\n"
     "• /auto risk 30 = new trades lose $30 at their stop (1-500) · /auto daily 150 = stop new entries after $150 of "
     "realised loss in a UTC day (5-5000)\n"
-    "• /auto lev 3 (or /auto 3x) = new trades at 3x leverage (1-20; open trades keep theirs)\n"
+    "• /auto lev 3 (or /auto 3x) = new trades at 3x leverage (1-60; open trades keep theirs)\n"
     "• /auto trades = its open and last closed trades · /account = every position on the testnet account\n"
     "• /types = the signal types (funding squeeze, sweep reversal, breakout, trend pullback, mean reversion and yours), "
     "on/off and each one's results · /types off breakout · /types on trend. New custom types: the terminal's Signals "

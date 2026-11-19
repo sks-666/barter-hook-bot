@@ -170,7 +170,7 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--signal-trader-daily-loss-usd", type=float, default=100.0,
                    help="no new entries after this much realised test-USDT loss in a UTC day (default 100)")
     p.add_argument("--signal-trader-leverage", type=int, default=5,
-                   help="leverage it sets on a coin before entering (1-20, default 5): Binance auto-deleverages the "
+                   help="leverage it sets on a coin before entering (1-60, default 5): Binance auto-deleverages the "
                         "most profitable x most leveraged positions first, so lower is safer; it needs more margin")
     p.add_argument("--swing", action="store_true",
                    help="also paper-trade the swingkit strategies (trend, swing, SMC) in this process: alerts plus the "
@@ -312,8 +312,8 @@ async def amain(args: argparse.Namespace) -> None:
     WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
     if args.signal_trader and args.signal_trader_window.lower() not in WINDOWS:
         sys.exit(f"--signal-trader-window takes {', '.join(WINDOWS)}")
-    if args.signal_trader and not 1 <= args.signal_trader_leverage <= 20:
-        sys.exit("--signal-trader-leverage takes 1 to 20")
+    if args.signal_trader and not 1 <= args.signal_trader_leverage <= 60:
+        sys.exit("--signal-trader-leverage takes 1 to 60")
     if args.check:   # read-only: never builds the engine, never sends an order
         sys.exit(await run_check(cfg, live_keys(cfg.execution.env)))
     setup_logging()

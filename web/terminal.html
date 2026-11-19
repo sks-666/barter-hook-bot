@@ -2225,7 +2225,9 @@ document.addEventListener("change", async ev => {
   if (!sel) return;
   const n = Number(sel.value), was = S.auto.leverage;
   if (!confirm(`Open the ${autoName()}'s new trades at ${n}x leverage (now ${was}x)?\n\n` +
-               `Open trades keep their leverage. ${n > was ? "Higher leverage puts its winners earlier in Binance's auto-deleveraging queue and liquidation closer." : "Lower leverage needs more margin per trade: with too little margin Binance refuses the entry and it skips the coin."}`)) { sel.value = was; return; }
+               `Open trades keep their leverage. ${n > was ? "Higher leverage puts its winners earlier in Binance's auto-deleveraging queue and liquidation closer." : "Lower leverage needs more margin per trade: with too little margin Binance refuses the entry and it skips the coin."}` +
+               (n >= 20 ? `\n\n⚠ At ${n}x a move of only about ${(100 / n).toFixed(1)}% against the trade liquidates it (less after fees and maintenance margin). ` +
+                          `A trade whose stop is further than that is refused, and coins with a lower limit than ${n}x are refused too: see the Liq column.` : ""))) { sel.value = was; return; }
   sel.disabled = true;
   try { await autoPost({ leverage: n }); }
   catch (err) { alert("Could not change the leverage: " + err.message); sel.value = was; sel.disabled = false; }

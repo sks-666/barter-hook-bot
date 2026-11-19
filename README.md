@@ -361,7 +361,7 @@ live on paper. It starts **three paper accounts** (trend, swing, smc), $10,000 e
   manages itself like a testnet auto-trade (stop and TP2 on Binance, half at TP1 then stop to breakeven, closes if the
   signal flips or after the maximum hold). Starts at $5 risk per trade, $20 daily loss, 2 open trades, 3x leverage
   (change them in the Signals panel); each position stays under 95% of `--real-ticket-max-usd`. **Position size** (Signals
-  panel) sets a fixed USDT value per new trade instead (blank = sized by the risk), and **Leverage** picks 1x to 20x; a
+  panel) sets a fixed USDT value per new trade instead (blank = sized by the risk), and **Leverage** picks 1x to 60x (the coin's own limit still applies); a
   trade whose margin (size ÷ leverage, +2%) is more than the account's available USDT is refused before it is sent.
   The Signals table's **Liq** column shows each signal's liquidation price with those settings (isolated margin,
   Binance's maintenance tiers per coin from `/fapi/v1/leverageBracket`, read hourly; 1% when unknown), red when it
@@ -598,7 +598,7 @@ account's available USDT or that Binance would liquidate before its stop, and sa
 | **Most open trades** (1–20, default 3) | The list in "Its open trades / most" | The **Most open** list |
 | **Risk per trade**: $ lost if a new trade hits its stop (1–500, default 20) | The first box in "Risk per trade · day limit" | The **Risk $** box |
 | **Daily loss limit**: no new trade after this much realised loss in a UTC day (5–5000, default 100) | The second box in "Risk per trade · day limit" | The **Day limit $** box |
-| **Leverage** for new trades (1–20x, default 5x; mainnet 3x) | The list in "Leverage · new trades" | The **Leverage** list |
+| **Leverage** for new trades (1–60x, default 5x; mainnet 3x; each coin's own limit still applies) | The list in "Leverage · new trades" | The **Leverage** list |
 | **Position size**: a fixed $ position per new trade instead of sizing by risk (5+, blank = by risk; capped by the largest position) | The box in "Position size · new trades", with the margin it needs (red "too little!" when the account can't cover it) | — |
 | **Auto close**: close at market on a signal flip or after the maximum hold (default ON) | The **ON · turn off / OFF · turn on** button in "Auto close · flip / max hold". OFF: only the stop, TP1, TP2 on Binance (and the breakeven stop), or you, close a trade; open trades too | — |
 | **New entries** on / off (testnet; locked off on mainnet) | — | The Entries ON/OFF switch |
@@ -673,7 +673,7 @@ Everything they show comes from public Binance data, relayed by the bot, plus yo
   short, the leverage is over the coin's limit or Binance would liquidate it before its stop. Your trades are marked
   "· you".
 * **Position size, leverage and Auto close** (the strip at the top of the panel): your own $ size per trade (blank =
-  sized by the risk), 1-20x, and whether the bot may close a trade at market on a signal flip or after the maximum
+  sized by the risk), 1-60x, and whether the bot may close a trade at market on a signal flip or after the maximum
   hold (OFF: only the stop, TP1, TP2 or you). See the settings table in
   [Signal auto-trader](#signal-auto-trader-testnet-only).
 * **Liq column** (after R:R, when the bot runs the signal trader): each signal's liquidation price with your size and
