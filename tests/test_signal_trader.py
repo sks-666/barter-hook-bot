@@ -374,7 +374,7 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.ticket.lev_set, [("SOLUSDT", 3)])
         self.assertEqual(t.view()["leverage"], 3)
         with self.assertRaises(ValueError):
-            self.make(leverage=50)
+            self.make(leverage=61)
 
     async def test_the_leverage_can_be_set_survives_a_restart_and_is_kept_per_trade(self):
         import tempfile

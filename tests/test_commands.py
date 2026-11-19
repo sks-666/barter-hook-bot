@@ -416,7 +416,7 @@ class AutoTraderCommandTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("at 3x", await self.h.reply("/auto lev 3"))
         self.assertIn("at 7x", await self.h.reply("/auto 7x"))
         self.assertEqual(self.trader.leverage, 7)
-        self.assertIn("from 1 to 20", await self.h.reply("/auto lev 50"))
+        self.assertIn("from 1 to 60", await self.h.reply("/auto lev 70"))
         self.assertEqual(self.trader.leverage, 7)
         self.assertIn("Entries ON", await self.h.reply("/auto on"))
 
