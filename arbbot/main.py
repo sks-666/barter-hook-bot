@@ -153,6 +153,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     p.add_argument("--signal-trader", action="store_true",
                    help="TESTNET only (with --live --testnet): auto-trade the terminal's combined signal (whales, crowd, "
                         "futures curve, macro, news) with test money; entries can be switched off from the terminal")
+    p.add_argument("--signal-button", action="store_true",
+                   help="MAINNET with --real-ticket: the terminal's Trade button on a signal sends a REAL order (you "
+                        "confirm each one). Automatic entries stay locked off. Starts at $5 risk per trade, $20 daily "
+                        "loss, 2 open trades, 3x leverage (change them on the terminal)")
     p.add_argument("--signal-trader-window", default="1h", metavar="1m|5m|15m|30m|1h|4h|1d|1w",
                    help="the signal's timeframe; it also sets how long an entry waits and a trade is held (default 1h)")
     p.add_argument("--signal-trader-risk-usd", type=float, default=20.0,
@@ -299,7 +303,11 @@ async def amain(args: argparse.Namespace) -> None:
             sys.exit(str(e))
     if args.signal_trader and not (live and cfg.execution.env == "testnet"):
         sys.exit("--signal-trader trades the combined signal on the TESTNET only: it needs --live --testnet")
-    if args.signal_trader and args.no_whales:
+    if args.signal_button and not (live and cfg.execution.env == "mainnet" and args.real_ticket):
+        sys.exit("--signal-button is the MAINNET Trade button: it needs --live, the mainnet config and --real-ticket")
+    if args.signal_button and args.signal_trader:
+        sys.exit("--signal-button and --signal-trader do not go together (the auto-trader is testnet only)")
+    if (args.signal_trader or args.signal_button) and args.no_whales:
         sys.exit("--signal-trader reads the whale watch: drop --no-whales")
     WINDOWS = {"1m": 60, "5m": 300, "15m": 900, "30m": 1800, "1h": 3600, "4h": 14_400, "1d": 86_400, "1w": 604_800}
     if args.signal_trader and args.signal_trader_window.lower() not in WINDOWS:
@@ -497,6 +505,15 @@ async def amain(args: argparse.Namespace) -> None:
                                   daily_loss_usd=args.signal_trader_daily_loss_usd,
                                   leverage=args.signal_trader_leverage,
                                   path=ROOT / "data" / "signal-trader-testnet.json", notify=alerts.send)
+        elif args.signal_button and signal_desk is not None:
+            # MAINNET: the Trade button only, real money, small defaults (the page can change them); never enters itself
+            from .signal_trader import SignalTrader
+            trader = SignalTrader(signal_desk, ticket, WINDOWS[args.signal_trader_window.lower()], risk_usd=5.0,
+                                  max_open=2, min_conf=args.signal_trader_min_conf, max_usd=args.real_ticket_max_usd,
+                                  daily_loss_usd=20.0, leverage=3, manual_only=True,
+                                  path=ROOT / "data" / "signal-trader-mainnet.json", notify=alerts.send)
+            log.warning("signal Trade button ON for the MAINNET account (real money; automatic entries locked off)")
+        if trader is not None:
             other = ticket.source
             ticket.source = lambda sym: "signal" if trader.holds(sym) else other(sym)
         # Telegram: /ideas reads the combined signal, /auto drives the auto-trader, /account lists the exchange account
@@ -582,6 +599,7 @@ async def amain(args: argparse.Namespace) -> None:
             coros.append(whales.run())
         if trader is not None:
             coros.append(trader.run())
+        if trader is not None and not trader.manual_only:
             log.warning("signal auto-trader: ON on the futures TESTNET (%s timeframe, $%g risk per trade, max %d open, "
                         "%dx leverage, confidence >= %d, entries %s)",
                         next((k for k, v in WINDOWS.items() if v == trader.window_s), f"{trader.window_s:g}s")

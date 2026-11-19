@@ -114,6 +114,27 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         self.ticket.venue = "mainnet"
         with self.assertRaises(RuntimeError):
             self.make()
+        self.ticket.venue = "paper"
+        with self.assertRaises(RuntimeError):
+            self.make(manual_only=True)
+
+    async def test_mainnet_is_the_trade_button_only(self):
+        self.ticket.venue, self.ticket.max_order_usd = "mainnet", 100.0
+        self.ticket.px = 100.0
+        t = self.make(manual_only=True)
+        self.assertFalse(t.s["enabled"])
+        with self.assertRaises(ValueError):
+            t.set_enabled(True)                                  # automatic entries cannot be switched on
+        t.s["enabled"] = True                                    # ...and even a state saying so never enters
+        await t.step()
+        self.assertEqual(self.ticket.sent, [])
+        self.assertIn("button only", t.view()["blocked"])
+        self.assertEqual((t.view()["venue"], t.view()["manual_only"]), ("mainnet", True))
+        rec = await t.take("SOLUSDT")                            # the Trade button does
+        o = self.ticket.sent[0]
+        self.assertLessEqual(o["qty"] * 100.01, 95.0 + 1e-6)     # kept under the real ticket's 100 USDT order cap
+        self.assertEqual(rec["status"], "open")
+        self.assertTrue(rec["manual"])
 
     async def test_a_signal_at_the_price_is_a_market_entry_sized_by_risk_on_testnet_prices(self):
         t = self.make()

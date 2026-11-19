@@ -1960,6 +1960,9 @@ function sbar(v) {                                   // −1 … +1 as a bar gro
 // "Trade <panel>" button switches the auto-trader to the panel's timeframe (asks first; needs the control token).
 const TOKEN = "__TOKEN__";
 const canControl = () => !TOKEN.startsWith("__");                // a page not served by the bot has no token
+// testnet auto-trader, or the MAINNET Trade button (manual_only: real money, never enters by itself)
+const autoReal = () => !!S.auto?.manual_only;
+const autoName = () => autoReal() ? "mainnet Trade button" : "testnet auto-trader";
 function autoTfCell(a) {
   const its = flowLabel(a.window_s), here = flowLabel(S.sgw), same = a.window_s === S.sgw;
   const can = canControl() && Object.values(a.windows || {}).includes(S.sgw);
@@ -2136,7 +2139,7 @@ document.addEventListener("change", async ev => {
   const sel = ev.target.closest("[data-auto-lev]");
   if (!sel) return;
   const n = Number(sel.value), was = S.auto.leverage;
-  if (!confirm(`Open the testnet auto-trader's new trades at ${n}x leverage (now ${was}x)?\n\n` +
+  if (!confirm(`Open the ${autoName()}'s new trades at ${n}x leverage (now ${was}x)?\n\n` +
                `Open trades keep their leverage. ${n > was ? "Higher leverage puts its winners earlier in Binance's auto-deleveraging queue and liquidation closer." : "Lower leverage needs more margin per trade: with too little margin Binance refuses the entry and it skips the coin."}`)) { sel.value = was; return; }
   sel.disabled = true;
   try { await autoPost({ leverage: n }); }
@@ -2150,7 +2153,7 @@ document.addEventListener("change", async ev => {
   const key = inp.dataset.autoSet, [what, says] = AUTO_SET[key], v = Number(inp.value), was = S.auto[key];
   if (!(v >= Number(inp.min) && v <= Number(inp.max))) { alert(`The ${what} must be from $${inp.min} to $${inp.max}.`); inp.value = was; return; }
   if (v === was) return;
-  if (!confirm(`Set the testnet auto-trader's ${what} to $${v} (now $${was})?\n\n${says(v)}`)) { inp.value = was; inp.blur(); return; }
+  if (!confirm(`Set the ${autoName()}'s ${what} to $${v} (now $${was})?\n\n${says(v)}`)) { inp.value = was; inp.blur(); return; }
   inp.disabled = true;
   try { await autoPost({ [key]: v }); }
   catch (err) { alert(`Could not change the ${what}: ` + err.message); inp.value = was; inp.disabled = false; }
@@ -2159,7 +2162,7 @@ document.addEventListener("change", async ev => {
   const sel = ev.target.closest("[data-auto-max]");
   if (!sel) return;
   const n = Number(sel.value), was = S.auto.max_open;
-  if (!confirm(`Let the testnet auto-trader hold up to ${n} trade${n === 1 ? "" : "s"} at once (now ${was})?` +
+  if (!confirm(`Let the ${autoName()} hold up to ${n} trade${n === 1 ? "" : "s"} at once (now ${was})?` +
                (n < was ? `\n\nLowering it closes nothing: it just takes no new trade until fewer than ${n} are open.` : ""))) { sel.value = was; return; }
   sel.disabled = true;
   try { await autoPost({ max_open: n }); }
@@ -2169,7 +2172,7 @@ document.addEventListener("click", async ev => {
   const b = ev.target.closest("[data-auto-tf]");
   if (!b) return;
   const w = Number(b.dataset.autoTf), label = flowLabel(w);
-  if (!confirm(`Make the testnet auto-trader trade the ${label} signal from now on (instead of ${flowLabel(S.auto.window_s)})?\n\n` +
+  if (!confirm(`Make the ${autoName()} trade the ${label} signal from now on (instead of ${flowLabel(S.auto.window_s)})?\n\n` +
                `New entries use the ${label} signal, its entry wait and its maximum hold. Open positions keep the maximum hold of the timeframe they were opened on.`)) return;
   b.disabled = true;
   try { await autoPost({ window_s: w }); }
@@ -2181,13 +2184,15 @@ function sigAuto() {
   if (!a) return "";
   const open = Object.entries(a.open), upnl = open.reduce((t, [, m]) => t + (m.pnl || 0), 0), st = a.stats;
   const cell = (l, v, c = "", t = "") => `<div${t ? ` title="${esc(t)}"` : ""}><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
+  const real = a.manual_only;
   return `<div class="sg-strip">` +
-    cell("Auto-trader · testnet", a.enabled ? "ON" : "OFF", a.enabled ? "up" : "dn", "Trades this signal on the Binance futures TESTNET (test money). Switch it on or off on the dashboard.") +
-    autoTfCell(a) +
-    cell("Status", a.error ? esc(a.error) : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked ? "wrn" : "up", a.error || a.blocked || "") +
+    (real ? cell("Trade button · mainnet", "REAL MONEY", "dn", "▶ Trade it on a signal sends a REAL order to your Binance futures account after you confirm. It never trades by itself: automatic entries are locked off on mainnet.")
+          : cell("Auto-trader · testnet", a.enabled ? "ON" : "OFF", a.enabled ? "up" : "dn", "Trades this signal on the Binance futures TESTNET (test money). Switch it on or off on the dashboard.")) +
+    (real ? "" : autoTfCell(a)) +
+    cell("Status", a.error ? esc(a.error) : real && a.blocked.startsWith("button only") ? "press ▶ Trade on a signal" : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked && !real ? "wrn" : "up", a.error || a.blocked || "") +
     autoMaxCell(a, open.length) +
     cell("Its open P&amp;L", sgMoney(upnl) + " $", cls(upnl)) +
-    (S.acct ? cell("Whole account", `${S.acct.positions.length} pos · ${(S.acct.orders || []).length} orders`, "", "Every position and order on the testnet account, including the swing mirror's: listed below") : "") +
+    (S.acct ? cell("Whole account", `${S.acct.positions.length} pos · ${(S.acct.orders || []).length} orders`, "", `Every position and order on the ${esc(a.venue)} account, whoever opened it: listed below`) : "") +
     cell("Today", sgMoney(st.today) + " $", cls(st.today), `Today's result for the daily loss limit ($${a.daily_loss_usd}). Trades closed by Binance's auto-deleveraging are not counted here.`) +
     cell("Realised", sgMoney(st.realized) + " $" + (st.adl_count ? ` <span class="mut" style="font-size:.8em">ADL ${sgMoney(st.adl_pnl)}</span>` : ""), cls(st.realized),
          st.adl_count ? `Includes ${st.adl_count} trade(s) Binance closed itself by auto-deleveraging (${sgMoney(st.adl_pnl)} $): the exchange took a profitable position away at the price of a liquidated trader.` : "") +
@@ -2222,7 +2227,7 @@ function sigTrades() {
       <td></td><td>${px(m.price || m.entry)}</td><td colspan="5">limit order waiting to fill</td></tr>`).join("") + `</tbody></table></div>`
     : `<div class="mut">No position open.</div>`;
   if (!a) return h;
-  h += `<h3 style="margin-top:8px">Auto-trader closed trades</h3>` + (a.trades.length
+  h += `<h3 style="margin-top:8px">${a.manual_only ? "Trade-button closed trades · REAL" : "Auto-trader closed trades"}</h3>` + (a.trades.length
     ? `<table><thead><tr><th>Coin</th><th>Side</th><th title="Leverage the trade was opened at (— for trades from before this was recorded)">Lev</th><th title="Signal type (— for trades from before types)">Type</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
       a.trades.slice(0, 15).map(t => `<tr class="click" data-sym="${esc(t.symbol)}"><td class="amb">${sgCoin(t.symbol)}</td>
         <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${esc(t.type_name || "—")}${t.manual ? ` <span class="amb" title="You opened it with the Trade button">· you</span>` : ""}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
@@ -2236,7 +2241,7 @@ function takeBtn(me) {
   if (!a || !canControl() || me.bias === "wait" || !me.target || a.open[me.symbol] || a.pending[me.symbol]) return "";
   if (!Object.values(a.windows || {}).includes(S.sgw)) return "";
   const L = me.bias === "long";
-  return ` <button class="take ${L ? "up" : "dn"}" data-take="${esc(me.symbol)}" title="Open this signal yourself on the testnet now: the same entry, stop, TP1 (half closes), TP2, size and exits as an automatic trade">▶ Trade it ${L ? "LONG" : "SHORT"}</button>`;
+  return ` <button class="take ${L ? "up" : "dn"}" data-take="${esc(me.symbol)}" title="${a.manual_only ? "Open this signal with REAL MONEY on your Binance futures account (it asks first)" : "Open this signal yourself on the testnet now"}: the same entry, stop, TP1 (half closes), TP2, size and exits as an automatic trade">▶ Trade it ${L ? "LONG" : "SHORT"}</button>`;
 }
 document.addEventListener("click", async ev => {
   const b = ev.target.closest("[data-take]");
@@ -2246,11 +2251,16 @@ document.addEventListener("click", async ev => {
   const L = me.bias === "long", mult = me.quality?.type?.risk_mult || 1, warn = [];
   if (me.verdict !== "trade") warn.push("⚠ The quality check says NO TRADE:\n  - " + (me.gates || []).join("\n  - "));
   if (me.confidence < a.min_conf) warn.push(`⚠ Confidence ${me.confidence} is below the auto-trader's ${a.min_conf}.`);
-  if (S.sgw !== a.window_s) warn.push(`This is the ${flowLabel(S.sgw)} signal (the auto-trader trades ${flowLabel(a.window_s)}): it closes after ${dur(Math.max(1800, Math.min(604800, 2 * S.sgw)))}.`);
-  const msg = `${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on the Binance futures TESTNET now?\n\n` +
+  const hold = dur(Math.max(1800, Math.min(604800, 2 * S.sgw)));
+  if (a.manual_only) warn.push(`It then manages itself: stop and TP2 sit on Binance, half closes at TP1 and the stop moves to breakeven, and it closes at market if this ${flowLabel(S.sgw)} signal flips (confidence ≥ ${a.min_conf}) or after ${hold}.`);
+  else if (S.sgw !== a.window_s) warn.push(`This is the ${flowLabel(S.sgw)} signal (the auto-trader trades ${flowLabel(a.window_s)}): it closes after ${hold}.`);
+  const where = a.manual_only ? "your REAL Binance futures account (REAL MONEY)" : "the Binance futures TESTNET";
+  const msg = `${a.manual_only ? "⚠ REAL MONEY ⚠\n" : ""}${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on ${where} now?\n\n` +
     `Entry ${px(me.entry)}${Math.abs(me.to_entry_pct || 0) < 0.1 ? " (market)" : " (limit, waits up to " + dur(a.entry_ttl_s) + ")"} · stop ${px(me.stop)} · ` +
     (me.tp1 ? `TP1 ${px(me.tp1)} (half closes) · ` : "") + `TP2 ${px(me.target)}\n` +
-    `Loses about $${Math.round(a.risk_usd * mult)} at the stop · ${a.leverage}x leverage · ${me.quality?.type?.name || "signal"}` +
+    (() => { const d = Math.abs(me.entry - me.stop) / me.entry, pos = Math.min(a.risk_usd * mult / d, a.max_usd);
+             return `Position about $${pos.toFixed(0)} · loses about $${(pos * d).toFixed(2)} at the stop`; })() +
+    ` · ${a.leverage}x leverage · ${me.quality?.type?.name || "signal"}` +
     (warn.length ? "\n\n" + warn.join("\n\n") : "") +
     `\n\nThe price is read again before it is sent: the levels may move a little.`;
   if (!confirm(msg)) return;
@@ -2345,7 +2355,7 @@ function renderSignals() {
       <th>Price</th><th title="Limit entry; % from the price now">Entry</th><th title="Past the last swing + 0.25 ATR, off round numbers">Stop</th><th title="TP1: half the position closes here (at least 1.8R); the stop then moves to breakeven">TP1</th><th title="TP2: the runner (at least 3R)">TP2</th><th title="Reward : risk to TP2">R:R</th>
       <th class="xw" title="Average true range: one candle's typical move">ATR</th>` +
       SIG_F.map(([k, l]) => `<th class="f xw" title="${l} score, −100 to +100 (hover a cell for why)">${l}</th>`).join("") +
-      `<th title="The testnet auto-trader holds this coin">Auto</th></tr></thead><tbody>` +
+      `<th title="The ${autoName()} holds this coin">${autoReal() ? "Yours" : "Auto"}</th></tr></thead><tbody>` +
       rows.map(x => { const L = x.bias === "long", wait = x.bias === "wait", h = held(x.symbol);
         return `<tr class="click${x.symbol === S.sym ? " sel" : ""}" data-sym="${esc(x.symbol)}"><td class="amb">${sgCoin(x.symbol)}${notListed(x.symbol)}</td>
           <td class="bias ${wait ? "mut" : L ? "up" : "dn"}">${wait ? "· WAIT" : L ? "▲ LONG" : "▼ SHORT"}</td>${verdict(x)}
@@ -2362,7 +2372,7 @@ function renderSignals() {
           <td class="${x.rr >= 3 ? "up" : ""}">${x.rr.toFixed(1)}</td>`) +
           `<td class="xw mut">${x.atr ? px(x.atr) + `<span class="sub">${esc(x.atr_interval)}</span>` : "—"}</td>` +
           SIG_F.map(([k]) => fx(x, k)).join("") +
-          `<td>${h ? `<span class="amb" title="the auto-trader's position on the testnet">● ${h}</span>` : ""}</td></tr>`; }).join("") + `</tbody></table></div>`
+          `<td>${h ? `<span class="amb" title="the ${autoName()}'s position">● ${h}</span>` : ""}</td></tr>`; }).join("") + `</tbody></table></div>`
     : `<div class="empty">${c.rows.length ? "No coin matches this filter." : `No coin to score yet: it needs whale orders in the last ${tf}.`}</div>`;
   el.innerHTML = sigAuto() + table + `<div class="sg-low"><div>${sigWhy(c)}</div><div>${sigTrades()}</div></div>`;
 }

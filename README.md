@@ -353,6 +353,14 @@ live on paper. It starts **three paper accounts** (trend, swing, smc), $10,000 e
   `KILL` file exists (closing still works); new coins get `execution.leverage` (2x) isolated margin until you change
   it; transfers are refused (move USDT in the Binance app). Pausing the arbitrage bot does **not** pause the ticket.
   `--real-ticket` is refused on paper and testnet bots. State: `data/ticket-live-mainnet-real.json`.
+* **Signal Trade button on MAINNET (opt-in, real money, never automatic).** Add `--signal-button` (with
+  `--real-ticket`; `mainnet.sh start --signal-button`) and the terminal's **▶ Trade it** button on a signal sends a
+  real order to your futures account after a REAL MONEY confirm box (entry, stop, TP1, TP2, position size and the loss
+  at the stop). Automatic entries are locked off: they cannot be switched on from the page or Telegram. A trade then
+  manages itself like a testnet auto-trade (stop and TP2 on Binance, half at TP1 then stop to breakeven, closes if the
+  signal flips or after the maximum hold). Starts at $5 risk per trade, $20 daily loss, 2 open trades, 3x leverage
+  (change them in the Signals panel); each position stays under 95% of `--real-ticket-max-usd`. State:
+  `data/signal-trader-mainnet.json`.
 * **Swing accounts mirrored to the TESTNET.** Add `--swing --swing-mirror trend` to the testnet command (any of `trend`,
   `swing`, `smc`, comma separated, or `all`; the launcher uses `trend,swing,smc`; `--swing-mirror-fund 10000` sets the
   size of each, default $10,000) and every **new** entry of those paper accounts is

@@ -468,7 +468,10 @@ class CommandHandler:
             return self._auto_status()
         w = words[0]
         if w in ("on", "off"):
-            t.set_enabled(w == "on")             # it announces the change on Telegram itself
+            try:
+                t.set_enabled(w == "on")         # it announces the change on Telegram itself
+            except ValueError as e:              # the mainnet Trade button: automatic entries are locked off
+                return f"🤖 {e}"
             return self._auto_status()
         if w in ("trades", "trade", "history", "closed"):
             return self._auto_trades()

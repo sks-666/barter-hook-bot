@@ -25,6 +25,11 @@ loss in a UTC day (closed trades' real results from Binance's fills), a cooldown
 ticket refuses new orders while it exists), coins held by the arbitrage bot or by any other ticket user are left alone.
 Entries can be switched off and on from the terminal (the state survives restarts); positions are still managed while
 off. State: data/signal-trader-testnet.json. Nothing here has been backtested: it is an experiment with test money.
+
+MAINNET, button only (manual_only=True, run.py --signal-button with --real-ticket): the same class behind the terminal's
+Trade button on a real-money account. Automatic entries are locked off (they cannot be switched on from the page or
+Telegram); a trade opens only when you press Trade and confirm, then gets the same stop, TP1, TP2 and exits. Each
+position is kept under the real ticket's per-order cap. State: data/signal-trader-mainnet.json.
 """
 import asyncio
 import json
@@ -67,15 +72,23 @@ def _clamp(v, lo, hi):
 class SignalTrader:
     def __init__(self, desk, ticket, window_s: float = 3600.0, risk_usd: float = 20.0, max_open: int = 3,
                  min_conf: int = 60, max_usd: float = 2000.0, daily_loss_usd: float = 100.0, path: Path | None = None,
-                 notify=None, clock=time.time, poll_s: float = 30.0, leverage: int = 5):
-        if getattr(ticket, "venue", "") != "testnet":
-            raise RuntimeError("the signal auto-trader runs on the Binance futures TESTNET only")
+                 notify=None, clock=time.time, poll_s: float = 30.0, leverage: int = 5, manual_only: bool = False):
+        self.venue = getattr(ticket, "venue", "")
+        if self.venue == "mainnet" and not manual_only:
+            raise RuntimeError("on MAINNET the signal trader runs button-only (manual_only): it never enters by itself")
+        if self.venue not in ("testnet", "mainnet"):
+            raise RuntimeError("the signal trader needs a Binance futures ticket (testnet, or mainnet button-only)")
+        self.manual_only = bool(manual_only)
+        self.tag = "TESTNET" if self.venue == "testnet" else "REAL MONEY"
         if not (risk_usd > 0 and max_usd > 0 and daily_loss_usd > 0 and max_open >= 1 and 0 <= min_conf <= 100):
             raise ValueError("signal trader: risk, max size and daily loss must be above 0, max open at least 1, "
                              "min confidence 0..100")
         self.desk, self.ticket = desk, ticket
         self.risk_usd, self.max_open, self.min_conf = float(risk_usd), int(max_open), int(min_conf)
         self.max_usd, self.daily_loss_usd = float(max_usd), float(daily_loss_usd)
+        cap = getattr(ticket, "max_order_usd", None)           # the real ticket refuses bigger orders: stay under it
+        if cap:
+            self.max_usd = min(self.max_usd, float(cap) * 0.95)
         if not LEVERAGE_RANGE[0] <= int(leverage) <= LEVERAGE_RANGE[1]:
             raise ValueError(f"signal trader: leverage must be {LEVERAGE_RANGE[0]}x to {LEVERAGE_RANGE[1]}x")
         # the leverage of its coins: Binance picks auto-deleveraging victims by profit x leverage, so low leverage puts
@@ -85,6 +98,8 @@ class SignalTrader:
         self.s = self._load() or {"enabled": True, "open": {}, "pending": {}, "cooldown": {}, "trades": []}
         for k, v in (("open", {}), ("pending", {}), ("cooldown", {}), ("trades", []), ("enabled", True)):
             self.s.setdefault(k, v)
+        if self.manual_only:
+            self.s["enabled"] = False                                 # button only: never enters by itself
         # a timeframe picked on the dashboard (saved in the state) wins over the command line's
         saved = self.s.get("window_s")
         self.window_s = desk.whales.clamp_window(saved if saved in WINDOWS.values() else window_s)
@@ -140,10 +155,12 @@ class SignalTrader:
         return sym in self.s["open"] or sym in self.s["pending"]
 
     def set_enabled(self, on: bool) -> None:
+        if self.manual_only and on:
+            raise ValueError("automatic entries are locked off here: trades open only with the Trade button")
         self.s["enabled"] = bool(on)
         self._save()
         log.info("signal auto-trader: new entries %s", "ON" if on else "OFF")
-        self.notify(f"🤖 TESTNET signal auto-trader: new entries {'ON' if on else 'OFF'}"
+        self.notify(f"🤖 {self.tag} signal auto-trader: new entries {'ON' if on else 'OFF'}"
                     f"{'' if on else ' (open positions are still managed)'}")
 
     def set_window(self, window_s) -> None:
@@ -156,7 +173,7 @@ class SignalTrader:
         self.s["window_s"] = window_s
         self._save()
         log.info("signal auto-trader: timeframe set to %s", label)
-        self.notify(f"🤖 TESTNET signal auto-trader: now trading the {label} signal")
+        self.notify(f"🤖 {self.tag} signal auto-trader: now trading the {label} signal")
 
     def set_leverage(self, n) -> None:
         """The leverage it sets on a coin before its NEXT entry (saved). Open trades keep theirs. Lower = less margin
@@ -168,7 +185,7 @@ class SignalTrader:
         self.s["leverage"] = n
         self._save()
         log.info("signal auto-trader: leverage set to %dx", n)
-        self.notify(f"🤖 TESTNET signal auto-trader: new trades at {n}x leverage (open trades keep theirs)")
+        self.notify(f"🤖 {self.tag} signal auto-trader: new trades at {n}x leverage (open trades keep theirs)")
 
     def set_max_open(self, n) -> None:
         """The most positions and waiting limit entries it holds at once (saved, so it survives a restart). Lowering it
@@ -180,7 +197,7 @@ class SignalTrader:
         self.s["max_open"] = n
         self._save()
         log.info("signal auto-trader: most open trades set to %d", n)
-        self.notify(f"🤖 TESTNET signal auto-trader: at most {n} open trade{'s' if n != 1 else ''} now")
+        self.notify(f"🤖 {self.tag} signal auto-trader: at most {n} open trade{'s' if n != 1 else ''} now")
 
     def _set_usd(self, key: str, value, rng: tuple, what: str) -> float:
         lo, hi = rng
@@ -197,13 +214,13 @@ class SignalTrader:
         """USDT lost if a NEW trade hits its stop (sizing; still capped by max_usd of position). Saved; open trades
         keep the size they were opened with."""
         v = self._set_usd("risk_usd", value, RISK_RANGE, "risk per trade")
-        self.notify(f"🤖 TESTNET signal auto-trader: new trades risk ${v:g} at the stop")
+        self.notify(f"🤖 {self.tag} signal auto-trader: new trades risk ${v:g} at the stop")
 
     def set_daily_loss_usd(self, value) -> None:
         """Realised loss in a UTC day after which no new entry is made (open trades stay managed). Saved."""
         v = self._set_usd("daily_loss_usd", value, DAILY_LOSS_RANGE, "daily loss limit")
         self._halted_day = None                                       # announce again if the new limit is reached
-        self.notify(f"🤖 TESTNET signal auto-trader: daily loss limit ${v:g} (today so far {self.realized_today():+.2f})")
+        self.notify(f"🤖 {self.tag} signal auto-trader: daily loss limit ${v:g} (today so far {self.realized_today():+.2f})")
 
     def _max_hold_of(self, m: dict) -> float:
         w = m.get("window_s") or self.window_s
@@ -326,7 +343,7 @@ class SignalTrader:
             if t.get("pnl") is not None:
                 r = f" ({t['r']:+.2f}R)" if t.get("r") is not None else ""
                 note = " (not counted in the daily loss limit)" if t.get("forced") == "adl" else ""
-                self.notify(f"🤖 TESTNET signal {t['symbol']} result: {t['pnl']:+.2f} USDT{r} — {t['why']}{note}")
+                self.notify(f"🤖 {self.tag} signal {t['symbol']} result: {t['pnl']:+.2f} USDT{r} — {t['why']}{note}")
         await self._check_forced()
         self.s["cooldown"] = {k: v for k, v in self.s["cooldown"].items() if v > now_ms}
         await getattr(self.ticket, "refresh_if_stale", self.ticket.refresh)()
@@ -349,7 +366,7 @@ class SignalTrader:
                 del self.s["pending"][sym]
                 if str(p["order_id"]) in ids:                         # a partial fill: the rest is not wanted any more
                     await self._cancel(p["order_id"])
-                self.notify(f"🤖 TESTNET signal {p['side'].upper()} {sym} filled at {self.s['open'][sym]['entry']:.6g} "
+                self.notify(f"🤖 {self.tag} signal {p['side'].upper()} {sym} filled at {self.s['open'][sym]['entry']:.6g} "
                             f"(stop {p['stop']:.6g}, target {p['target']:.6g})")
                 await self._place_tp1(sym, self.s["open"][sym])
             elif str(p["order_id"]) not in ids:
@@ -387,7 +404,7 @@ class SignalTrader:
                 continue
             del self.s["open"][sym]
             self._closed(sym, m, why, now_ms)
-            self.notify(f"🤖 TESTNET signal {sym} closed: {why}")
+            self.notify(f"🤖 {self.tag} signal {sym} closed: {why}")
 
     async def _place_tp1(self, sym: str, m: dict) -> None:
         """The reduce-only take-profit for TP1_SHARE of a just-filled position. A refusal only means no partial exit:
@@ -426,10 +443,12 @@ class SignalTrader:
             log.warning("signal trader: could not move the %s stop to breakeven: %s", sym, getattr(e, "msg", None) or e)
             return
         m.update(tp1_hit=True, stop=m["entry"])
-        self.notify(f"🤖 TESTNET signal {sym}: TP1 hit, half closed; stop moved to breakeven {m['entry']:.6g}")
+        self.notify(f"🤖 {self.tag} signal {sym}: TP1 hit, half closed; stop moved to breakeven {m['entry']:.6g}")
 
     def can_enter(self) -> str:
         """Why no new entry may be made now ('' = it may)."""
+        if self.manual_only:
+            return "button only: press Trade on a signal (automatic entries are locked off)"
         if not self.s["enabled"]:
             return "entries are off"
         blocked = self.ticket.blocked()
@@ -455,11 +474,13 @@ class SignalTrader:
     async def _enter(self, now_ms: int, rows: list[dict]) -> None:
         why = self.can_enter()
         self.note = why
+        if self.manual_only:                                          # never an automatic entry, whatever the state says
+            return
         if why:
             day = now_ms // 86_400_000
             if "daily loss" in why and self._halted_day != day:
                 self._halted_day = day
-                self.notify(f"🤖 TESTNET signal auto-trader: {why}; no new entries until the next UTC day")
+                self.notify(f"🤖 {self.tag} signal auto-trader: {why}; no new entries until the next UTC day")
             return
         taken = set(self.ticket.owned()) | set(self.ticket.arb_symbols())
         for r in self.candidates(rows):
@@ -486,12 +507,12 @@ class SignalTrader:
         at prices no worse than DEPTH_SLIP_R of the stop distance past the stop. This guards the stop's fill only; it
         cannot prevent an exchange auto-deleveraging close (clientOrderId "adl_autoclose")."""
         if not book:
-            raise ValueError("the testnet order book could not be read")
+            raise ValueError("the order book could not be read")
         worst = stop + DEPTH_SLIP_R * abs(stop - ref) * (-1 if long else 1)
         levels = book.get("bids" if long else "asks") or []
         size = sum(v for p, v in levels if (p >= worst if long else p <= worst))
         if size < DEPTH_X * qty:
-            raise ValueError(f"the testnet book is too thin for its stop: {size:.6g} within reach of the stop, "
+            raise ValueError(f"the order book is too thin for its stop: {size:.6g} within reach of the stop, "
                              f"needs {DEPTH_X:g}x the position ({DEPTH_X * qty:.6g})")
 
     async def take(self, sym: str, window_s: float | None = None) -> dict:
@@ -515,7 +536,7 @@ class SignalTrader:
             if sym in self.s["open"] or sym in self.s["pending"]:
                 raise ValueError(f"the auto-trader already holds {sym}")
             if sym in set(self.ticket.owned()) | set(self.ticket.arb_symbols()) or self.ticket.position(sym) != 0:
-                raise ValueError(f"{sym} already has a position on the testnet")
+                raise ValueError(f"{sym} already has a position on the {self.venue} account")
             view = await self.desk.view(w, sym)
             r = next((x for x in view["rows"] if x["symbol"] == sym), None)
             if r is None:
@@ -536,7 +557,7 @@ class SignalTrader:
         here = (q["bid"] + q["ask"]) / 2
         drift = here / r["mark"] - 1
         if abs(drift) > MAX_DRIFT:
-            raise ValueError(f"the testnet price is {drift * 100:+.1f}% from mainnet")
+            raise ValueError(f"the {self.venue} price is {drift * 100:+.1f}% from the signal's")
         k = here / r["mark"]                                          # mainnet levels moved onto the testnet price
         long = r["bias"] == "long"
         side = "buy" if long else "sell"
@@ -567,7 +588,7 @@ class SignalTrader:
                    regime=((r.get("quality") or {}).get("regime") or {}).get("name"))
         if o.get("status") == "filled":
             self.s["open"][sym] = dict(rec, qty=o.get("qty"), opened_ms=now_ms)
-            self.notify(f"{'🖐 TESTNET YOUR' if manual else '🤖 TESTNET'} signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
+            self.notify(f"{f'🖐 {self.tag} YOUR' if manual else f'🤖 {self.tag}'} signal {side.upper()} {sym} {o.get('qty'):.6g} at market {rec['entry']:.6g} "
                         f"({rec.get('type_name') or 'signal'}, score {r['score'] * 100:+.0f}, conf {r['confidence']}, "
                         f"quality {rec['quality']}) stop {stop:.6g}"
                         f"{f' TP1 {tp1:.6g}' if tp1 else ''} TP2 {target:.6g}")
@@ -575,7 +596,7 @@ class SignalTrader:
         elif o.get("status") == "new":
             self.s["pending"][sym] = dict(rec, qty=qty, placed_ms=now_ms,
                                           expires_ms=now_ms + int(self.entry_ttl_s * 1000))
-            self.notify(f"{'🖐 TESTNET YOUR' if manual else '🤖 TESTNET'} signal {side.upper()} {sym}: limit {entry:.6g} for {self.entry_ttl_s / 60:.0f} min "
+            self.notify(f"{f'🖐 {self.tag} YOUR' if manual else f'🤖 {self.tag}'} signal {side.upper()} {sym}: limit {entry:.6g} for {self.entry_ttl_s / 60:.0f} min "
                         f"(score {r['score'] * 100:+.0f}, conf {r['confidence']}) stop {stop:.6g} target {target:.6g}")
         else:
             raise ValueError(f"the entry came back {o.get('status')}")
@@ -602,7 +623,7 @@ class SignalTrader:
 
     def view(self) -> dict:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
-        return dict(venue="testnet", enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
+        return dict(venue=self.venue, manual_only=self.manual_only, enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
                     max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE), leverage_range=list(LEVERAGE_RANGE),
                     daily_loss_range=list(DAILY_LOSS_RANGE),
                     risk_usd=self.risk_usd,
