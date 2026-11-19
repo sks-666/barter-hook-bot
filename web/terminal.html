@@ -343,6 +343,8 @@
   #t-acct { font: inherit; font-size: 11px; font-weight: 700; color: #fff; background: var(--neg); border: 1px solid var(--neg);
             border-radius: 3px; padding: 1px 4px; cursor: pointer; }
   #t-acct option { color: #000; background: #fff; }
+  #t-bal { font: inherit; font-size: 11px; padding: 1px 6px; cursor: pointer; }
+  #t-bal[aria-pressed="true"] { border-color: var(--amber); }
   .balcoins { font-size: 11px; padding: 2px 8px 6px; line-height: 1.6; }
   .balcoins i { font-style: normal; }
   .src { font-size: 10.5px; padding: 0 5px; border: 1px solid currentColor; border-radius: 2px; }
@@ -373,6 +375,7 @@
   <span id="t-mode" class="tag">PAPER</span>
   <span><span id="t-dot" class="dot"></span><span id="t-feed">connecting…</span></span>
   <span id="t-halt"></span>
+  <button id="t-bal" type="button" aria-pressed="false" title="Show or hide your account balances (hidden by default; this browser remembers it)">👁 $</button>
   <select id="t-acct" hidden aria-label="Account the order ticket and Trade button use" title="Which Binance account the order ticket, balances and the Trade button use. Open trades on the other one stay managed."></select>
   <span class="spacer"></span>
   <span id="t-clock"></span>
@@ -892,6 +895,18 @@ async function loadAcct() {
   } catch { S.acct = null; }
   finally { S.busy.acct = false; S.due.acct = Date.now() + 4000; if (S.snap) renderPos(); renderSignals(); }
 }
+// account money is hidden until you show it (👁 $ in the top bar; per browser): $•••• instead of the amount
+S.showBal = lsGet("term-show-bal") === "1";
+const hid = (v, f = usd) => S.showBal ? f(v) : "$••••";
+function setShowBal(on) {
+  S.showBal = on; lsSet("term-show-bal", on ? "1" : "0");
+  const b = $("t-bal");
+  b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "👁 $ shown" : "👁 $";
+  b.title = on ? "Hide your account balances" : "Show your account balances (hidden by default; this browser remembers it)";
+  renderAccts(); if (S.snap) renderPos(); renderSignals();
+}
+$("t-bal").addEventListener("click", () => setShowBal(!S.showBal));
+if (S.showBal) { $("t-bal").setAttribute("aria-pressed", "true"); $("t-bal").textContent = "👁 $ shown"; $("t-bal").title = "Hide your account balances"; }
 // futures + spot balances, read-only (the futures wallet from the account read, the spot wallet every minute)
 function balancesHtml(a) {
   if (!a || a.balance == null) return "";
@@ -899,16 +914,17 @@ function balancesHtml(a) {
   const sp = a.spot, spOk = sp && sp.total_usd != null;
   const fut = (a.futures_assets || []).filter(x => x.asset !== "USDT");
   let h = `<div class="kpis bal">` +
-    kpi("Futures wallet", usd(a.balance), "", "USDT in the futures wallet, before open P&L") +
-    kpi("Futures avail.", usd(a.available), "", "What new orders can use as margin") +
-    kpi("Futures P&amp;L", usd(a.unrealized), cls(a.unrealized), "Open positions' unrealised P&L") +
-    kpi("Futures equity", usd(a.equity), "", "Wallet + open P&L") +
-    (sp ? kpi("Spot total", spOk ? "≈" + usd(sp.total_usd) : "—", "", spOk ? "Every coin in the spot wallet valued in USDT" : sp.error) +
-          kpi("Spot USDT", spOk ? usd(sp.usdt) : "—", "", "USDT in the spot wallet (free + in orders)") +
-          kpi("All", spOk ? "≈" + usd(a.equity + sp.total_usd) : usd(a.equity), "amb", "Futures equity + spot total") : "") + `</div>`;
+    kpi("Futures wallet", hid(a.balance), "", "USDT in the futures wallet, before open P&L") +
+    kpi("Futures avail.", hid(a.available), "", "What new orders can use as margin") +
+    kpi("Futures P&amp;L", hid(a.unrealized), S.showBal ? cls(a.unrealized) : "", "Open positions' unrealised P&L") +
+    kpi("Futures equity", hid(a.equity), "", "Wallet + open P&L") +
+    (sp ? kpi("Spot total", spOk ? (S.showBal ? "≈" : "") + hid(sp.total_usd) : "—", "", spOk ? "Every coin in the spot wallet valued in USDT" : sp.error) +
+          kpi("Spot USDT", spOk ? hid(sp.usdt) : "—", "", "USDT in the spot wallet (free + in orders)") +
+          kpi("All", spOk ? (S.showBal ? "≈" : "") + hid(a.equity + sp.total_usd) : hid(a.equity), "amb", "Futures equity + spot total") : "") + `</div>`;
   const coins = spOk ? sp.assets.filter(x => x.asset !== "USDT") : [];
-  const bits = [...fut.map(x => `<span title="futures wallet">F·${esc(x.asset)} ${num(x.balance, 4)}</span>`),
-                ...coins.slice(0, 12).map(x => `<span title="spot: ${num(x.free, 8)} free, ${num(x.locked, 8)} in orders">${esc(x.asset)} ${num(x.free + x.locked, x.usd != null && x.usd > 1000 ? 4 : 6)}${x.usd != null ? ` <i class="mut">${usd(x.usd)}</i>` : ""}</span>`)];
+  const amt = (v, d) => S.showBal ? num(v, d) : "••••";
+  const bits = [...fut.map(x => `<span title="futures wallet">F·${esc(x.asset)} ${amt(x.balance, 4)}</span>`),
+                ...coins.slice(0, 12).map(x => `<span${S.showBal ? ` title="spot: ${num(x.free, 8)} free, ${num(x.locked, 8)} in orders"` : ""}>${esc(x.asset)} ${amt(x.free + x.locked, x.usd != null && x.usd > 1000 ? 4 : 6)}${x.usd != null ? ` <i class="mut">${hid(x.usd)}</i>` : ""}</span>`)];
   if (bits.length) h += `<div class="balcoins mut">${bits.join(" · ")}${coins.length > 12 ? ` · +${coins.length - 12} more` : ""}</div>`;
   if (sp?.error) h += `<div class="balcoins mut">Spot: ${esc(sp.error)}</div>`;
   return h;
@@ -936,15 +952,15 @@ function renderAccts() {
   el.hidden = false;
   if (document.activeElement === el) return;                     // being picked: redraw later
   el.innerHTML = a.accounts.map(x => `<option value="${esc(x.name)}"${x.name === a.active ? " selected" : ""}>` +
-    `${esc(x.label)} account · ${x.balance != null ? "$" + x.balance.toFixed(2) : x.error ? "error" : "…"}</option>`).join("");
+    `${esc(x.label)} account${S.showBal ? ` · ${x.balance != null ? "$" + x.balance.toFixed(2) : x.error ? "error" : "…"}` : x.error ? " · error" : ""}</option>`).join("");
   el.disabled = !canControl();
   el.title = `REAL MONEY: the order ticket, balances and ▶ Trade it use the ${a.label} account. ` +
-    a.accounts.map(x => `${x.label}: ${x.balance != null ? "$" + x.balance.toFixed(2) + " wallet, $" + x.available.toFixed(2) + " available" : x.error || "not read yet"}, ${x.positions} open`).join(" · ");
+    a.accounts.map(x => `${x.label}: ${x.balance != null ? (S.showBal ? "$" + x.balance.toFixed(2) + " wallet, $" + x.available.toFixed(2) + " available" : "balance hidden") : x.error || "not read yet"}, ${x.positions} open`).join(" · ");
 }
 $("t-acct").addEventListener("change", async ev => {
   const el = ev.target, to = el.value, a = S.accts, row = a.accounts.find(x => x.name === to);
   if (!confirm(`Trade the ${row.label} account from now on?\n\nThe order ticket, the balances and ▶ Trade it will use the ${row.label} account ` +
-               `(REAL MONEY${row.balance != null ? `, $${row.available.toFixed(2)} available` : ""}). Open trades on the ${a.label} account stay open and keep their stops and targets.`)) {
+               `(REAL MONEY${row.balance != null && S.showBal ? `, $${row.available.toFixed(2)} available` : ""}). Open trades on the ${a.label} account stay open and keep their stops and targets.`)) {
     el.value = a.active; return;
   }
   el.disabled = true;
