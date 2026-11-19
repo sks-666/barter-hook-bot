@@ -64,7 +64,9 @@ class Columns(unittest.TestCase):
         r = self.make()
         r.record()
         self.assertEqual(r.step, 0.05)                                  # nice_step(100)
-        t, lo, vals = r.cols[0]
+        t, lo, vals, strength = r.cols[0]
+        self.assertEqual(strength, r.book.strength(100.0))
+        self.assertEqual(strength, 1.0)                               # only the 99.5 bid is within 0.5%
         self.assertEqual(len(vals), int(2 * hm.RANGE * 100 / 0.05) + 1)
         self.assertAlmostEqual(sum(vals), 99.5 * 2 + 99 + 100.5 + 101 * 3, places=2)
         roll = r.rollup(60)
@@ -73,7 +75,8 @@ class Columns(unittest.TestCase):
         self.now[0] += 60
         r.record()
         self.assertEqual(sorted(k[2] for k in roll.values()), [1, 2])
-        times, counts, data = r.grid(0, 1e9, 60, lo, len(vals))
+        times, counts, data, st = r.grid(0, 1e9, 60, lo, len(vals))
+        self.assertAlmostEqual(st[0], strength, places=4)
         self.assertEqual((times, counts), ([9960.0, 10020.0], [2, 1]))
         rows = array.array("f", data)
         self.assertAlmostEqual(sum(rows[:len(vals)]) / 2, sum(vals), places=1)   # the page divides by the count
@@ -86,7 +89,7 @@ class Columns(unittest.TestCase):
         r.book.synced = True
         self.now[0] += 5
         r.record()
-        lo, arr, k = next(iter(roll.values()))
+        lo, arr, k, _ = next(iter(roll.values()))
         self.assertEqual(k, 2)
         (l0, c0), (l1, c1) = [(c[1], len(c[2])) for c in r.cols]
         self.assertEqual((lo, len(arr)), (min(l0, l1), max(l0 + c0, l1 + c1) - min(l0, l1)))
@@ -144,6 +147,7 @@ class View(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sum(g["counts"]), 3)
         self.assertEqual(len(base64.b64decode(g["data"])), 4 * g["rows"] * len(g["times"]))
         self.assertEqual(len(v["book"]["bids"]), g["rows"])
+        self.assertEqual(len(g["strength"]), len(g["times"]))
         part = await h.view("BTCUSDT", "5m", per_candle=4, after=g["times"][-1])
         self.assertTrue(part["grid"]["partial"])
         self.assertEqual(part["grid"]["times"], [g["times"][-1]])

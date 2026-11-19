@@ -33,6 +33,7 @@ SNAPSHOT = 1000              # levels a side in the REST snapshot
 MAX_ROWS = 384               # rows in one answer
 MAX_COLS = 600               # columns in one answer
 STEPS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14_400}
+STRENGTH_BAND = 0.005        # the strength level: bids vs asks within this share of the price
 
 
 def nice_step(price: float) -> float:
@@ -79,6 +80,13 @@ class LocalBook:
         self.last_u = u
         return True
 
+    def strength(self, mid: float) -> float:
+        """Bids vs asks within STRENGTH_BAND of the mid, -1 (all asks) .. +1 (all bids)."""
+        lo, hi = mid * (1 - STRENGTH_BAND), mid * (1 + STRENGTH_BAND)
+        b = sum(p * q for p, q in self.bids.items() if p >= lo)
+        a = sum(p * q for p, q in self.asks.items() if p <= hi)
+        return (b - a) / (b + a) if b + a else 0.0
+
     def mid(self) -> float | None:
         if not self.bids or not self.asks:
             return None
@@ -124,11 +132,11 @@ class Recorder:
         n = int(2 * RANGE * mid / self.step) + 1
         lo = int(mid // self.step) - n // 2
         now = self.clock()
-        col = self.book.bands(self.step, lo, n)
-        self.cols.append((now, lo, col))
+        col, strength = self.book.bands(self.step, lo, n), self.book.strength(mid)
+        self.cols.append((now, lo, col, strength))
         self.since = self.since or now
         for res, roll in self.rolls.items():
-            self._add(roll, res, now, lo, col)
+            self._add(roll, res, now, lo, col, strength)
         while self.cols and self.cols[0][0] < now - KEEP_S:
             self.cols.popleft()
             for res, roll in self.rolls.items():               # buckets older than the columns kept
@@ -182,12 +190,13 @@ class Recorder:
             wait = min(wait * 2, 60.0)
 
     # ---- buckets: per answer resolution, running sums of the columns (built once, then one column at a time) --------
-    def _add(self, roll: dict, res: float, t: float, lo: int, vals: array.array) -> None:
+    def _add(self, roll: dict, res: float, t: float, lo: int, vals: array.array, strength: float = 0.0) -> None:
         b = int(t // res)
         acc = roll.get(b)
         if acc is None:
-            roll[b] = [lo, array.array("f", vals), 1]
+            roll[b] = [lo, array.array("f", vals), 1, strength]
             return
+        acc[3] += strength
         a_lo, arr = acc[0], acc[1]
         new_lo, new_hi = min(a_lo, lo), max(a_lo + len(arr), lo + len(vals))
         if new_lo != a_lo or new_hi != a_lo + len(arr):          # the price drifted: widen the bucket
@@ -202,34 +211,35 @@ class Recorder:
         acc[2] += 1
 
     def rollup(self, res: float) -> dict:
-        """{bucket index: [lo_bin, band dollar sums, columns]} for this resolution, kept up to date from now on."""
+        """{bucket index: [lo_bin, band dollar sums, columns, strength sum]} for this resolution, kept up to date."""
         roll = self.rolls.get(res)
         if roll is None:
             roll = self.rolls[res] = {}
-            for t, lo, vals in list(self.cols):
-                self._add(roll, res, t, lo, vals)
+            for t, lo, vals, strength in list(self.cols):
+                self._add(roll, res, t, lo, vals, strength)
             while len(self.rolls) > 4:                            # an old resolution nobody asks for any more
                 del self.rolls[next(iter(self.rolls))]
         return roll
 
-    def grid(self, t0: float, t1: float, res: float, lo_bin: int, n: int) -> tuple[list[float], list[int], bytes]:
-        """The buckets between t0 and t1 over bands [lo_bin, lo_bin + n): their start times, column counts, and the band
-        dollar SUMS as float32 rows (the page divides by the count)."""
+    def grid(self, t0: float, t1: float, res: float, lo_bin: int, n: int) -> tuple[list[float], list[int], bytes, list]:
+        """The buckets between t0 and t1 over bands [lo_bin, lo_bin + n): their start times, column counts, the band
+        dollar SUMS as float32 rows (the page divides by the count) and the average strength level."""
         roll = self.rollup(res)
-        times, counts, out = [], [], bytearray()
+        times, counts, out, strength = [], [], bytearray(), []
         for b in sorted(roll):
             t = b * res
             if t < t0 - res or t >= t1:
                 continue
-            lo, arr, k = roll[b]
+            lo, arr, k, st = roll[b]
             row = array.array("f", bytes(4 * n))
             a, z = max(lo, lo_bin), min(lo + len(arr), lo_bin + n)
             if z > a:
                 row[a - lo_bin: z - lo_bin] = arr[a - lo: z - lo]
             times.append(t)
             counts.append(k)
+            strength.append(round(st / k, 4))
             out += row.tobytes()
-        return times, counts, bytes(out)
+        return times, counts, bytes(out), strength
 
 
 class Heatmap:
@@ -288,17 +298,19 @@ class Heatmap:
             res = math.ceil((t1 - t0) / MAX_COLS / SAMPLE_S) * SAMPLE_S
         out = {"symbol": sym, "interval": interval, "klines": kl, "status": r.status, "since": r.since,
                "columns": len(r.cols), "sample_s": SAMPLE_S, "res": res, "source": "Binance mainnet futures book",
-               "step": r.step, "grid": None, "book": None, "liqs": []}
+               "step": r.step, "grid": None, "book": None, "liqs": [], "trades": []}
         if self.whales is not None:
-            out["liqs"] = [q for q in self.whales.markers(sym).get("liqs", []) if q["ts"] >= t0 * 1000]
+            mk = self.whales.markers(sym)
+            out["liqs"] = [q for q in mk.get("liqs", []) if q["ts"] >= t0 * 1000]
+            out["trades"] = [x for x in mk.get("trades", []) if x["ts"] >= t0 * 1000]   # the volume bubbles
         if r.step is None:
             return out
         lo_bin, n = self.rows_for(kl, r.step)
-        times, counts, data = r.grid(max(t0, after), t1, res, lo_bin, n)
+        times, counts, data, strength = r.grid(max(t0, after), t1, res, lo_bin, n)
         out["grid"] = {"lo_bin": lo_bin, "rows": n, "times": times, "counts": counts, "partial": after > 0,
-                       "data": base64.b64encode(data).decode()}
+                       "strength": strength, "data": base64.b64encode(data).decode()}
         if r.book.synced:
-            out["book"] = {"mid": r.book.mid(),
+            out["book"] = {"mid": r.book.mid(), "strength": round(r.book.strength(r.book.mid()), 4),
                            "bids": list(r.book.bands(r.step, lo_bin, n, "bid")),
                            "asks": list(r.book.bands(r.step, lo_bin, n, "ask"))}
         return out
