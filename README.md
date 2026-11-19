@@ -95,7 +95,7 @@ and committed here, then copied over (step 2 below).
 | Bot | Port | Start | Stop | Status / log |
 |---|---|---|---|---|
 | **Testnet** (test money, swing mirror, signal auto-trader) | 8767 | `sudo systemctl start arbbot-testnet` | `sudo systemctl stop arbbot-testnet` | `systemctl status arbbot-testnet` · `journalctl -u arbbot-testnet -f` |
-| **Mainnet** (REAL money: monitor only + your order ticket, max 100 USDT an order) | 8770 | `~/vps-kit/apps/binance-arb-bot/mainnet.sh start` (`--no-ticket`: no order button at all) | `~/vps-kit/apps/binance-arb-bot/mainnet.sh stop` | `mainnet.sh status` · `/srv/apps/binance-arb-bot/logs/mainnet-bot.out` |
+| **Mainnet** (REAL money: monitor only + your order ticket, max 100 USDT an order) | 8770 | `~/vps-kit/apps/binance-arb-bot/mainnet.sh start --signal-button` (`--signal-button`: the terminal's ▶ Trade it button on signals, you confirm each order, never automatic; leave it out for the ticket only; `--no-ticket`: no order button at all) | `~/vps-kit/apps/binance-arb-bot/mainnet.sh stop` | `mainnet.sh status` · `/srv/apps/binance-arb-bot/logs/mainnet-bot.out` |
 | **Paper** (live prices, simulated fills) | 8765 | `sudo systemctl start arbbot-paper` | `sudo systemctl stop arbbot-paper` | `systemctl status arbbot-paper` |
 
 * **Run only one of them:** stop the others first, e.g. testnet only = `mainnet.sh stop`, then
@@ -123,7 +123,8 @@ git commit -am "…"
 cd /srv/apps/binance-arb-bot && git pull --ff-only ~/Desktop/binance-arb-bot-main/binance-arb-bot main
 # 3. restart the bot that should run it (page-only changes in web/*.html are live without a restart: just reload)
 sudo systemctl restart arbbot-testnet          # testnet
-~/vps-kit/apps/binance-arb-bot/mainnet.sh restart   # mainnet (stopping can take up to ~3 minutes)
+~/vps-kit/apps/binance-arb-bot/mainnet.sh restart --signal-button   # mainnet (~30 s to 3 min to stop; the flags
+                                                                    # are not remembered: repeat --signal-button)
 # 4. publish
 git push origin main
 ```
@@ -549,6 +550,13 @@ works, and how to start, change and troubleshoot it: [docs/SIGNAL-AUTO-TRADER.md
 You can also open a signal yourself with the **▶ Trade it** button in the terminal's Why header (same entry, stop,
 targets, size, exits and limits; see [Terminal and Heatmap](#terminal-terminal-and-heatmap-heatmap)).
 
+**On MAINNET it is the Trade button only** (`mainnet.sh start --signal-button`, real money): the same class runs with
+automatic entries locked off (the page, Telegram and a saved state cannot turn them on), so a trade opens only when
+you press ▶ Trade it and confirm the REAL MONEY box. It starts at $5 risk per trade, $20 daily loss, 2 open trades and
+3x leverage, keeps each position under the ticket's per-order cap, refuses a trade whose margin is more than the
+account's available USDT or that Binance would liquidate before its stop, and saves to
+`data/signal-trader-mainnet.json`. Details: [the REAL-MONEY ticket section](#paper-trading-live-forward-testing).
+
 **What it does**
 
 * **Enters** on a **TRADE** verdict with confidence ≥ 60 and the whale reading present, most confident coin first. The entry is a market order when the signal's entry is the price now, otherwise a limit order that is
@@ -577,8 +585,10 @@ targets, size, exits and limits; see [Terminal and Heatmap](#terminal-terminal-a
 | **Most open trades** (1–20, default 3) | The list in "Its open trades / most" | The **Most open** list |
 | **Risk per trade**: $ lost if a new trade hits its stop (1–500, default 20) | The first box in "Risk per trade · day limit" | The **Risk $** box |
 | **Daily loss limit**: no new trade after this much realised loss in a UTC day (5–5000, default 100) | The second box in "Risk per trade · day limit" | The **Day limit $** box |
-| **Leverage** for new trades (1–20x, default 5x) | The list in "Leverage · new trades" | The **Leverage** list |
-| **New entries** on / off | — | The Entries ON/OFF switch |
+| **Leverage** for new trades (1–20x, default 5x; mainnet 3x) | The list in "Leverage · new trades" | The **Leverage** list |
+| **Position size**: a fixed $ position per new trade instead of sizing by risk (5+, blank = by risk; capped by the largest position) | The box in "Position size · new trades", with the margin it needs (red "too little!" when the account can't cover it) | — |
+| **Auto close**: close at market on a signal flip or after the maximum hold (default ON) | The **ON · turn off / OFF · turn on** button in "Auto close · flip / max hold". OFF: only the stop, TP1, TP2 on Binance (and the breakeven stop), or you, close a trade; open trades too | — |
+| **New entries** on / off (testnet; locked off on mainnet) | — | The Entries ON/OFF switch |
 
 Leverage in Telegram: `/auto lev 3` or `/auto 3x`. Lower leverage puts its winning trades later in Binance's
 auto-deleveraging queue and liquidation further away, but needs more margin per trade: with too little margin
@@ -600,8 +610,11 @@ its own. Each change asks first, applies within 30 s and is announced on Telegra
   `--signal-trader-daily-loss-usd` (100) and `--signal-trader-leverage` (5), which only apply until you pick a value
   on the page or in Telegram
 
-State: `data/signal-trader-testnet.json`. API: `GET /api/signal-trader`; `POST /api/signal-trader` with `{"enabled"}`,
-`{"window_s"}`, `{"max_open"}`, `{"risk_usd"}`, `{"daily_loss_usd"}` or `{"leverage"}`, which needs the control token.
+State: `data/signal-trader-testnet.json` (mainnet: `data/signal-trader-mainnet.json`). API: `GET /api/signal-trader`;
+`POST /api/signal-trader` with `{"enabled"}`, `{"window_s"}`, `{"max_open"}`, `{"risk_usd"}`, `{"daily_loss_usd"}`,
+`{"leverage"}`, `{"size_usd"}` (0 or null = by risk), `{"auto_close"}` or `{"take": "SOLUSDT", "tf": 3600}` (the Trade
+button), which needs the control token. `GET /api/brackets`: every coin's maintenance-margin tiers, for liquidation
+prices.
 
 The terminal is otherwise a view: it can't pause, flatten or place orders. It receives the dashboard's control token
 only for these auto-trader settings, and a test checks the token is sent nowhere else.
@@ -610,8 +623,9 @@ Nothing here has been backtested: it is an experiment with test money.
 
 ## Terminal (`/terminal`) and Heatmap (`/heatmap`)
 
-Both pages are read-only views of the market (the terminal's only controls are the testnet auto-trader's settings and
-its **▶ Trade it** button). Everything they show comes from public Binance data, relayed by the bot.
+Both pages are read-only views of the market (the terminal's only controls are the signal trader's settings and its
+**▶ Trade it** button: test money on the testnet bot, real money on the mainnet bot with `--signal-button`).
+Everything they show comes from public Binance data, relayed by the bot, plus your own futures account.
 
 **Terminal: live data**
 * **Live price, trades and forming candle** (`arbbot/livefeed.py`): the bot keeps one Binance stream connection per coin
@@ -637,11 +651,28 @@ its **▶ Trade it** button). Everything they show comes from public Binance dat
 **Terminal: Signals panel**
 * **Signal types** now include **Candle reversal** (see below) and every pattern is shown on a **Candles** line in the
   Why section (hover a pattern for what it means; rows with a pattern get a 🕯).
-* **▶ Trade it LONG / SHORT** (in the Why header of a coin with a LONG or SHORT signal, testnet bot only): opens that
-  signal yourself on the testnet with the auto-trader's entry, stop, TP1 (half closes), TP2, size and exits. It asks
-  first and warns when the quality check says NO TRADE, the confidence is under the auto-trader's minimum, or the
-  timeframe is not the auto-trader's. It keeps every limit (kill switch, daily loss, most open, coins held elsewhere);
-  your trades are marked "· you".
+* **▶ Trade it LONG / SHORT** (in the Why header of a coin with a LONG or SHORT signal; testnet bot, or mainnet bot
+  with `--signal-button`): opens that signal yourself with the auto-trader's entry, stop, TP1 (half closes), TP2 and
+  exits. The confirm box (headed **⚠ REAL MONEY ⚠** on mainnet) shows the position size, leverage, margin against the
+  USDT available, the loss at the stop including fees, and the **liquidation price** and how far the stop is before
+  it. It warns when the quality check says NO TRADE or the confidence is under the minimum. It keeps every limit (kill
+  switch, daily loss, most open, coins held elsewhere) and is refused, before anything is sent, when the margin is
+  short, the leverage is over the coin's limit or Binance would liquidate it before its stop. Your trades are marked
+  "· you".
+* **Position size, leverage and Auto close** (the strip at the top of the panel): your own $ size per trade (blank =
+  sized by the risk), 1-20x, and whether the bot may close a trade at market on a signal flip or after the maximum
+  hold (OFF: only the stop, TP1, TP2 or you). See the settings table in
+  [Signal auto-trader](#signal-auto-trader-testnet-only).
+* **Liq column** (after R:R, when the bot runs the signal trader): each signal's liquidation price with your size and
+  leverage, isolated margin, from Binance's maintenance-margin tiers per coin (`/fapi/v1/leverageBracket`, read hourly;
+  a cautious 1% until read), e.g. `90.9091 ⚠ −9.1% · 10x`. **Red ⚠** = liquidated before the stop. Hover: margin,
+  maintenance rate, room between stop and liquidation, fees and the loss at the stop with fees. An estimate at the
+  entry: funding paid over time moves the real one a little.
+* **Account balances** (Positions & P&L, and the Account positions block under the signals): futures wallet,
+  available, open P&L and equity, plus the **spot** wallet (every coin valued in USDT, read every minute, read-only)
+  and the total of both. The coins line lists each spot coin with its $ value and any non-USDT coin in the futures
+  wallet (`F·BNB`). The testnet bot shows futures only (testnet keys do not open the spot testnet); the paper bot has
+  no spot wallet.
 * **TP1 reachability:** a signal is NO TRADE when TP1 is further than the price can usually travel before the time exit
   (1.25 × LTF ATR × √(LTF candles in the hold)).
 
