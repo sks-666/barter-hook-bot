@@ -70,6 +70,32 @@ def _num(req: dict, key: str, required: bool = False) -> float | None:
     return v
 
 
+STABLE = {"USDT", "USDC", "FDUSD", "BUSD", "TUSD", "USDP", "DAI", "USD1"}
+SPOT_S = 60.0                       # how often the spot wallet is read
+DUST_USD = 0.01                     # coins worth less are left out of the list (still counted in the total)
+
+
+def spot_wallet(balances: list[dict], prices: list[dict]) -> dict:
+    """Spot balances -> {total_usd, usdt, assets: [{asset, free, locked, usd}] biggest first}. A coin with no USDT
+    price has usd None and is not in the total."""
+    px = {p["symbol"]: float(p["price"]) for p in prices if p.get("symbol", "").endswith("USDT")}
+    assets, total = [], 0.0
+    for b in balances:
+        coin, free, locked = b.get("asset", ""), float(b.get("free") or 0), float(b.get("locked") or 0)
+        qty = free + locked
+        if qty <= 0:
+            continue
+        base = coin[2:] if coin.startswith("LD") and coin + "USDT" not in px and coin not in STABLE else coin
+        price = 1.0 if base in STABLE else px.get(base + "USDT")
+        usd = qty * price if price is not None else None
+        total += usd or 0.0
+        if usd is None or usd >= DUST_USD:
+            assets.append(dict(asset=coin, free=free, locked=locked, usd=usd))
+    assets.sort(key=lambda a: -(a["usd"] or 0))
+    usdt = next((a["free"] + a["locked"] for a in assets if a["asset"] == "USDT"), 0.0)
+    return dict(total_usd=total, usdt=usdt, assets=assets)
+
+
 def _fmt(d: Decimal) -> str:
     return format(d.normalize(), "f")
 
@@ -113,6 +139,9 @@ class TestnetTicket:
         self.refreshed_at = 0.0
         self._kick = asyncio.Event()
         self._fills_due = True
+        # the spot wallet, read-only, for the page's balances (every SPOT_S; its own errors never stop the ticket)
+        self.spot: dict | None = None
+        self.spot_error, self._spot_at = "", -1e9
 
     # ---- state ------------------------------------------------------------------------------------
     def _load(self) -> dict | None:
@@ -542,6 +571,24 @@ class TestnetTicket:
             self.fills = sorted((f for g in got if isinstance(g, list) for f in g), key=lambda f: -int(f["time"]))[:50]
         self.refreshed_at = self.clock()
         self._save()
+        if self.clock() - self._spot_at > SPOT_S:
+            await self.refresh_spot()
+
+    async def refresh_spot(self) -> None:
+        """The spot wallet's coins, each valued in USDT (stablecoins at 1, others at their USDT price; Simple Earn's
+        LD<coin> at the coin's price). Read-only: /api/v3/account (weight 20) + all prices (weight 4), every SPOT_S."""
+        self._spot_at = self.clock()
+        try:
+            acct, prices = await asyncio.gather(
+                self.c.get("spot", "/api/v3/account", {"omitZeroBalances": "true"}, signed=True),
+                self.c.get("spot", "/api/v3/ticker/price"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            self.spot_error = (f"{type(e).__name__}: {str(e)[:120]}" if self.venue == "mainnet" else
+                               "the futures testnet keys do not open the spot testnet")
+            return
+        self.spot, self.spot_error = spot_wallet(acct.get("balances", []), prices), ""
 
     async def refresh_if_stale(self, max_age: float = STREAM_POLL_S + 5) -> None:
         """For the auto-traders' passes: with the stream up and nothing pushed since a read at most max_age ago, that
@@ -777,4 +824,15 @@ class TestnetTicket:
                     taker_bps=self.taker_bps, mmr=0.005, min_notional=5.0, positions=positions, orders=orders,
                     order_history=self.s["history"][-50:][::-1], trades=trades, error=self.last_error,
                     stream=dict(ok=self.stream_ok, note=self.stream_note, pushes=self.stream_events),
-                    arb_symbols=sorted(arb))
+                    arb_symbols=sorted(arb), futures_assets=self._futures_assets(),
+                    spot=dict(self.spot or {}, error=self.spot_error) if self.spot or self.spot_error else None)
+
+    def _futures_assets(self) -> list[dict]:
+        """The futures wallet's coins with money in them (USDT, and e.g. USDC or BNB in multi-asset mode)."""
+        out = []
+        for a in (self.account or {}).get("assets", []):
+            w, u = float(a.get("walletBalance") or 0), float(a.get("unrealizedProfit") or 0)
+            if w or u:
+                out.append(dict(asset=a.get("asset"), balance=w, available=float(a.get("availableBalance") or 0),
+                                unrealized=u))
+        return sorted(out, key=lambda a: (a["asset"] != "USDT", -abs(a["balance"])))

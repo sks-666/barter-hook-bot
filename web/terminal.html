@@ -318,6 +318,9 @@
   .kpis div { background: var(--panel); padding: 4px 8px; }
   .kpis .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; }
   .kpis .v { font-size: 13px; font-weight: 700; }
+  .kpis.bal { margin-bottom: 4px; }
+  .balcoins { font-size: 11px; padding: 2px 8px 6px; line-height: 1.6; }
+  .balcoins i { font-style: normal; }
   .src { font-size: 10.5px; padding: 0 5px; border: 1px solid currentColor; border-radius: 2px; }
   .src.swing { color: var(--pos); } .src.arb { color: var(--accent); } .src.ticket { color: var(--warn); } .src.ext { color: var(--muted); }
   .sub { padding: 4px 8px; color: var(--amber); font-size: 11px; font-weight: 700; letter-spacing: 1px; border-top: 1px solid var(--line); }
@@ -864,6 +867,27 @@ async function loadAcct() {
   } catch { S.acct = null; }
   finally { S.busy.acct = false; S.due.acct = Date.now() + 4000; if (S.snap) renderPos(); renderSignals(); }
 }
+// futures + spot balances, read-only (the futures wallet from the account read, the spot wallet every minute)
+function balancesHtml(a) {
+  if (!a || a.balance == null) return "";
+  const kpi = (l, v, c = "", t = "") => `<div title="${esc(t)}"><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
+  const sp = a.spot, spOk = sp && sp.total_usd != null;
+  const fut = (a.futures_assets || []).filter(x => x.asset !== "USDT");
+  let h = `<div class="kpis bal">` +
+    kpi("Futures wallet", usd(a.balance), "", "USDT in the futures wallet, before open P&L") +
+    kpi("Futures avail.", usd(a.available), "", "What new orders can use as margin") +
+    kpi("Futures P&amp;L", usd(a.unrealized), cls(a.unrealized), "Open positions' unrealised P&L") +
+    kpi("Futures equity", usd(a.equity), "", "Wallet + open P&L") +
+    (sp ? kpi("Spot total", spOk ? "≈" + usd(sp.total_usd) : "—", "", spOk ? "Every coin in the spot wallet valued in USDT" : sp.error) +
+          kpi("Spot USDT", spOk ? usd(sp.usdt) : "—", "", "USDT in the spot wallet (free + in orders)") +
+          kpi("All", spOk ? "≈" + usd(a.equity + sp.total_usd) : usd(a.equity), "amb", "Futures equity + spot total") : "") + `</div>`;
+  const coins = spOk ? sp.assets.filter(x => x.asset !== "USDT") : [];
+  const bits = [...fut.map(x => `<span title="futures wallet">F·${esc(x.asset)} ${num(x.balance, 4)}</span>`),
+                ...coins.slice(0, 12).map(x => `<span title="spot: ${num(x.free, 8)} free, ${num(x.locked, 8)} in orders">${esc(x.asset)} ${num(x.free + x.locked, x.usd != null && x.usd > 1000 ? 4 : 6)}${x.usd != null ? ` <i class="mut">${usd(x.usd)}</i>` : ""}</span>`)];
+  if (bits.length) h += `<div class="balcoins mut">${bits.join(" · ")}${coins.length > 12 ? ` · +${coins.length - 12} more` : ""}</div>`;
+  if (sp?.error) h += `<div class="balcoins mut">Spot: ${esc(sp.error)}</div>`;
+  return h;
+}
 function srcTag(s) {
   s = s || "ticket";
   if (s.startsWith("swing:")) return `<span class="src swing" title="Swing kit, ${esc(s.slice(6))} account">SWING·${esc(s.slice(6).toUpperCase())}</span>`;
@@ -1229,6 +1253,7 @@ function renderPos() {
       <td class="${cls(p.funding)}">${usd(p.funding, 3)}</td><td class="${cls(p.unreal)}">${usd(p.unreal, 3)}</td><td>${dur(p.held_s)}</td></tr>`).join("") +
     `</tbody></table>` : `<div class="empty">No open positions.</div>`;
   const acct = S.acct?.positions || [];
+  if (S.acct?.balance != null) html += `<div class="sub">BALANCES · ${esc((S.acct.venue || "paper").toUpperCase())} FUTURES${S.acct.spot ? " &amp; SPOT" : ""}</div>` + balancesHtml(S.acct);
   html += `<div class="sub">FUTURES ACCOUNT · WHO OPENED EACH POSITION</div>`;
   html += acct.length ? `<table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th>Size $</th><th>Entry</th><th>Mark</th><th>P&amp;L (ROE)</th></tr></thead><tbody>` +
     acct.map(p => `<tr class="click" data-sym="${esc(p.symbol)}"><td class="amb">${esc(p.symbol.replace(/USDT$/, ""))}</td><td>${srcTag(p.source)}</td>
@@ -2185,7 +2210,7 @@ function sigTrades() {
   if (!acct && !a) return `<h3>Account positions</h3><div class="mut">No futures account in this bot. The testnet bot (port 8767) trades the demo account.</div>`;
   const tag = s => s === "signal" ? `<span class="src ticket" title="Opened by the signal auto-trader">SIGNAL</span>` : srcTag(s);
   const total = rows.reduce((t, r) => t + (r.pnl || 0), 0);
-  let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")} · ${rows.length} open · <span class="${cls(total)}">${sgMoney(total)} $</span></h3>`;
+  let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")} · ${rows.length} open · <span class="${cls(total)}">${sgMoney(total)} $</span></h3>` + balancesHtml(acct);
   const pend = a ? Object.entries(a.pending) : [];
   h += rows.length || pend.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th title="Leverage of the position on Binance">Lev</th><th>Size $</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L $</th><th>Held</th></tr></thead><tbody>` +
     rows.map(r => `<tr class="click${r.symbol === S.sym ? " sel" : ""}" data-sym="${esc(r.symbol)}"><td class="amb">${sgCoin(r.symbol)}</td><td>${tag(r.source)}</td>
