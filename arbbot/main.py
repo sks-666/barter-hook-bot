@@ -504,7 +504,8 @@ async def amain(args: argparse.Namespace) -> None:
         handler.ticket = ticket if isinstance(ticket, TestnetTicket) else None
         dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client, stats_client=stats_client), paper=ticket,
                          lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
-                         macro=macro, freq=freq, signal_desk=signal_desk, signal_trader=trader)
+                         macro=macro, freq=freq, signal_desk=signal_desk, signal_trader=trader,
+                         book_market=MarketData(stats_client, stats_client=stats_client) if stats_client else None)
         if args.hosted:  # public interface: the READ-ONLY page behind a login, never the dashboard with its controls
             hosted_password, hosted_user = settings_from_env()
             runner = web.AppRunner(make_hosted_app(engine, ROOT / "vercel-dashboard" / "views" / "dashboard.html",

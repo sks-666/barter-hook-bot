@@ -108,7 +108,8 @@ LOCKED = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="
 
 class Dashboard:
     def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None,
-                 whales=None, alert_book=None, desk=None, macro=None, freq=None, signal_desk=None, signal_trader=None):
+                 whales=None, alert_book=None, desk=None, macro=None, freq=None, signal_desk=None, signal_trader=None,
+                 book_market=None):
         self.engine = engine
         self.freq = freq                          # a freqkit.manager.FreqtradeManager (the /trading page), or None
         self.macro = macro                        # an arbbot.macro.MacroNews (the terminal's MACRO / NEWS panel), or None
@@ -118,6 +119,8 @@ class Dashboard:
         self.signal_desk = signal_desk            # an arbbot.signals.SignalDesk (made on the first request if None)
         self.signal_trader = signal_trader        # an arbbot.signal_trader.SignalTrader (testnet auto-trading), or None
         self.market = market                      # an arbbot.market.MarketData for the chart / order book panel, or None
+        self.book_market = book_market            # the MarketData the BOOK overlay reads (mainnet public), else `market`
+        self.book = None                          # an arbbot.orderbook.BookWatch, made on the first BOOK request
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
         self.web_dir = web_dir
@@ -342,6 +345,15 @@ class Dashboard:
             return web.json_response({"error": "market data is not available in this bot"}, status=404)
         if kind == "history":
             return await self.market_history(q)
+        if kind == "book":                        # the chart's BOOK overlay: order book + taker flow, per timeframe
+            if self.book is None:
+                from .orderbook import BookWatch
+                self.book = BookWatch(self.book_market or self.market)
+            try:
+                body = await self.book.view(q.get("symbol", ""), q.get("interval", "1h"))
+            except ValueError as e:
+                return web.json_response({"error": str(e)}, status=400)
+            return web.json_response(body, headers={"Cache-Control": "no-store"})
         calls = {"curve": lambda: self.market.curve(q.get("symbol", ""), q.get("period", "1d")),"klines": lambda: self.market.klines(q.get("symbol", ""), q.get("interval", "1h")),
                  "depth": lambda: self.market.depth(q.get("symbol", ""), 100 if q.get("limit") == "100" else 20),
                  "trades": lambda: self.market.trades(q.get("symbol", "")),

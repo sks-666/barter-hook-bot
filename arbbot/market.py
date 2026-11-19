@@ -131,10 +131,11 @@ class MarketData:
         return await self._cached(("spot", symbol, interval), load)
 
     async def depth(self, symbol: str, limit: int = 20) -> dict:
-        """Top `limit` levels a side: 20 (weight 2) for the ladder, or 100 (weight 5) to find the walls."""
+        """Top `limit` levels a side: 20 (weight 2) for the ladder, 100 (weight 5) to find the walls, or 500 (weight 10)
+        for the order book read (arbbot/orderbook.py)."""
         symbol = self.check_symbol(symbol)
-        if limit not in (20, 100):
-            raise ValueError("limit must be 20 or 100")
+        if limit not in (20, 100, 500):
+            raise ValueError("limit must be 20, 100 or 500")
 
         async def load():
             d = await self._get("/fapi/v1/depth", {"symbol": symbol, "limit": limit})

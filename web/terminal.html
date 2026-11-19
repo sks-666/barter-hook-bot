@@ -159,6 +159,9 @@
   #p-sent { grid-area: sent; } #p-whale { grid-area: whale; } #p-flow { grid-area: flow; } #p-alerts { grid-area: alerts; } #p-desk { grid-area: desk; }
   #p-chart .pb { position: relative; height: 460px; overflow: hidden; }   /* price + volume + CVD + RSI panes */
   #chart { display: block; width: 100%; height: 100%; }
+  .obsig { position: absolute; left: 8px; top: 20px; display: flex; flex-wrap: wrap; gap: 4px; font-size: 11px; max-width: calc(100% - 90px); }
+  .obsig span { background: color-mix(in srgb, var(--panel) 85%, transparent); border: 1px solid var(--line); border-radius: 3px; padding: 0 5px; cursor: help; }
+  .obsig .h { color: var(--muted); border-color: transparent; background: none; padding: 0 2px 0 0; }
   .ohlc { position: absolute; left: 8px; right: 80px; top: 4px; color: var(--muted); font-size: 11px; pointer-events: none;
           white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #p-book .pb, #p-tape .pb { height: 460px; }
@@ -369,7 +372,7 @@
   <section class="p" id="p-chart" aria-label="Chart">
     <div class="ph"><h2>Chart</h2><span class="k" id="c-sym"></span>
       <div class="r"><span class="grp" id="c-ov"></span><span class="grp" id="c-iv"></span></div></div>
-    <div class="pb"><canvas id="chart" aria-label="Price chart"></canvas><div class="ohlc" id="ohlc"></div></div>
+    <div class="pb"><canvas id="chart" aria-label="Price chart"></canvas><div class="ohlc" id="ohlc"></div><div class="obsig" id="obsig"></div></div>
   </section>
 
   <section class="p" id="p-book" aria-label="Order book">
@@ -571,7 +574,7 @@ const S = {
   sym: lsGet("term-sym") || "BTCUSDT", iv: lsGet("term-iv") || "1h", mv: "gainers",
   snap: null, info: null, klines: null, depth: null, trades: null, sent: null, movers: null, whales: null, daily: null,
   wt: "trades", wmin: 0, wcoin: false, fw: 3600, sgw: 3600, sgf: "all", auto: null, sp: "1h", marks: null, alerts: null, desk: null,
-  ov: { vwap: true, ema: true, cvd: true, lvl: true, whl: true, e50: true, rsi: true, sig: true },
+  ov: { vwap: true, ema: true, cvd: true, lvl: true, whl: true, e50: true, rsi: true, sig: true, ob: true },
   curve: null, cp: lsGet("term-curve") || "1d", cmp: null, cmpD: {},
   errs: {}, due: {}, busy: {}, hover: null, arbSort: { k: "net", dir: -1 }, history: [], hpos: 0,
 };
@@ -822,6 +825,7 @@ function pollLoop() {
   if (!document.hidden && !(S.due.types > Date.now())) loadTypes();
   if (!document.hidden && !(S.due.acct > Date.now())) loadAcct();
   if (!document.hidden && !(S.due.cmp > Date.now())) loadCmp();
+  if (!document.hidden && S.ov.ob && !(S.due.book > Date.now())) loadBookRead();
   if (!(S.due.alerts > Date.now())) loadAlerts();                  // also while hidden: fired alerts still pop up
   if (!document.hidden) for (const k of Object.keys(POLL)) if (!(S.due[k] > Date.now())) load(k);
   tickClock();
@@ -858,6 +862,7 @@ function setSym(sym) {
   S.sym = sym; lsSet("term-sym", sym);
   S.info = S.klines = S.depth = S.trades = S.sent = S.daily = S.marks = S.curve = null;
   S.hover = null; S.titlePx = S.titleDir = null; setTitle();
+  S.book = null; S.due.book = 0; renderObSig();
   if (S.wcoin) renderWhales();
   renderSignals();
   for (const k of ["info", "klines", "depth", "trades", "sent", "daily", "marks", "curve", "combo"]) { S.errs[k] = ""; S.due[k] = 0; render(k); }
@@ -2329,6 +2334,7 @@ const OVS = [["vwap", "VWAP", "Volume-weighted average price since the UTC day b
              ["whl", "WHL", "Whale orders (circles, sized by value) and liquidations (triangles) since the bot started"],
              ["e50", "EMA50", "Exponential moving average 50: the swing signals' trend filter"],
              ["rsi", "RSI", "Relative strength index 14 (Wilder), with the 30 / 70 lines"],
+             ["ob", "BOOK", "Order book read (Binance mainnet): a pane of the book's imbalance per candle (green = more bids than asks near the price: within 0.5%, or as far as Binance's 500 levels reach, about 0.1% on BTC; red = more asks), the big resting orders (walls) as lines on the price, and which way the book + taker trades push on 5m / 15m / 1h / 4h. Pressure, not a forecast: walls can be pulled"],
              ["sig", "SIG", "Swing signals, EMA50 + RSI: long above EMA50 when RSI crosses back up through 40, out when it falls back under 70 or a close is below EMA50; short is the mirror. Closed candles only, before fees"]];
 // Wilder's RSI: average gains vs average losses over n candles, smoothed; null until n candles exist
 function rsiOf(closes, n = 14) {
@@ -2370,7 +2376,35 @@ function renderOv() {
   $("c-ov").innerHTML = OVS.map(([k, l, t]) => `<button type="button" data-ov="${k}" aria-pressed="${!!S.ov[k]}" title="${t}">${l}</button>`).join("");
 }
 $("c-ov").addEventListener("click", ev => { const b = ev.target.closest("[data-ov]"); if (b) toggleOv(b.dataset.ov); });
-function toggleOv(k) { S.ov[k] = !S.ov[k]; lsSet("term-ov", JSON.stringify(S.ov)); renderOv(); drawChart(); }
+function toggleOv(k) { S.ov[k] = !S.ov[k]; lsSet("term-ov", JSON.stringify(S.ov)); renderOv(); drawChart(); if (k === "ob") { S.due.book = 0; renderObSig(); } }
+// ---- the BOOK overlay (arbbot/orderbook.py): the book's imbalance per candle, the walls, and a verdict per timeframe ----
+async function loadBookRead() {
+  if (S.busy.book) return;
+  S.busy.book = true;
+  const want = S.sym + "|" + S.iv;
+  try {
+    const r = await fetch(`/api/market/book?` + new URLSearchParams({ symbol: S.sym, interval: S.iv }), { cache: "no-store" });
+    const d = await r.json().catch(() => ({}));
+    if (want !== S.sym + "|" + S.iv) { S.due.book = 0; return; }       // the coin or the interval changed meanwhile
+    S.book = r.ok ? d : { error: d.error || `HTTP ${r.status}` };
+    S.bookFor = want;
+    S.due.book = Date.now() + 5000;
+  } catch (e) { S.book = { error: String(e) }; S.bookFor = want; S.due.book = Date.now() + 10000; }
+  finally { S.busy.book = false; }
+  drawChart(); renderObSig();
+}
+const OB_WORD = { up: ["▲", "UP", "up"], down: ["▼", "DOWN", "dn"], balanced: ["●", "even", "mut"] };
+function renderObSig() {
+  const el = $("obsig"), b = S.book;
+  if (!S.ov.ob || S.bookFor !== S.sym + "|" + S.iv) { el.innerHTML = ""; return; }
+  if (b?.error && !b.frames) { el.innerHTML = `<span class="dn">Order book: ${esc(b.error)}</span>`; return; }
+  if (!b?.frames) { el.innerHTML = `<span class="mut">Order book: reading…</span>`; return; }
+  const since = b.since ? Math.round((Date.now() / 1000 - b.since) / 60) : 0;
+  el.innerHTML = `<span class="h" title="Which way the order book and the taker trades push, per timeframe, from −100 (sellers in control) to +100 (buyers). ` +
+    `Book: Binance mainnet, read every ${b.sample_s}s while this page shows the coin (recorded for ${since} min). Pressure, not a forecast; nothing is backtested.">Order book ⓘ</span>` +
+    b.frames.map(f => { const [a, w, c] = OB_WORD[f.verdict];
+      return `<span class="${c}" title="${esc(f.tf + ": " + f.why.join(" · "))}">${f.tf} ${a} ${w} ${sgn(f.score, 0)}</span>`; }).join("");
+}
 function ema(vals, n) { const a = 2 / (n + 1); let e = null; return vals.map(v => (e = e == null ? v : v * a + e * (1 - a))); }
 function vwapOf(kl) {
   let day = -1, pv = 0, v = 0;
@@ -2405,14 +2439,17 @@ function drawChart() {
   }
   const intraday = !["1d", "1w"].includes(S.iv);
   const all = S.klines, hasDelta = all[0].length > 7, showCvd = S.ov.cvd && hasDelta;
-  const showRsi = S.ov.rsi;
+  const showRsi = S.ov.rsi, showOb = S.ov.ob;
+  if (showOb && S.bookFor !== S.sym + "|" + S.iv && !S.busy.book) S.due.book = 0;   // a new interval: read again
   const PADR = 74, PADB = 20, TOP = 22, plotW = W - PADR, avail = H - PADB - TOP;
   // the panes share the height by weight: price, volume, then the optional CVD and RSI panes, 6 px apart
-  const wt = { price: 6, vol: showCvd || showRsi ? 1.1 : 1.7, cvd: showCvd ? 1.8 : 0, rsi: showRsi ? 1.8 : 0 };
-  const gaps = 6 * (1 + (showCvd ? 1 : 0) + (showRsi ? 1 : 0)), unit = (avail - gaps) / (wt.price + wt.vol + wt.cvd + wt.rsi);
+  const wt = { price: 6, vol: showCvd || showRsi || showOb ? 1.1 : 1.7, cvd: showCvd ? 1.8 : 0, ob: showOb ? 1.5 : 0, rsi: showRsi ? 1.8 : 0 };
+  const gaps = 6 * (1 + (showCvd ? 1 : 0) + (showOb ? 1 : 0) + (showRsi ? 1 : 0)),
+    unit = (avail - gaps) / (wt.price + wt.vol + wt.cvd + wt.ob + wt.rsi);
   const priceH = unit * wt.price, volTop = TOP + priceH + 6, volH = unit * wt.vol;
   const cvdTop = volTop + volH + 6, cvdH = unit * wt.cvd;
-  const rsiTop = (showCvd ? cvdTop + cvdH : volTop + volH) + 6, rsiH = unit * wt.rsi;
+  const obTop = (showCvd ? cvdTop + cvdH : volTop + volH) + 6, obH = unit * wt.ob;
+  const rsiTop = (showOb ? obTop + obH : showCvd ? cvdTop + cvdH : volTop + volH) + 6, rsiH = unit * wt.rsi;
   const n = Math.max(20, Math.min(all.length, Math.floor(plotW / 5))), off = all.length - n;
   const k = all.slice(-n), step = plotW / k.length, bw = Math.max(1, step * 0.65);
   const closes = all.map(c => c[4]);
@@ -2528,6 +2565,7 @@ function drawChart() {
     }
   }
   S.geom = { TOP, priceH, hi, lo, plotW };
+  $("obsig").style.top = Math.round(TOP + priceH - 20) + "px";   // the verdicts sit at the bottom of the price pane
   // cumulative volume delta: taker buys minus taker sells, summed over the candles shown
   let cvd = null;
   if (showCvd) {
@@ -2540,6 +2578,36 @@ function drawChart() {
     cvd.forEach((v, j) => (j ? g.lineTo(X(j), cy(v)) : g.moveTo(X(j), cy(v))));
     g.stroke(); g.lineWidth = 1;
     g.fillStyle = muted; g.fillText(`CVD ${cvd.at(-1) >= 0 ? "+" : "−"}$${big(Math.abs(cvd.at(-1)))}`, plotW + 6, cvdTop + 10);
+  }
+  // BOOK: the walls (big resting orders) as lines on the price, and the book's imbalance per candle in its own pane
+  const bk = showOb && S.bookFor === S.sym + "|" + S.iv ? S.book : null, obAt = {};
+  if (showOb) {
+    const top1 = {};                                     // only the biggest wall a side is labelled (they crowd on BTC)
+    for (const w of bk?.live?.walls || []) if (!top1[w.side] || w.usd > top1[w.side].usd) top1[w.side] = w;
+    for (const w of bk?.live?.walls || []) {
+      if (w.price < lo || w.price > hi) continue;
+      const yy = Math.round(y(w.price)) + 0.5, col = w.side === "bid" ? up : dn, lw = Math.max(1, Math.min(5, Math.sqrt(w.usd / 2.5e5)));
+      g.globalAlpha = 0.55; g.strokeStyle = col; g.lineWidth = lw; g.setLineDash([8, 4]);
+      g.beginPath(); g.moveTo(plotW * 0.55, yy); g.lineTo(plotW, yy); g.stroke();
+      g.setLineDash([]); g.lineWidth = 1; g.globalAlpha = 1;
+      const txt = `${w.side === "bid" ? "bid" : "ask"} wall $${big(w.usd)}`;
+      if (top1[w.side] === w) { g.fillStyle = col; g.textAlign = "right"; g.fillText(txt, plotW - 4, w.side === "bid" ? yy + 12 : yy - 4); g.textAlign = "left"; }
+      hits.push({ x: plotW - 40, y: yy, r: 8, text: `🧱 ${w.side === "bid" ? "BID wall (support)" : "ASK wall (resistance)"} $${big(w.usd)} resting at ${px(w.price)} (${sgn(w.dist_pct, 2)}% from the price), Binance mainnet book`, cls: w.side === "bid" ? "up" : "dn" });
+    }
+    for (const [t, v, nr] of bk?.series || []) obAt[t] = [v, nr];
+    const vals = k.map(c => obAt[c[0]]?.[0]).filter(v => v != null);
+    const span = Math.max(0.25, ...vals.map(Math.abs)), mid0 = obTop + obH / 2, oy = v => mid0 - v / span * (obH / 2 - 2);
+    g.strokeStyle = line; g.strokeRect(0.5, Math.round(obTop) + 0.5, plotW - 1, Math.round(obH));
+    g.beginPath(); g.moveTo(0, Math.round(mid0) + 0.5); g.lineTo(plotW, Math.round(mid0) + 0.5); g.stroke();
+    k.forEach((c, j) => { const v = obAt[c[0]]?.[0]; if (v == null) return;
+      g.fillStyle = v >= 0 ? up : dn; g.globalAlpha = 0.75;
+      g.fillRect(X(j) - bw / 2, Math.min(mid0, oy(v)), bw, Math.max(1, Math.abs(oy(v) - mid0))); g.globalAlpha = 1; });
+    const now = bk?.live?.imb, reach = bk?.live?.reach_pct, bandTxt = reach != null && reach < 0.5 ? `±${reach.toFixed(2)}%` : "±0.5%";
+    g.fillStyle = now == null ? muted : now >= 0 ? up : dn;
+    g.fillText(`BOOK ${now == null ? "—" : sgn(now * 100, 0) + "%"}`, plotW + 6, obTop + 10);
+    g.fillStyle = muted; g.font = "10px ui-monospace, Menlo, Consolas, monospace";
+    g.fillText(bk?.error && !bk?.series ? "book: " + bk.error.slice(0, 60) : (!vals.length ? "order book: recording from now · " : "") + `bids − asks within ${bandTxt} of the price`, 4, obTop + 11);
+    g.font = "11px ui-monospace, Menlo, Consolas, monospace";
   }
   // RSI 14: 30 / 70 lines (oversold / overbought), the 40 / 60 signal lines dotted
   if (rs) {
@@ -2588,6 +2656,7 @@ function drawChart() {
   if (e9) legend += ` · ${sw(cE9, "EMA9 " + px(e9[j]))} · ${sw(cE21, "EMA21 " + px(e21[j]))}`;
   if (e50) legend += ` · ${sw(cE50, "EMA50 " + px(e50[j]))}`;
   if (rs && rs[j] != null) legend += ` · ${sw(cVwap, "RSI " + rs[j].toFixed(1))}`;
+  if (showOb && obAt[c[0]]) { const [v, nr] = obAt[c[0]]; legend += ` · book <span class="${cls(v)}">${v >= 0 ? "bids" : "asks"} +${Math.abs(v * 100).toFixed(0)}%</span> <span class="mut">(${nr} reads)</span>`; }
   if (sig) {
     const won = sig.trades.filter(t => t.ret > 0).length, sum = sig.trades.reduce((s, t) => s + t.ret, 0);
     legend += ` · SIG ` + (sig.open
