@@ -704,7 +704,12 @@ function renderLive() {
   const el = $("c-live"); if (!el) return;
   const on = LV.ok && LV.sym === S.sym && Date.now() - LV.at < 5000;
   el.className = "live " + (on ? "on" : "off");
-  const lag = liveLag();
+  const lag = liveLag(), q = $("q-live");
+  if (q) {                                        // the sticky price bar: always in view while scrolling
+    q.className = "v " + (on ? (lag != null && lag > 1500 ? "wrn" : "up") : "mut");
+    q.textContent = on ? `● LIVE${lag == null ? "" : " " + (lag / 1000).toFixed(2) + " s"}` : "○ polling 5 s";
+    q.parentElement.title = on ? "Live: price, trades and the forming candle are pushed as Binance sends them. The number is the lag: how late Binance's newest trade is when it leaves the bot (median of the last " + LV.lags.length + ")." : "Not live: the price refreshes every 5 s";
+  }
   el.title = on ? `Live: trades, the forming candle and the price are pushed as Binance sends them. Lag = how late the newest trade is when it leaves the bot (median of the last ${LV.lags.length}); your network adds a few ms.` : "Not live: price, candles and trades refresh every 5 s";
   el.textContent = on ? `● LIVE${lag == null ? "" : " · lag " + (lag / 1000).toFixed(2) + " s"}` : "○ polling · up to 5 s behind";
 }
@@ -1272,6 +1277,7 @@ function renderQuote() {
   else {
     const mi = i.index ? (i.mark - i.index) / i.index * 1e4 : null;
     html += `<span class="px">${px(i.last)}</span><span class="px ${cls(i.change_pct)}">${sgn(i.change_pct, 2)}%</span>` +
+      `<span class="f"><span class="l">Feed</span><span class="v" id="q-live"></span></span>` +
       f("24h high", px(i.high)) + f("24h low", px(i.low)) + f("24h volume", "$" + big(i.quote_volume)) +
       f("Mark", px(i.mark)) + f("Index", px(i.index)) + f("Mark−index", sgn(mi) + " bp", cls(mi)) +
       f("Funding", sgn(i.funding_rate * 100, 4) + "%", cls(i.funding_rate)) +
@@ -1281,6 +1287,7 @@ function renderQuote() {
                    f("Bot", esc(row.status), row.status === "signal" ? "amb" : row.status === "held" ? "up" : "mut");
   else if (S.snap) html += f("Bot", "not scanned", "mut");
   $("quote").innerHTML = html;
+  renderLive();                                   // the Feed field in this sticky bar
   $("c-sym").textContent = `${S.sym} · perp`;
   setTitle();
   if (RK.live) renderRisk();                      // a live entry follows the price
