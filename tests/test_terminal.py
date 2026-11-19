@@ -21,13 +21,13 @@ class TerminalTests(LanTests):
 
     def test_its_only_control_is_the_auto_trader_timeframe(self):
         """It never pauses or flattens: the token is only ever sent to the account switch (which of the mainnet sub /
-        main accounts the ticket and Trade button use), the signal trader (its settings, and the Trade button that
+        main accounts the ticket and Trade button use), the Telegram signal alerts (🔔), the signal trader (its settings, and the Trade button that
         opens a signal through it) and the signal types."""
         import re
         html = Path("web/terminal.html").read_text(encoding="utf-8")
         with_token = re.findall(r'fetch\(([^,]+),\s*\{[^}]*"X-Token"', html)
-        self.assertEqual(with_token, ['"/api/accounts"', '"/api/signal-trader"', '"/api/signal-types"'])
-        self.assertEqual(html.count('"X-Token"'), 3)
+        self.assertEqual(with_token, ['"/api/accounts"', '"/api/signal-alerts"', '"/api/signal-trader"', '"/api/signal-types"'])
+        self.assertEqual(html.count('"X-Token"'), 4)
         self.assertIn("autoPost({ take: sym, tf: S.sgw, plan: p })", html)  # the one order it can send
 
     async def test_a_phone_needs_the_key(self):

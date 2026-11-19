@@ -319,6 +319,8 @@
   .kpis .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; }
   .kpis .v { font-size: 13px; font-weight: 700; }
   .kpis.bal { margin-bottom: 4px; }
+  #sg-bell { font: inherit; font-size: 11px; padding: 1px 6px; cursor: pointer; white-space: nowrap; }
+  #sg-bell[aria-pressed="true"] { background: var(--amber); color: var(--amber-ink); border-color: var(--amber); font-weight: 700; }
   .tk-back { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: flex; align-items: center; justify-content: center; padding: 12px; z-index: 40; }
   .tk-back[hidden] { display: none; }
   .tk { background: var(--panel); border: 1px solid var(--amber); width: 100%; max-width: 640px; max-height: 94vh; overflow: auto; padding: 0 14px 12px; }
@@ -421,6 +423,7 @@
   <section class="p" id="p-sig" aria-label="Signals">
     <div class="ph"><h2>Signals</h2><span class="k" id="sg-k"></span>
       <div class="r"><span class="grp" id="sg-tf" role="group" aria-label="Signal timeframe"></span>
+        <button type="button" id="sg-bell" hidden aria-pressed="false">🔔</button>
         <span class="grp" id="sg-f" role="group" aria-label="Show"><button type="button" data-sgf="all" aria-pressed="true">All</button>
           <button type="button" data-sgf="trade" aria-pressed="false" title="Only coins whose idea passed the quality check (TRADE)">Trades</button>
           <button type="button" data-sgf="long" aria-pressed="false">Long</button>
@@ -976,7 +979,7 @@ $("t-acct").addEventListener("change", async ev => {
 });
 async function loadAuto() {
   S.due.auto = Date.now() + 10000;
-  loadAccts();
+  loadAccts(); loadBell();
   if (S.auto === false) return;                                   // this bot does not run the auto-trader
   try {
     const r = await fetch("/api/signal-trader", { cache: "no-store" });
@@ -2042,8 +2045,44 @@ $("sg-tf").innerHTML = SIG_TF.map(([l, v]) => `<button type="button" data-sgw="$
 function setSigTf(sec) {
   S.sgw = sec; lsSet("term-sig", String(sec));
   document.querySelectorAll("[data-sgw]").forEach(b => b.setAttribute("aria-pressed", String(Number(b.dataset.sgw) === sec)));
-  S.due.combo = 0; renderSignals();
+  S.due.combo = 0; renderSignals(); renderBell();
 }
+// 🔔 Telegram when a coin turns TRADE on this timeframe (arbbot/signal_alerts.py; the bot watches, saved)
+async function loadBell() {
+  if (S.bell === false) return;
+  try {
+    const r = await fetch("/api/signal-alerts", { cache: "no-store" });
+    S.bell = r.ok ? await r.json() : r.status === 404 || r.status === 405 ? false : S.bell;
+  } catch { /* restarting: keep the last answer */ }
+  renderBell();
+}
+function renderBell() {
+  const b = $("sg-bell"), a = S.bell;
+  if (!a) { b.hidden = true; return; }
+  b.hidden = false;
+  const on = a.windows.includes(S.sgw), tf = flowLabel(S.sgw);
+  const others = a.windows.filter(w => w !== S.sgw).map(flowLabel);
+  b.setAttribute("aria-pressed", String(on));
+  b.textContent = on ? `🔔 ${tf} ON` : `🔕 ${tf}`;
+  b.disabled = !canControl();
+  b.title = (on ? `Telegram: a message when a coin turns TRADE on the ${tf} signal. Press to stop.` :
+                  `Press to get a Telegram message when a coin turns TRADE on the ${tf} signal (checked every minute).`) +
+    (others.length ? ` Also watching: ${others.join(", ")}.` : "") + (a.error ? ` Last error: ${a.error}` : "");
+}
+$("sg-bell").addEventListener("click", async () => {
+  const b = $("sg-bell"), on = !S.bell.windows.includes(S.sgw), tf = flowLabel(S.sgw);
+  if (!confirm(on ? `Send a Telegram message whenever a coin's ${tf} signal turns TRADE?\n\nThe bot checks it every minute, even with this page closed. ` +
+                    `Coins TRADE right now are listed in the first message, not sent one by one. Each coin is sent again only after it has left TRADE for at least ${tf}.`
+                  : `Stop the Telegram messages for the ${tf} signal?`)) return;
+  b.disabled = true;
+  try {
+    const r = await fetch("/api/signal-alerts", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ window_s: S.sgw, on }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    S.bell = d;
+  } catch (err) { alert("Could not change the Telegram alert: " + err.message); }
+  b.disabled = false; renderBell();
+});
 $("sg-tf").addEventListener("click", ev => { const b = ev.target.closest("[data-sgw]"); if (b) setSigTf(Number(b.dataset.sgw)); });
 $("sg-f").addEventListener("click", ev => {
   const b = ev.target.closest("[data-sgf]"); if (!b) return;

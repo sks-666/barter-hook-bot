@@ -672,6 +672,15 @@ Everything they show comes from public Binance data, relayed by the bot, plus yo
   switch, daily loss, most open, coins held elsewhere) and is refused, before anything is sent, when the margin is
   short, the leverage is over the coin's limit or Binance would liquidate it before its stop. Your trades are marked
   "· you".
+* **🔔 Telegram when a signal turns TRADE** (`arbbot/signal_alerts.py`; the button beside the panel's timeframes):
+  pick a timeframe and press **🔕 1h** → **🔔 1h ON**. The bot then reads that timeframe's signal every minute, even with
+  the page closed, and sends one Telegram message per coin that newly turns **TRADE** with a LONG or SHORT side: type,
+  quality, confidence, score, regime, the price, the entry (limit or at the price), stop, TP1 and TP2 with % and R,
+  and the pre-mortem. Several timeframes can be on at once (saved in `data/signal-alerts-<state>.json`). Coins already
+  TRADE when you switch it on (or when the bot restarts) are listed in the first message, not sent one by one; a coin
+  is sent again only after it has left TRADE (or flipped side) and at least one timeframe has passed. Each bot has its
+  own (testnet and mainnet both running = two messages, labelled with the bot). Read-only: it never trades. API:
+  `GET /api/signal-alerts`, `POST /api/signal-alerts {"window_s": 3600, "on": true}` (control token).
 * **The trade ticket** (the popup ▶ Trade it opens; headed **⚠ REAL MONEY · SUB/MAIN account** on mainnet): pick
   **Limit** at your entry price (waits up to the minutes you give, then cancels) or **Market** now, and check or
   change the **entry, stop loss, TP1** (half closes; blank = none), **TP2, position size, leverage** (this trade only)

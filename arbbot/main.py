@@ -564,6 +564,14 @@ async def amain(args: argparse.Namespace) -> None:
                 log.warning("MAIN account added (real money, same caps as the sub-account: max %g USDT per order); "
                             "the dashboard trades the %s account now (switch it on the terminal)",
                             args.real_ticket_max_usd, accounts.label)
+        # Telegram alerts when a coin's signal turns TRADE on a timeframe watched from the Signals panel (🔔)
+        signal_alerts = None
+        if signal_desk is not None and not args.hosted:
+            from .signal_alerts import SignalAlerts
+            signal_alerts = SignalAlerts(signal_desk, alerts.send, ROOT / "data" / f"signal-alerts-{db_path.stem}.json",
+                                         venue=("REAL MONEY bot" if cfg.execution.env == "mainnet" and live else
+                                                cfg.execution.env.upper() + " bot"))
+            extra.append(signal_alerts.run())
         # Telegram: /ideas reads the combined signal, /auto drives the auto-trader, /account lists the exchange account
         handler.signal_desk, handler.signal_trader = signal_desk, trader
         handler.ticket = ticket if isinstance(ticket, TestnetTicket) else None
@@ -571,7 +579,7 @@ async def amain(args: argparse.Namespace) -> None:
                          lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
                          macro=macro, freq=freq, signal_desk=signal_desk, signal_trader=trader,
                          book_market=MarketData(stats_client, stats_client=stats_client) if stats_client else None,
-                         accounts=accounts)
+                         accounts=accounts, signal_alerts=signal_alerts)
         if args.hosted:  # public interface: the READ-ONLY page behind a login, never the dashboard with its controls
             hosted_password, hosted_user = settings_from_env()
             runner = web.AppRunner(make_hosted_app(engine, ROOT / "vercel-dashboard" / "views" / "dashboard.html",

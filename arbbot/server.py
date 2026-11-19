@@ -127,8 +127,9 @@ class Dashboard:
 
     def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None,
                  whales=None, alert_book=None, desk=None, macro=None, freq=None, signal_desk=None, signal_trader=None,
-                 book_market=None, accounts=None):
+                 book_market=None, accounts=None, signal_alerts=None):
         self.accounts = accounts
+        self.signal_alerts = signal_alerts        # an arbbot.signal_alerts.SignalAlerts (Telegram on TRADE), or None
         self.engine = engine
         self.freq = freq                          # a freqkit.manager.FreqtradeManager (the /trading page), or None
         self.macro = macro                        # an arbbot.macro.MacroNews (the terminal's MACRO / NEWS panel), or None
@@ -207,6 +208,8 @@ class Dashboard:
         app.router.add_post("/api/swing-power", self.swing_power)
         app.router.add_get("/api/signal-trader", self.signal_trader_get)
         app.router.add_get("/api/brackets", self.brackets_get)
+        app.router.add_get("/api/signal-alerts", self.signal_alerts_get)   # 🔔 Telegram when a signal turns TRADE
+        app.router.add_post("/api/signal-alerts", self.signal_alerts_post)
         app.router.add_get("/api/accounts", self.accounts_get)        # sub / main account: which one the page trades
         app.router.add_post("/api/accounts", self.accounts_post)    # maintenance-margin tiers, for liquidation prices
         app.router.add_post("/api/signal-trader", self.signal_trader_post)   # before the generic /api/{action}
@@ -216,6 +219,32 @@ class Dashboard:
         app.router.add_post("/api/alerts", self.alerts_post)
         app.router.add_post("/api/{action}", self.action)
         return app
+
+    async def signal_alerts_get(self, request: web.Request) -> web.Response:
+        if self.signal_alerts is None:
+            return web.json_response({"error": "signal alerts need the combined signal (the whale watch is off)"},
+                                     status=404)
+        return web.json_response(self.signal_alerts.view(), headers={"Cache-Control": "no-store"})
+
+    async def signal_alerts_post(self, request: web.Request) -> web.Response:
+        """{"window_s": 3600, "on": true|false}: send (or stop) a Telegram message when a coin turns TRADE on it."""
+        if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
+            raise web.HTTPForbidden(text="bad token")
+        if self.signal_alerts is None:
+            return web.json_response({"ok": False, "error": "signal alerts are off in this bot"}, status=404)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        body = body if isinstance(body, dict) else {}
+        w = body.get("window_s")
+        try:
+            if not isinstance(w, int) or isinstance(w, bool):
+                raise ValueError("window_s must be a whole number of seconds")
+            now = await self.signal_alerts.set_window(w, body.get("on"))
+        except ValueError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return web.json_response({"ok": True, "trade_now": [r["symbol"] for r in now], **self.signal_alerts.view()})
 
     async def accounts_get(self, request: web.Request) -> web.Response:
         if self.accounts is None:
