@@ -1101,13 +1101,13 @@ const VNC = () => ({ testnet: "Testnet", mainnet: "REAL-MONEY" })[VN()] || "Pape
 const REAL = () => VN() === "mainnet";
 function otVenue() {
   const v = VN(), b = $("ot-venue");
-  b.textContent = { testnet: "TESTNET", mainnet: "REAL MONEY" }[v] || "PAPER";
+  b.textContent = ({ testnet: "TESTNET", mainnet: "REAL MONEY" }[v] || "PAPER") + (OT.st?.account_label ? " · " + OT.st.account_label : "");
   b.className = "badge " + (v === "mainnet" ? "live" : "paper");
   b.title = v === "mainnet" ? `Orders are sent to your Binance FUTURES account on MAINNET: REAL money. At most ${OT.st.max_order_usd} USDT per order; each one asks you to confirm.`
     : v === "testnet" ? "Orders are sent to the Binance FUTURES TESTNET: real testnet orders, test money only."
     : "Orders fill against live Binance prices in a paper account. Nothing is ever sent to Binance.";
   $("ot-transfer").hidden = v !== "paper";
-  $("pf-venue").textContent = { testnet: "Binance futures TESTNET account", mainnet: "Binance futures MAINNET account · REAL MONEY" }[v] || "paper futures account";
+  $("pf-venue").textContent = ({ testnet: "Binance futures TESTNET account", mainnet: "Binance futures MAINNET account · REAL MONEY" }[v] || "paper futures account") + (OT.st?.account_label ? ` · ${OT.st.account_label} account (switch it on the terminal)` : "");
 }
 function otEst() {
   otVenue();
@@ -1128,7 +1128,7 @@ function otEst() {
 async function pfPost(op, body, buttons) {
   (buttons || []).forEach(b => b.disabled = true);
   try {
-    const r = await fetch("/api/paper/" + op, { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+    const r = await fetch("/api/paper/" + op, { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(OT.st?.account ? { ...body, account: OT.st.account } : body) });
     const d = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(d.error || ("HTTP " + r.status));
     OT.st = d.state; OT.err = ""; pfRender(); otEst(); requestAnimationFrame(drawChart);
@@ -1168,7 +1168,7 @@ async function otSubmit(side) {
     const px = req.bbo ? " at the best price" : req.price ? ` @ ${req.price}` : "";
     const what = `${side === "buy" ? "BUY / LONG" : "SELL / SHORT"} ${size} of ${MK.sym}, ${req.type.replace("_", " ")}${px}` +
       `${req.stop_price ? `, stop ${req.stop_price}` : ""}, ${otLev()}x${req.reduce_only ? ", reduce-only" : ""}`;
-    if (!confirm(`REAL MONEY order on your Binance account:\n\n${what}\n\nSend it?`)) return otMsg("Not sent.", true);
+    if (!confirm(`REAL MONEY order on your Binance ${OT.st?.account_label ? OT.st.account_label + " " : ""}account:\n\n${what}\n\nSend it?`)) return otMsg("Not sent.", true);
   }
   const d = await pfPost("order", req, [$("ot-buy"), $("ot-sell")]);
   if (d) {

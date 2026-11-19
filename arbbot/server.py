@@ -107,9 +107,28 @@ LOCKED = """<!doctype html><meta charset="utf-8"><meta name="viewport" content="
 
 
 class Dashboard:
+    accounts = None   # an arbbot.accounts.Accounts (mainnet sub + main): the order ticket and trader follow its active one
+
+    @property
+    def paper(self):
+        return self.accounts.ticket if self.accounts else self._paper
+
+    @paper.setter
+    def paper(self, v):
+        self._paper = v
+
+    @property
+    def signal_trader(self):
+        return self.accounts.trader if self.accounts else self._signal_trader
+
+    @signal_trader.setter
+    def signal_trader(self, v):
+        self._signal_trader = v
+
     def __init__(self, engine: Engine, cfg: Config, web_dir: Path, market=None, paper=None, lan_key: str | None = None,
                  whales=None, alert_book=None, desk=None, macro=None, freq=None, signal_desk=None, signal_trader=None,
-                 book_market=None):
+                 book_market=None, accounts=None):
+        self.accounts = accounts
         self.engine = engine
         self.freq = freq                          # a freqkit.manager.FreqtradeManager (the /trading page), or None
         self.macro = macro                        # an arbbot.macro.MacroNews (the terminal's MACRO / NEWS panel), or None
@@ -187,7 +206,9 @@ class Dashboard:
         app.router.add_post("/api/swing-capital", self.swing_capital)      # before the generic /api/{action}
         app.router.add_post("/api/swing-power", self.swing_power)
         app.router.add_get("/api/signal-trader", self.signal_trader_get)
-        app.router.add_get("/api/brackets", self.brackets_get)    # maintenance-margin tiers, for liquidation prices
+        app.router.add_get("/api/brackets", self.brackets_get)
+        app.router.add_get("/api/accounts", self.accounts_get)        # sub / main account: which one the page trades
+        app.router.add_post("/api/accounts", self.accounts_post)    # maintenance-margin tiers, for liquidation prices
         app.router.add_post("/api/signal-trader", self.signal_trader_post)   # before the generic /api/{action}
         app.router.add_get("/api/signal-types", self.signal_types_get)
         app.router.add_post("/api/signal-types", self.signal_types_post)
@@ -195,6 +216,38 @@ class Dashboard:
         app.router.add_post("/api/alerts", self.alerts_post)
         app.router.add_post("/api/{action}", self.action)
         return app
+
+    async def accounts_get(self, request: web.Request) -> web.Response:
+        if self.accounts is None:
+            return web.json_response({"error": "one account in this bot (set BINANCE_MAIN_API_KEY for the main one)"},
+                                     status=404)
+        return web.json_response(self.accounts.view(), headers={"Cache-Control": "no-store"})
+
+    async def accounts_post(self, request: web.Request) -> web.Response:
+        """{"active": "sub"|"main"}: the account the order ticket, balances and Trade button use from now on."""
+        if not hmac.compare_digest(request.headers.get("X-Token", ""), self.token):
+            raise web.HTTPForbidden(text="bad token")
+        if self.accounts is None:
+            return web.json_response({"ok": False, "error": "one account in this bot"}, status=404)
+        try:
+            body = await request.json()
+        except ValueError:
+            body = None
+        try:
+            self.accounts.switch((body or {}).get("active") if isinstance(body, dict) else None)
+        except ValueError as e:
+            return web.json_response({"ok": False, "error": str(e)}, status=400)
+        return web.json_response({"ok": True, **self.accounts.view()})
+
+    def _account_check(self, body: dict) -> str:
+        """'' when the order may go to the active account; why not otherwise (it named another one)."""
+        if self.accounts is None:
+            return ""
+        try:
+            self.accounts.check(body.get("account"))
+        except ValueError as e:
+            return str(e)
+        return ""
 
     async def brackets_get(self, request: web.Request) -> web.Response:
         """Every coin's maintenance-margin tiers from the futures account ([[notional cap, rate, amount, max lev]...]);
@@ -225,18 +278,25 @@ class Dashboard:
         except ValueError:
             body = None
         body = body if isinstance(body, dict) else {}
+        wrong = self._account_check(body)         # a setting or a trade meant for another account than the active one
+        if wrong:
+            return web.json_response({"ok": False, "error": wrong}, status=409)
+        tr = self.signal_trader                   # one account's trader for the whole request
+        if tr is None:
+            return web.json_response({"ok": False, "error": f"no Trade button on the {self.accounts.label} account"},
+                                     status=404)
         if "take" in body:                        # the Trade button: open this coin's signal now ({"take": sym, "tf": s})
             tf = body.get("tf")
             if tf is not None and (not isinstance(tf, int) or isinstance(tf, bool)):
                 return web.json_response({"ok": False, "error": "tf must be a whole number of seconds"}, status=400)
             try:
-                rec = await self.signal_trader.take(body.get("take"), tf)
+                rec = await tr.take(body.get("take"), tf)
             except ValueError as e:
                 return web.json_response({"ok": False, "error": str(e)}, status=400)
             except Exception as e:                # noqa: BLE001 - the exchange refused it: say so, never crash
                 return web.json_response({"ok": False, "error": f"{type(e).__name__}: {getattr(e, 'msg', None) or e}"},
                                          status=502)
-            return web.json_response({"ok": True, "taken": rec, **self.signal_trader.view()})
+            return web.json_response({"ok": True, "taken": rec, **tr.view()})
         on, win, most = body.get("enabled"), body.get("window_s"), body.get("max_open")
         risk, daily, lev = body.get("risk_usd"), body.get("daily_loss_usd"), body.get("leverage")
         has_size = "size_usd" in body             # a number, or 0 / null to size by risk again
@@ -250,24 +310,24 @@ class Dashboard:
             if win is not None:
                 if not isinstance(win, int) or isinstance(win, bool):
                     raise ValueError("window_s must be a whole number of seconds")
-                self.signal_trader.set_window(win)
+                tr.set_window(win)
             if most is not None:
-                self.signal_trader.set_max_open(most)
+                tr.set_max_open(most)
             if risk is not None:
-                self.signal_trader.set_risk_usd(risk)
+                tr.set_risk_usd(risk)
             if daily is not None:
-                self.signal_trader.set_daily_loss_usd(daily)
+                tr.set_daily_loss_usd(daily)
             if lev is not None:
-                self.signal_trader.set_leverage(lev)
+                tr.set_leverage(lev)
             if has_size:
-                self.signal_trader.set_size_usd(body["size_usd"])
+                tr.set_size_usd(body["size_usd"])
             if has_close:
-                self.signal_trader.set_auto_close(body["auto_close"])
+                tr.set_auto_close(body["auto_close"])
             if isinstance(on, bool):
-                self.signal_trader.set_enabled(on)
+                tr.set_enabled(on)
         except ValueError as e:
             return web.json_response({"ok": False, "error": str(e)}, status=400)
-        return web.json_response({"ok": True, **self.signal_trader.view()})
+        return web.json_response({"ok": True, **tr.view()})
 
     def _types(self):
         return getattr(self.signal_desk, "types", None)
@@ -445,7 +505,14 @@ class Dashboard:
     async def paper_state(self, request: web.Request) -> web.Response:
         if self.paper is None:
             return web.json_response({"error": "the paper futures account is not running in this bot"}, status=404)
-        return web.json_response(self.paper.view(), headers={"Cache-Control": "no-store"})
+        t = self.paper
+        return web.json_response(self._with_account(t.view()), headers={"Cache-Control": "no-store"})
+
+    def _with_account(self, view: dict) -> dict:
+        """The ticket's view, plus which account it is (sub / main) when the bot has more than one."""
+        if self.accounts is not None:
+            view = dict(view, account=self.accounts.active, account_label=self.accounts.label)
+        return view
 
     async def paper_action(self, request: web.Request) -> web.Response:
         """The order ticket: a paper account (arbbot/paper_futures.py), or a real Binance futures account
@@ -460,16 +527,21 @@ class Dashboard:
             body = await request.json()
             if not isinstance(body, dict):
                 raise ValueError("expected a JSON object")
+            wrong = self._account_check(body)           # it named another account than the active one: send nothing
+            if wrong:
+                return web.json_response({"ok": False, "error": wrong}, status=409)
+            body.pop("account", None)
+            t = self.paper                              # one account for the whole request, even if switched meanwhile
             if op == "order":
-                result = await self.paper.place_order(body)
+                result = await t.place_order(body)
             elif op == "cancel":
-                result = await self.paper.cancel(body.get("id"))
+                result = await t.cancel(body.get("id"))
             elif op == "close":
-                result = await self.paper.close_position(body.get("symbol", ""))
+                result = await t.close_position(body.get("symbol", ""))
             elif op == "leverage":
-                result = await self.paper.set_leverage(body.get("symbol", ""), body.get("leverage"))
+                result = await t.set_leverage(body.get("symbol", ""), body.get("leverage"))
             elif op == "transfer":
-                result = await self.paper.transfer(body.get("amount"))
+                result = await t.transfer(body.get("amount"))
             else:
                 raise web.HTTPNotFound()
         except ValueError as e:                                             # a refused order: say why
@@ -487,7 +559,7 @@ class Dashboard:
             log.warning("paper %s failed: %s: %s", op, type(e).__name__, e)
             return web.json_response({"ok": False, "error": f"could not get a price from Binance ({type(e).__name__})"},
                                      status=502)
-        return web.json_response({"ok": True, "result": result, "state": self.paper.view()})
+        return web.json_response({"ok": True, "result": result, "state": self._with_account(t.view())})
 
     async def swing_power(self, request: web.Request) -> web.Response:
         """Switch the swing toolkit on or off (SwingRunner.set_enabled): off = no new entries, exits keep working."""

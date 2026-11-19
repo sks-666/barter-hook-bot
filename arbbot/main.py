@@ -516,13 +516,62 @@ async def amain(args: argparse.Namespace) -> None:
         if trader is not None:
             other = ticket.source
             ticket.source = lambda sym: "signal" if trader.holds(sym) else other(sym)
+        # MAINNET: a second account (Binance's main account beside the sub-account of BINANCE_API_KEY), switched from the
+        # terminal; each runs its own ticket and Trade button at once (arbbot/accounts.py)
+        accounts, extra = None, []
+        main_key, main_secret = os.environ.get("BINANCE_MAIN_API_KEY", ""), os.environ.get("BINANCE_MAIN_API_SECRET", "")
+        if args.real_ticket and isinstance(ticket, TestnetTicket) and main_key and main_secret:
+            from .accounts import Accounts
+            main_client = BinanceClient(session, cfg.execution.env, main_key, main_secret, cfg.feed.request_timeout_s,
+                                        venue_keys={"fapi": (main_key, main_secret), "spot": (main_key, main_secret)})
+            main_client.time_offset_ms = client.time_offset_ms
+            problem = ""
+            try:                                   # the ticket trades one-way positions only, like the sub-account
+                if (await main_client.get("fapi", "/fapi/v1/positionSide/dual", signed=True)).get("dualSidePosition"):
+                    problem = "it is in Hedge mode: switch it to One-way in Binance's futures settings"
+            except BinanceError as e:
+                problem = explain_binance_error(e, cfg.execution.env, {"fapi": ("", "", "BINANCE_MAIN_API_KEY"),
+                                                                       "spot": ("", "", "BINANCE_MAIN_API_KEY")})
+            except Exception as e:                 # noqa: BLE001 - network: the account still loads and retries
+                log.warning("main account: first read failed (%s); it retries", e)
+            if problem:
+                log.error("main account NOT added: %s", problem)
+                alerts.send(f"⚠️ Main account not added to the dashboard: {problem}")
+            else:
+                accounts = Accounts(ROOT / "data" / f"active-account-{db_path.stem}.json", notify=alerts.send)
+                ticket.notify = lambda text, _send=alerts.send: _send("[SUB] " + text)
+                if trader is not None:
+                    trader.notify = ticket.notify
+                accounts.add("sub", "SUB", ticket, trader)
+                main_send = lambda text, _send=alerts.send: _send("[MAIN] " + text)    # noqa: E731
+                main_ticket = TestnetTicket(main_client, ROOT / "data" / f"ticket-{db_path.stem}-main.json",
+                                            notify=main_send, taker_bps=cfg.fees.futures_taker_bps, real_money=True,
+                                            max_order_usd=args.real_ticket_max_usd,
+                                            max_total_usd=args.real_ticket_max_total_usd,
+                                            default_leverage=cfg.execution.leverage, blocked=ticket.blocked)
+                main_trader = None
+                if trader is not None:
+                    from .signal_trader import SignalTrader
+                    main_trader = SignalTrader(signal_desk, main_ticket, WINDOWS[args.signal_trader_window.lower()],
+                                               risk_usd=5.0, max_open=2, min_conf=args.signal_trader_min_conf,
+                                               max_usd=args.real_ticket_max_usd, daily_loss_usd=20.0, leverage=3,
+                                               manual_only=True, notify=main_send,
+                                               path=ROOT / "data" / "signal-trader-mainnet-main.json")
+                    main_ticket.source = lambda sym, _t=main_trader: "signal" if _t.holds(sym) else ""
+                    extra.append(main_trader.run())
+                extra.append(main_ticket.run())
+                accounts.add("main", "MAIN", main_ticket, main_trader)
+                log.warning("MAIN account added (real money, same caps as the sub-account: max %g USDT per order); "
+                            "the dashboard trades the %s account now (switch it on the terminal)",
+                            args.real_ticket_max_usd, accounts.label)
         # Telegram: /ideas reads the combined signal, /auto drives the auto-trader, /account lists the exchange account
         handler.signal_desk, handler.signal_trader = signal_desk, trader
         handler.ticket = ticket if isinstance(ticket, TestnetTicket) else None
         dash = Dashboard(engine, cfg, ROOT / "web", market=MarketData(client, stats_client=stats_client), paper=ticket,
                          lan_key=phone_key, whales=whales, alert_book=alert_book, desk=desk_view_fn,
                          macro=macro, freq=freq, signal_desk=signal_desk, signal_trader=trader,
-                         book_market=MarketData(stats_client, stats_client=stats_client) if stats_client else None)
+                         book_market=MarketData(stats_client, stats_client=stats_client) if stats_client else None,
+                         accounts=accounts)
         if args.hosted:  # public interface: the READ-ONLY page behind a login, never the dashboard with its controls
             hosted_password, hosted_user = settings_from_env()
             runner = web.AppRunner(make_hosted_app(engine, ROOT / "vercel-dashboard" / "views" / "dashboard.html",
@@ -594,7 +643,7 @@ async def amain(args: argparse.Namespace) -> None:
             log.info("hosted dashboard: publishing a read-only snapshot every %.0fs (settings fingerprint: url %s, token %s)",
                      cfg.publisher.interval_s, url_fp, token_fp)
         coros = [feed.run(), engine.run(), dash.broadcast_loop(), alerts.run(), listener.run(), publisher.run(),
-                 ticket.run()]
+                 ticket.run(), *extra]
         if whales is not None:
             coros.append(whales.run())
         if trader is not None:

@@ -319,6 +319,9 @@
   .kpis .l { color: var(--muted); font-size: 10.5px; text-transform: uppercase; }
   .kpis .v { font-size: 13px; font-weight: 700; }
   .kpis.bal { margin-bottom: 4px; }
+  #t-acct { font: inherit; font-size: 11px; font-weight: 700; color: #fff; background: var(--neg); border: 1px solid var(--neg);
+            border-radius: 3px; padding: 1px 4px; cursor: pointer; }
+  #t-acct option { color: #000; background: #fff; }
   .balcoins { font-size: 11px; padding: 2px 8px 6px; line-height: 1.6; }
   .balcoins i { font-style: normal; }
   .src { font-size: 10.5px; padding: 0 5px; border: 1px solid currentColor; border-radius: 2px; }
@@ -349,6 +352,7 @@
   <span id="t-mode" class="tag">PAPER</span>
   <span><span id="t-dot" class="dot"></span><span id="t-feed">connecting…</span></span>
   <span id="t-halt"></span>
+  <select id="t-acct" hidden aria-label="Account the order ticket and Trade button use" title="Which Binance account the order ticket, balances and the Trade button use. Open trades on the other one stay managed."></select>
   <span class="spacer"></span>
   <span id="t-clock"></span>
   <button id="t-theme" type="button" aria-label="Switch theme">◐ AUTO</button>
@@ -896,8 +900,46 @@ function srcTag(s) {
   return `<span class="src ext" title="Not opened by this bot">OUTSIDE</span>`;
 }
 
+// the mainnet sub / main accounts (arbbot/accounts.py), when the bot has a second one: the switch in the top bar
+async function loadAccts() {
+  if (S.accts === false) return;
+  try {
+    const r = await fetch("/api/accounts", { cache: "no-store" });
+    S.accts = r.ok ? await r.json() : r.status === 404 || r.status === 405 ? false : S.accts;
+  } catch { /* restarting: keep the last answer */ }
+  renderAccts();
+}
+function renderAccts() {
+  const el = $("t-acct"), a = S.accts;
+  if (!a) { el.hidden = true; return; }
+  el.hidden = false;
+  if (document.activeElement === el) return;                     // being picked: redraw later
+  el.innerHTML = a.accounts.map(x => `<option value="${esc(x.name)}"${x.name === a.active ? " selected" : ""}>` +
+    `${esc(x.label)} account · ${x.balance != null ? "$" + x.balance.toFixed(2) : x.error ? "error" : "…"}</option>`).join("");
+  el.disabled = !canControl();
+  el.title = `REAL MONEY: the order ticket, balances and ▶ Trade it use the ${a.label} account. ` +
+    a.accounts.map(x => `${x.label}: ${x.balance != null ? "$" + x.balance.toFixed(2) + " wallet, $" + x.available.toFixed(2) + " available" : x.error || "not read yet"}, ${x.positions} open`).join(" · ");
+}
+$("t-acct").addEventListener("change", async ev => {
+  const el = ev.target, to = el.value, a = S.accts, row = a.accounts.find(x => x.name === to);
+  if (!confirm(`Trade the ${row.label} account from now on?\n\nThe order ticket, the balances and ▶ Trade it will use the ${row.label} account ` +
+               `(REAL MONEY${row.balance != null ? `, $${row.available.toFixed(2)} available` : ""}). Open trades on the ${a.label} account stay open and keep their stops and targets.`)) {
+    el.value = a.active; return;
+  }
+  el.disabled = true;
+  try {
+    const r = await fetch("/api/accounts", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify({ active: to }) });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok || !d.ok) throw new Error(d.error || r.status);
+    S.accts = d;
+    S.acct = null; S.auto = null;                                // the other account's: read them again now
+    await Promise.all([loadAcct(), loadAuto()]);
+  } catch (err) { alert("Could not switch the account: " + err.message); }
+  el.disabled = false; el.blur(); renderAccts();
+});
 async function loadAuto() {
   S.due.auto = Date.now() + 10000;
+  loadAccts();
   if (S.auto === false) return;                                   // this bot does not run the auto-trader
   try {
     const r = await fetch("/api/signal-trader", { cache: "no-store" });
@@ -1284,7 +1326,7 @@ function renderPos() {
       <td class="${cls(p.funding)}">${usd(p.funding, 3)}</td><td class="${cls(p.unreal)}">${usd(p.unreal, 3)}</td><td>${dur(p.held_s)}</td></tr>`).join("") +
     `</tbody></table>` : `<div class="empty">No open positions.</div>`;
   const acct = S.acct?.positions || [];
-  if (S.acct?.balance != null) html += `<div class="sub">BALANCES · ${esc((S.acct.venue || "paper").toUpperCase())} FUTURES${S.acct.spot ? " &amp; SPOT" : ""}</div>` + balancesHtml(S.acct);
+  if (S.acct?.balance != null) html += `<div class="sub">BALANCES · ${esc((S.acct.venue || "paper").toUpperCase())}${S.acct.account_label ? " " + esc(S.acct.account_label) : ""} FUTURES${S.acct.spot ? " &amp; SPOT" : ""}</div>` + balancesHtml(S.acct);
   html += `<div class="sub">FUTURES ACCOUNT · WHO OPENED EACH POSITION</div>`;
   html += acct.length ? `<table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th>Size $</th><th>Entry</th><th>Mark</th><th>P&amp;L (ROE)</th></tr></thead><tbody>` +
     acct.map(p => `<tr class="click" data-sym="${esc(p.symbol)}"><td class="amb">${esc(p.symbol.replace(/USDT$/, ""))}</td><td>${srcTag(p.source)}</td>
@@ -1993,7 +2035,7 @@ const TOKEN = "__TOKEN__";
 const canControl = () => !TOKEN.startsWith("__");                // a page not served by the bot has no token
 // testnet auto-trader, or the MAINNET Trade button (manual_only: real money, never enters by itself)
 const autoReal = () => !!S.auto?.manual_only;
-const autoName = () => autoReal() ? "mainnet Trade button" : "testnet auto-trader";
+const autoName = () => autoReal() ? `mainnet Trade button${S.accts ? " (" + S.accts.label + " account)" : ""}` : "testnet auto-trader";
 function autoTfCell(a) {
   const its = flowLabel(a.window_s), here = flowLabel(S.sgw), same = a.window_s === S.sgw;
   const can = canControl() && Object.values(a.windows || {}).includes(S.sgw);
@@ -2012,7 +2054,7 @@ function autoMaxCell(a, n) {
   return `<div><div class="l">Its open trades / most</div><div class="v">${n} / ${pick}${wait ? ` · ${wait} waiting` : ""}</div></div>`;
 }
 async function autoPost(body, what) {
-  const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  const r = await fetch("/api/signal-trader", { method: "POST", headers: { "X-Token": TOKEN, "Content-Type": "application/json" }, body: JSON.stringify(S.accts ? { ...body, account: S.accts.active } : body) });
   const d = await r.json().catch(() => ({}));
   if (!r.ok || !d.ok) throw new Error(d.error || r.status);
   const { ok, taken, ...view } = d; S.auto = view;
@@ -2251,7 +2293,7 @@ function sigAuto() {
   const cell = (l, v, c = "", t = "") => `<div${t ? ` title="${esc(t)}"` : ""}><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
   const real = a.manual_only;
   return `<div class="sg-strip">` +
-    (real ? cell("Trade button · mainnet", "REAL MONEY", "dn", "▶ Trade it on a signal sends a REAL order to your Binance futures account after you confirm. It never trades by itself: automatic entries are locked off on mainnet.")
+    (real ? cell(`Trade button · ${S.accts ? S.accts.label : "mainnet"}`, "REAL MONEY", "dn", "▶ Trade it on a signal sends a REAL order to your Binance futures account after you confirm. It never trades by itself: automatic entries are locked off on mainnet.")
           : cell("Auto-trader · testnet", a.enabled ? "ON" : "OFF", a.enabled ? "up" : "dn", "Trades this signal on the Binance futures TESTNET (test money). Switch it on or off on the dashboard.")) +
     (real ? "" : autoTfCell(a)) +
     cell("Status", a.error ? esc(a.error) : real && a.blocked.startsWith("button only") ? "press ▶ Trade on a signal" : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked && !real ? "wrn" : "up", a.error || a.blocked || "") +
@@ -2281,7 +2323,7 @@ function sigTrades() {
   if (!acct && !a) return `<h3>Account positions</h3><div class="mut">No futures account in this bot. The testnet bot (port 8767) trades the demo account.</div>`;
   const tag = s => s === "signal" ? `<span class="src ticket" title="Opened by the signal auto-trader">SIGNAL</span>` : srcTag(s);
   const total = rows.reduce((t, r) => t + (r.pnl || 0), 0);
-  let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")} · ${rows.length} open · <span class="${cls(total)}">${sgMoney(total)} $</span></h3>` + balancesHtml(acct);
+  let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")}${acct?.account_label ? " · " + esc(acct.account_label) : ""} · ${rows.length} open · <span class="${cls(total)}">${sgMoney(total)} $</span></h3>` + balancesHtml(acct);
   const pend = a ? Object.entries(a.pending) : [];
   h += rows.length || pend.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th title="Leverage of the position on Binance">Lev</th><th>Size $</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L $</th><th>Held</th></tr></thead><tbody>` +
     rows.map(r => `<tr class="click${r.symbol === S.sym ? " sel" : ""}" data-sym="${esc(r.symbol)}"><td class="amb">${sgCoin(r.symbol)}</td><td>${tag(r.source)}</td>
@@ -2321,7 +2363,7 @@ document.addEventListener("click", async ev => {
   if (a.manual_only) warn.push(`It then manages itself: stop and TP2 sit on Binance, half closes at TP1 and the stop moves to breakeven` +
     (a.auto_close !== false ? `, and it closes at market if this ${flowLabel(S.sgw)} signal flips (confidence ≥ ${a.min_conf}) or after ${hold}.` : `. Auto close is OFF: it is never closed at market by the bot; only the stop, TP1, TP2 or you.`));
   else if (S.sgw !== a.window_s) warn.push(`This is the ${flowLabel(S.sgw)} signal (the auto-trader trades ${flowLabel(a.window_s)}): it closes after ${hold}.`);
-  const where = a.manual_only ? "your REAL Binance futures account (REAL MONEY)" : "the Binance futures TESTNET";
+  const where = a.manual_only ? `your REAL ${S.accts ? S.accts.label + " " : ""}Binance futures account (REAL MONEY)` : "the Binance futures TESTNET";
   const msg = `${a.manual_only ? "⚠ REAL MONEY ⚠\n" : ""}${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on ${where} now?\n\n` +
     `Entry ${px(me.entry)}${Math.abs(me.to_entry_pct || 0) < 0.1 ? " (market)" : " (limit, waits up to " + dur(a.entry_ttl_s) + ")"} · stop ${px(me.stop)} · ` +
     (me.tp1 ? `TP1 ${px(me.tp1)} (half closes) · ` : "") + `TP2 ${px(me.target)}\n` +

@@ -370,6 +370,19 @@ live on paper. It starts **three paper accounts** (trend, swing, smc), $10,000 e
   saved) switches off the bot's own market closes: then only the stop, TP1, TP2 on Binance (and the breakeven stop
   after TP1), or you, close a trade. State:
   `data/signal-trader-mainnet.json`.
+* **Two mainnet accounts: sub and main (switch on the terminal).** `BINANCE_API_KEY` / `BINANCE_API_SECRET` is your
+  Binance **sub-account**. Add the **main account**'s key to `/srv/apps/binance-arb-bot/.env` as
+  `BINANCE_MAIN_API_KEY=` and `BINANCE_MAIN_API_SECRET=` (Futures enabled, no withdrawals, restricted to this IP, the
+  account in One-way mode) and restart mainnet: the terminal's top bar gets a red **SUB account · $10.00 / MAIN
+  account · $…** switch. Each account has its own order ticket (`data/ticket-<state>-main.json`), Trade-button trader
+  (`data/signal-trader-mainnet-main.json`) and the same caps (100 USDT an order, 300 in all, per account); they all run
+  at once, so open trades on both keep their stops, TP1, TP2 and exits. The switch (it asks first, saved in
+  `data/active-account-<state>.json`) picks which one the order ticket on `/market`, the balances, positions and
+  ▶ Trade it use; the badge, confirm boxes and Telegram messages (`[SUB]` / `[MAIN]`) name the account. Every order
+  and setting names the account it was meant for, so after a switch in another tab it is refused ("nothing was
+  sent") rather than sent to the other one. A main account in Hedge mode, or whose key Binance rejects, is not added
+  (the log and Telegram say why). The arbitrage bot only ever uses the sub-account. API: `GET /api/accounts`,
+  `POST /api/accounts {"active": "main"}` (control token).
 * **Swing accounts mirrored to the TESTNET.** Add `--swing --swing-mirror trend` to the testnet command (any of `trend`,
   `swing`, `smc`, comma separated, or `all`; the launcher uses `trend,swing,smc`; `--swing-mirror-fund 10000` sets the
   size of each, default $10,000) and every **new** entry of those paper accounts is
