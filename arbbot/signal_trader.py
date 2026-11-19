@@ -98,7 +98,8 @@ class SignalTrader:
         self.leverage = int(leverage)
         self.path, self.notify, self.clock, self.poll_s = path, notify or (lambda text: None), clock, poll_s
         self.s = self._load() or {"enabled": True, "open": {}, "pending": {}, "cooldown": {}, "trades": []}
-        for k, v in (("open", {}), ("pending", {}), ("cooldown", {}), ("trades", []), ("enabled", True)):
+        for k, v in (("open", {}), ("pending", {}), ("cooldown", {}), ("trades", []), ("enabled", True),
+                     ("auto_close", True)):
             self.s.setdefault(k, v)
         if self.manual_only:
             self.s["enabled"] = False                                 # button only: never enters by itself
@@ -167,6 +168,17 @@ class SignalTrader:
         log.info("signal auto-trader: new entries %s", "ON" if on else "OFF")
         self.notify(f"🤖 {self.tag} signal auto-trader: new entries {'ON' if on else 'OFF'}"
                     f"{'' if on else ' (open positions are still managed)'}")
+
+    def set_auto_close(self, on: bool) -> None:
+        """Whether the bot closes an open trade at market when its signal flips or it has held the maximum time. Off:
+        only the exchange stop / TP1 / TP2 (and the breakeven stop after TP1) close it, or you. Saved."""
+        if not isinstance(on, bool):
+            raise ValueError("auto_close must be true or false")
+        self.s["auto_close"] = on
+        self._save()
+        log.info("signal trader: auto close (signal flip / max hold) %s", "ON" if on else "OFF")
+        self.notify(f"🤖 {self.tag} signal trades: closing on a signal flip or after the maximum hold is "
+                    f"{'ON' if on else 'OFF (only the stop, TP1, TP2 or you close a trade)'}")
 
     def set_window(self, window_s) -> None:
         """Trade the signal over another timeframe from the next pass on (one of WINDOWS; saved, so it survives a
@@ -420,7 +432,7 @@ class SignalTrader:
                        and row["confidence"] >= self.min_conf)
             why = ("signal turned " + row["bias"].upper()) if flipped else (
                 "held the maximum time" if now_ms - m["opened_ms"] >= self._max_hold_of(m) * 1000 else "")
-            if not why:
+            if not why or not self.s.get("auto_close", True):                  # off: the exchange stop / targets, or you
                 continue
             try:
                 await self.ticket.close_position(sym)
@@ -675,7 +687,8 @@ class SignalTrader:
 
     def view(self) -> dict:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
-        return dict(venue=self.venue, manual_only=self.manual_only, enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
+        return dict(venue=self.venue, manual_only=self.manual_only, enabled=self.s["enabled"],
+                    auto_close=self.s.get("auto_close", True), window_s=self.window_s, windows=WINDOWS,
                     max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE), leverage_range=list(LEVERAGE_RANGE),
                     daily_loss_range=list(DAILY_LOSS_RANGE), size_range=list(SIZE_RANGE), size_usd=self.size_usd,
                     available=self.available_usd(), risk_usd=self.risk_usd,

@@ -2224,6 +2224,25 @@ document.addEventListener("click", async ev => {
   try { await autoPost({ window_s: w }); }
   catch (err) { alert("Could not change the auto-trader's timeframe: " + err.message); b.disabled = false; }
 });
+// "Auto close": whether the bot closes a trade at market when its signal flips or after the maximum hold (on/off)
+function autoCloseCell(a) {
+  if (a.auto_close == null) return "";
+  const on = a.auto_close;
+  const tip = on ? `ON: an open trade is closed at market when its signal flips (confidence ≥ ${a.min_conf}) or after the maximum hold (2x its timeframe). The stop, TP1 and TP2 always stay on Binance.`
+    : "OFF: the bot never closes a trade itself. Only the stop, TP1, TP2 (and the breakeven stop after TP1) on Binance, or you, close it.";
+  const v = canControl() ? `<button type="button" class="auto-tf" data-auto-close="${on ? "0" : "1"}" title="${esc(tip)}">${on ? "ON · turn off" : "OFF · turn on"}</button>` : (on ? "ON" : "OFF");
+  return `<div title="${esc(tip)}"><div class="l">Auto close · flip / max hold</div><div class="v ${on ? "up" : "wrn"}">${v}</div></div>`;
+}
+document.addEventListener("click", async ev => {
+  const b = ev.target.closest("[data-auto-close]");
+  if (!b || b.disabled) return;
+  const on = b.dataset.autoClose === "1";
+  if (!confirm(on ? `Turn auto close ON for the ${autoName()}?\n\nOpen and new trades will be closed at market when their signal flips or after the maximum hold.`
+                  : `Turn auto close OFF for the ${autoName()}?\n\nThe bot will never close a trade itself: only the stop, TP1, TP2 on Binance (and the breakeven stop after TP1), or you. This applies to open trades too.`)) return;
+  b.disabled = true;
+  try { await autoPost({ auto_close: on }); }
+  catch (err) { alert("Could not change auto close: " + err.message); b.disabled = false; }
+});
 // the auto-trader on the futures testnet (arbbot/signal_trader.py), when this bot runs it
 function sigAuto() {
   const a = S.auto;
@@ -2245,6 +2264,7 @@ function sigAuto() {
     cell("Won / lost", `${st.wins} / ${st.losses}${st.win_rate != null ? ` · ${Math.round(st.win_rate * 100)}%` : ""}`) +
     autoRiskCell(a) +
     autoLevCell(a) +
+    autoCloseCell(a) +
     `</div>`;
 }
 function sigTrades() {
@@ -2298,7 +2318,8 @@ document.addEventListener("click", async ev => {
   if (me.verdict !== "trade") warn.push("⚠ The quality check says NO TRADE:\n  - " + (me.gates || []).join("\n  - "));
   if (me.confidence < a.min_conf) warn.push(`⚠ Confidence ${me.confidence} is below the auto-trader's ${a.min_conf}.`);
   const hold = dur(Math.max(1800, Math.min(604800, 2 * S.sgw)));
-  if (a.manual_only) warn.push(`It then manages itself: stop and TP2 sit on Binance, half closes at TP1 and the stop moves to breakeven, and it closes at market if this ${flowLabel(S.sgw)} signal flips (confidence ≥ ${a.min_conf}) or after ${hold}.`);
+  if (a.manual_only) warn.push(`It then manages itself: stop and TP2 sit on Binance, half closes at TP1 and the stop moves to breakeven` +
+    (a.auto_close !== false ? `, and it closes at market if this ${flowLabel(S.sgw)} signal flips (confidence ≥ ${a.min_conf}) or after ${hold}.` : `. Auto close is OFF: it is never closed at market by the bot; only the stop, TP1, TP2 or you.`));
   else if (S.sgw !== a.window_s) warn.push(`This is the ${flowLabel(S.sgw)} signal (the auto-trader trades ${flowLabel(a.window_s)}): it closes after ${hold}.`);
   const where = a.manual_only ? "your REAL Binance futures account (REAL MONEY)" : "the Binance futures TESTNET";
   const msg = `${a.manual_only ? "⚠ REAL MONEY ⚠\n" : ""}${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on ${where} now?\n\n` +

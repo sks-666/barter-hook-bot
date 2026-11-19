@@ -273,6 +273,25 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         await t2.step()
         self.assertEqual((self.ticket.closed, t2.s["trades"][-1]["why"]), (["ETHUSDT"], "held the maximum time"))
 
+    async def test_auto_close_off_keeps_the_trade_open(self):
+        t = self.make()
+        t.set_auto_close(False)
+        self.assertFalse(t.view()["auto_close"])
+        await t.step()
+        self.desk.rows = [row(bias="short", entry=100, stop=102, target=96)]     # the signal flips...
+        await t.step()
+        self.now[0] += t.max_hold_s + 1                                          # ...and the maximum hold passes
+        await t.step()
+        self.assertEqual(self.ticket.closed, [])                                 # still open: stop / targets / you
+        self.assertIn("SOLUSDT", t.s["open"])
+        self.ticket.pos["SOLUSDT"] = 0                                           # the exchange stop fills
+        await t.step()
+        self.assertEqual(t.s["trades"][-1]["why"], "stop or target")
+        t.set_auto_close(True)
+        self.assertTrue(t.view()["auto_close"])
+        with self.assertRaises(ValueError):
+            t.set_auto_close("off")
+
     async def test_what_it_never_enters(self):
         cases = [row(conf=50), row(coverage=0.4), row(whale_w=0.0), row(bias="wait"), row(target=101.0)]  # rr 0.5
         for r in cases:

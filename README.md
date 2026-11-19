@@ -365,7 +365,9 @@ live on paper. It starts **three paper accounts** (trend, swing, smc), $10,000 e
   The Signals table's **Liq** column shows each signal's liquidation price with those settings (isolated margin,
   Binance's maintenance tiers per coin from `/fapi/v1/leverageBracket`, read hourly; 1% when unknown), red when it
   comes before the stop; hover for margin, fees and the loss at the stop including fees. The confirm box repeats it,
-  and a trade that would be liquidated before its stop is refused. State:
+  and a trade that would be liquidated before its stop is refused. **Auto close · flip / max hold** (Signals panel,
+  saved) switches off the bot's own market closes: then only the stop, TP1, TP2 on Binance (and the breakeven stop
+  after TP1), or you, close a trade. State:
   `data/signal-trader-mainnet.json`.
 * **Swing accounts mirrored to the TESTNET.** Add `--swing --swing-mirror trend` to the testnet command (any of `trend`,
   `swing`, `smc`, comma separated, or `all`; the launcher uses `trend,swing,smc`; `--swing-mirror-fund 10000` sets the
