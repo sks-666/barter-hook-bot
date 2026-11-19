@@ -131,16 +131,17 @@ class MarketData:
         return await self._cached(("spot", symbol, interval), load)
 
     async def depth(self, symbol: str, limit: int = 20) -> dict:
-        """Top `limit` levels a side: 20 (weight 2) for the ladder, 100 (weight 5) to find the walls, or 500 (weight 10)
-        for the order book read (arbbot/orderbook.py)."""
+        """Top `limit` levels a side: 20 (weight 2) for the ladder, 100 (weight 5) to find the walls, 500 (weight 10)
+        for the order book read (arbbot/orderbook.py), or 1000 (weight 20) to start the heatmap's local book."""
         symbol = self.check_symbol(symbol)
-        if limit not in (20, 100, 500):
-            raise ValueError("limit must be 20, 100 or 500")
+        if limit not in (20, 100, 500, 1000):
+            raise ValueError("limit must be 20, 100, 500 or 1000")
 
         async def load():
             d = await self._get("/fapi/v1/depth", {"symbol": symbol, "limit": limit})
             side = lambda rows: [[float(p), float(q)] for p, q in rows]  # noqa: E731
-            return {"bids": side(d["bids"]), "asks": side(d["asks"]), "ts": d.get("E") or d.get("T")}
+            return {"bids": side(d["bids"]), "asks": side(d["asks"]), "ts": d.get("E") or d.get("T"),
+                    "last_update_id": d.get("lastUpdateId")}
         return await self._cached(("depth", symbol, limit), load)
 
     async def trades(self, symbol: str) -> list[dict]:

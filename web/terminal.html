@@ -348,6 +348,7 @@
   <span class="spacer"></span>
   <span id="t-clock"></span>
   <button id="t-theme" type="button" aria-label="Switch theme">◐ AUTO</button>
+  <a href="/heatmap" id="t-heat" title="The liquidity heatmap of this coin">Heatmap</a>
   <a href="/">Dashboard</a>
 </div>
 
@@ -1199,6 +1200,7 @@ function render(kind) {
 // the browser tab shows the loaded coin's price, like an exchange: "64,395.00 ▲ | BTCUSDT +1.25% · Arb Terminal".
 // The price is the newest trade (every 2 s), else the 24h ticker's last; the arrow is the move since the last title.
 function setTitle() {
+  const th = $("t-heat"); if (th) th.href = "/heatmap?symbol=" + encodeURIComponent(S.sym);
   const t = S.trades?.[0], p = t?.price ?? S.info?.last;
   if (p == null || !isFinite(p)) { document.title = `${S.sym} · Arb Terminal`; S.titlePx = S.titleDir = null; return; }
   if (S.titlePx != null && p !== S.titlePx) S.titleDir = p > S.titlePx ? " ▲" : " ▼";   // kept until the price moves again

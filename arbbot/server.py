@@ -121,6 +121,7 @@ class Dashboard:
         self.market = market                      # an arbbot.market.MarketData for the chart / order book panel, or None
         self.book_market = book_market            # the MarketData the BOOK overlay reads (mainnet public), else `market`
         self.book = None                          # an arbbot.orderbook.BookWatch, made on the first BOOK request
+        self.heat = None                          # an arbbot.heatmap.Heatmap, made on the first heatmap request
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
         self.web_dir = web_dir
@@ -167,6 +168,8 @@ class Dashboard:
             app.router.add_get(page + "/", self.index)
         app.router.add_get("/terminal", self.terminal)     # the read-only terminal view (web/terminal.html)
         app.router.add_get("/terminal/", self.terminal)
+        app.router.add_get("/heatmap", self.heatmap_page)  # the liquidity heatmap (web/heatmap.html, arbbot/heatmap.py)
+        app.router.add_get("/heatmap/", self.heatmap_page)
         app.router.add_get("/trading", self.trading)       # the Freqtrade trading bot (web/freqtrade.html, freqkit/)
         app.router.add_get("/trading/", self.trading)
         if self.freq is not None:                           # /api/freqtrade/*: reads open, writes need the token
@@ -345,6 +348,26 @@ class Dashboard:
             return web.json_response({"error": "market data is not available in this bot"}, status=404)
         if kind == "history":
             return await self.market_history(q)
+        if kind == "heatmap":                     # the heatmap page: the mainnet book recorded over time
+            src = self.book_market or self.market
+            session = getattr(getattr(src, "client", None), "session", None)
+            if session is None:
+                return web.json_response({"error": "the heatmap needs a live connection to Binance (off in this bot)"},
+                                         status=404)
+            if self.heat is None:
+                from .heatmap import Heatmap
+                self.heat = Heatmap(src, session, whales=self.whales)
+            try:
+                body = await self.heat.view(q.get("symbol", ""), q.get("interval", "5m"),
+                                            candles=int(q.get("candles", "200")), per_candle=int(q.get("per", "4")),
+                                            after=float(q.get("after", "0")))
+            except ValueError as e:
+                return web.json_response({"error": str(e)}, status=400)
+            except Exception as e:                # Binance unreachable, unknown coin: the page says it
+                return web.json_response({"error": f"{type(e).__name__}: {str(e)[:160]}"}, status=502)
+            resp = web.json_response(body, headers={"Cache-Control": "no-store"})
+            resp.enable_compression()
+            return resp
         if kind == "book":                        # the chart's BOOK overlay: order book + taker flow, per timeframe
             if self.book is None:
                 from .orderbook import BookWatch
@@ -525,6 +548,11 @@ class Dashboard:
         the testnet signal auto-trader's timeframe, so it gets the control token (the same one the dashboard at / gets,
         behind the same LAN key)."""
         html = (self.web_dir / "terminal.html").read_text(encoding="utf-8").replace("__TOKEN__", self.token)
+        return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
+
+    async def heatmap_page(self, request: web.Request) -> web.Response:
+        """The liquidity heatmap: read-only, no controls."""
+        html = (self.web_dir / "heatmap.html").read_text(encoding="utf-8")
         return web.Response(text=html, content_type="text/html", headers={"Cache-Control": "no-store"})
 
     async def snapshot(self, request: web.Request) -> web.Response:

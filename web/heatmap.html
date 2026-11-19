@@ -1,0 +1,295 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heatmap</title>
+<style>
+  /* a heatmap reads best on black: this page is always dark */
+  :root {
+    --bg: #05050a; --panel: #0b0b12; --panel-2: #14141c; --line: #26262f; --text: #e9e7e2; --muted: #8d8a83;
+    --amber: #ffa52b; --amber-ink: #000; --pos: #35d07f; --neg: #ff5c57; --accent: #5ec8ff; --liq-long: #ff3d8b; --liq-short: #3de0ff;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body { background: var(--bg); color: var(--text); font: 12.5px/1.35 ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+         display: flex; flex-direction: column; }
+  a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
+  button, select, input { font: inherit; color: inherit; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 2px 7px; }
+  button { cursor: pointer; } button:hover { border-color: var(--amber); }
+  button[aria-pressed="true"] { background: var(--amber); color: var(--amber-ink); border-color: var(--amber); font-weight: 700; }
+  :focus-visible { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 6px 12px; background: var(--panel); border-bottom: 1px solid var(--line); }
+  .head h1 { margin: 0 6px 0 0; font-size: 13px; letter-spacing: 1.5px; color: var(--amber); }
+  .head .grp { display: inline-flex; gap: 3px; align-items: center; }
+  .head .sp { flex: 1; }
+  #sym { width: 120px; text-transform: uppercase; }
+  #px { font-weight: 700; font-size: 14px; } .up { color: var(--pos); } .dn { color: var(--neg); } .mut { color: var(--muted); }
+  .stat { color: var(--muted); font-size: 11.5px; padding: 3px 12px; border-bottom: 1px solid var(--line); background: var(--panel); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .wrap { position: relative; flex: 1; min-height: 360px; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #tip { position: absolute; pointer-events: none; background: color-mix(in srgb, var(--panel) 92%, transparent); border: 1px solid var(--line);
+         border-radius: 3px; padding: 4px 7px; font-size: 11.5px; display: none; white-space: nowrap; z-index: 2; }
+  .legend { position: absolute; left: 10px; bottom: 26px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); pointer-events: none; }
+  .legend i { display: block; width: 140px; height: 8px; border-radius: 2px; }
+  @media (max-width: 720px) { .head { gap: 6px; padding: 6px 8px; } #sym { width: 96px; } .hide-sm { display: none; } }
+</style>
+</head>
+<body>
+<div class="head">
+  <h1>HEATMAP</h1>
+  <form class="grp" id="sym-form" autocomplete="off"><input id="sym" aria-label="Coin" placeholder="BTCUSDT" spellcheck="false"><button type="submit">Go</button></form>
+  <span id="px"></span><span id="chg" class="mut"></span>
+  <span class="grp" id="ivs" role="group" aria-label="Timeframe"></span>
+  <span class="grp hide-sm"><label for="per" class="mut">detail</label>
+    <select id="per" title="Heatmap columns per candle"><option value="2">2 / candle</option><option value="4" selected>4 / candle</option><option value="8">8 / candle</option></select></span>
+  <span class="grp hide-sm"><label for="gam" class="mut">contrast</label><input id="gam" type="range" min="0.25" max="1.6" step="0.05" value="0.7" style="width:90px;padding:0"
+    title="Lower = faint liquidity shows up more; higher = only the biggest orders glow"></span>
+  <span class="grp" role="group" aria-label="Layers">
+    <button type="button" data-ly="candles" aria-pressed="true">Candles</button>
+    <button type="button" data-ly="depth" aria-pressed="true">Depth</button>
+    <button type="button" data-ly="liqs" aria-pressed="true">Liqs</button></span>
+  <span class="sp"></span>
+  <a id="to-term" href="/terminal">Terminal</a><a href="/">Dashboard</a>
+</div>
+<div class="stat" id="stat">connecting…</div>
+<div class="wrap" id="wrap"><canvas id="cv" aria-label="Order book liquidity heatmap"></canvas><div id="tip"></div>
+  <div class="legend"><span>less resting liquidity</span><i id="lg"></i><span>more</span></div></div>
+
+<script>
+"use strict";
+const $ = id => document.getElementById(id);
+const IVS = [["1m", 60], ["5m", 300], ["15m", 900], ["1h", 3600], ["4h", 14400]];
+const ls = { get: k => { try { return localStorage.getItem(k); } catch { return null; } },
+             set: (k, v) => { try { localStorage.setItem(k, v); } catch { /* private mode */ } } };
+const qp = new URLSearchParams(location.search);
+const H = {
+  sym: (qp.get("symbol") || ls.get("heat-sym") || ls.get("term-sym") || "BTCUSDT").toUpperCase(),
+  iv: ls.get("heat-iv") || "5m", per: Number(ls.get("heat-per") || 4), gam: Number(ls.get("heat-gam") || 0.7),
+  ly: Object.assign({ candles: true, depth: true, liqs: true }, JSON.parse(ls.get("heat-ly") || "{}")),
+  d: null, cache: null, busy: false, err: "", hover: null, geom: null,
+};
+// colour map: deep navy -> blue -> cyan -> green -> yellow -> orange -> white (index 0..255)
+const STOPS = [[0, [10, 10, 40]], [0.12, [30, 22, 110]], [0.3, [35, 85, 190]], [0.45, [30, 170, 200]], [0.6, [60, 200, 110]],
+               [0.75, [235, 225, 40]], [0.88, [255, 150, 30]], [1, [255, 250, 240]]];
+const LUT = new Uint8ClampedArray(256 * 3);
+for (let i = 0; i < 256; i++) {
+  const x = i / 255, j = STOPS.findIndex(s => s[0] >= x), [x1, c1] = STOPS[Math.max(1, j)], [x0, c0] = STOPS[Math.max(1, j) - 1], f = (x - x0) / (x1 - x0 || 1);
+  for (let c = 0; c < 3; c++) LUT[i * 3 + c] = c0[c] + (c1[c] - c0[c]) * f;
+}
+$("lg").style.background = `linear-gradient(90deg, ${STOPS.map(([x, c]) => `rgb(${c}) ${x * 100}%`).join(",")})`;
+
+const px = v => { if (v == null || !isFinite(v)) return "—"; const a = Math.abs(v), d = a >= 1000 ? 1 : a >= 100 ? 2 : a >= 1 ? 4 : a >= 0.01 ? 5 : 7;
+  return v.toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d }); };
+const big = v => { const a = Math.abs(v); return a >= 1e9 ? (v / 1e9).toFixed(2) + "B" : a >= 1e6 ? (v / 1e6).toFixed(2) + "M" : a >= 1e3 ? (v / 1e3).toFixed(1) + "K" : v.toFixed(0); };
+const hm = ts => new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false });
+const ivS = () => IVS.find(x => x[0] === H.iv)[1];
+const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+
+// ---- controls -------------------------------------------------------------------------------------------------------
+$("ivs").innerHTML = IVS.map(([k]) => `<button type="button" data-iv="${k}" aria-pressed="${k === H.iv}">${k}</button>`).join("");
+$("ivs").addEventListener("click", e => { const b = e.target.closest("[data-iv]"); if (!b) return; H.iv = b.dataset.iv; ls.set("heat-iv", H.iv); reset(); });
+$("per").value = String(H.per);
+$("per").addEventListener("change", () => { H.per = Number($("per").value); ls.set("heat-per", H.per); reset(); });
+$("gam").value = String(H.gam);
+$("gam").addEventListener("input", () => { H.gam = Number($("gam").value); ls.set("heat-gam", H.gam); H.img = null; draw(); });
+document.querySelectorAll("[data-ly]").forEach(b => { b.setAttribute("aria-pressed", String(!!H.ly[b.dataset.ly]));
+  b.addEventListener("click", () => { H.ly[b.dataset.ly] = !H.ly[b.dataset.ly]; b.setAttribute("aria-pressed", String(H.ly[b.dataset.ly])); ls.set("heat-ly", JSON.stringify(H.ly)); draw(); }); });
+$("sym").value = H.sym;
+$("sym-form").addEventListener("submit", e => { e.preventDefault(); let s = $("sym").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+  if (!s) return; if (!s.endsWith("USDT")) s += "USDT"; $("sym").value = s; H.sym = s; ls.set("heat-sym", s); history.replaceState(null, "", "?symbol=" + s); reset(); });
+function reset() { H.d = null; H.cache = null; H.img = null; H.err = ""; document.querySelectorAll("[data-iv]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.iv === H.iv)));
+  $("to-term").href = "/terminal"; ls.set("term-sym", H.sym); draw(); load(); }
+
+// ---- data: /api/market/heatmap (arbbot/heatmap.py); after the first answer only the newest buckets -------------------
+function b64f32(s) { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); }
+async function load() {
+  if (H.busy) return;
+  H.busy = true;
+  const want = H.sym + "|" + H.iv + "|" + H.per, c = H.cache;
+  const after = c && c.want === want && c.times.length ? c.times.at(-1) : 0;
+  try {
+    const r = await fetch("/api/market/heatmap?" + new URLSearchParams({ symbol: H.sym, interval: H.iv, per: H.per, candles: 200, after }), { cache: "no-store" });
+    const d = await r.json().catch(() => ({}));
+    if (want !== H.sym + "|" + H.iv + "|" + H.per) return;
+    if (!r.ok) { H.err = d.error || "HTTP " + r.status; draw(); return; }
+    H.err = ""; H.d = d;
+    const g = d.grid;
+    if (g) {
+      const key = [want, d.res, g.lo_bin, g.rows, d.step].join("|");
+      if (!H.cache || H.cache.key !== key) {
+        if (g.partial) { H.cache = null; H.busy = false; return load(); }    // the rows moved: ask for everything again
+        H.cache = { key, want, lo: g.lo_bin, rows: g.rows, step: d.step, res: d.res, times: [], cols: new Map() };
+      }
+      const C = H.cache, f = b64f32(g.data);
+      g.times.forEach((t, i) => { const k = g.counts[i], col = new Float32Array(C.rows);
+        for (let j = 0; j < C.rows; j++) col[j] = f[i * C.rows + j] / k;
+        C.cols.set(t, col); });
+      const first = d.klines[0][0] / 1000 - d.res;
+      for (const t of C.cols.keys()) if (t < first) C.cols.delete(t);
+      C.times = [...C.cols.keys()].sort((a, b) => a - b);
+      H.img = null;
+    }
+    draw();
+  } catch (e) { H.err = String(e); draw(); }
+  finally { H.busy = false; }
+}
+setInterval(() => { if (!document.hidden) load(); }, 3000);
+
+// ---- drawing ----------------------------------------------------------------------------------------------------------
+const cv = $("cv");
+function css(n) { return getComputedStyle(document.documentElement).getPropertyValue(n).trim(); }
+// the heat image: one pixel per bucket x band, coloured by (resting $ / the 99th percentile) ^ contrast
+function heatImage(t0, res, ncol) {
+  const C = H.cache; if (!C || !C.times.length) return null;
+  const vals = [];
+  for (const col of C.cols.values()) for (let j = 0; j < col.length; j += 3) if (col[j] > 0) vals.push(col[j]);
+  if (!vals.length) return null;
+  vals.sort((a, b) => a - b);
+  const vmax = vals[Math.floor(vals.length * 0.99)] || vals.at(-1);
+  const oc = document.createElement("canvas"); oc.width = ncol; oc.height = C.rows;
+  const g = oc.getContext("2d"), im = g.createImageData(ncol, C.rows);
+  for (const [t, col] of C.cols) {
+    const x = Math.round((t - t0) / res); if (x < 0 || x >= ncol) continue;
+    for (let j = 0; j < C.rows; j++) {
+      const v = col[j]; if (!(v > 0)) continue;
+      const a = Math.min(1, Math.pow(v / vmax, H.gam)); if (a < 0.03) continue;
+      const li = Math.round(a * 255) * 3, p = ((C.rows - 1 - j) * ncol + x) * 4;      // row 0 is the lowest band
+      im.data[p] = LUT[li]; im.data[p + 1] = LUT[li + 1]; im.data[p + 2] = LUT[li + 2]; im.data[p + 3] = 255;
+    }
+  }
+  g.putImageData(im, 0, 0);
+  return { oc, vmax };
+}
+function draw() {
+  const box = cv.parentElement.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+  cv.width = Math.round(box.width * dpr); cv.height = Math.round(box.height * dpr);
+  const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0);
+  const W = box.width, Ht = box.height, muted = css("--muted"), line = css("--line"), up = css("--pos"), dn = css("--neg"), amber = css("--amber");
+  g.fillStyle = css("--bg"); g.fillRect(0, 0, W, Ht);
+  g.font = "11px ui-monospace, Menlo, Consolas, monospace";
+  const d = H.d;
+  status();
+  if (!d || !d.klines?.length) { g.fillStyle = H.err ? dn : muted; g.fillText(H.err || "loading…", 14, 30); return; }
+  const DEP = H.ly.depth ? Math.min(110, W * 0.14) : 0, AX = 70, PADB = 20, TOP = 8;
+  const plotW = W - AX - DEP, plotH = Ht - PADB - TOP, iv = ivS(), kl = d.klines, C = H.cache;
+  const t0 = kl[0][0] / 1000, t1 = kl.at(-1)[0] / 1000 + iv;
+  let lo, hi;
+  if (C) { lo = C.lo * C.step; hi = (C.lo + C.rows) * C.step; }
+  else { lo = Math.min(...kl.map(k => k[3])); hi = Math.max(...kl.map(k => k[2])); const p = (hi - lo) * 0.08; lo -= p; hi += p; }
+  const y = p => TOP + (hi - p) / (hi - lo) * plotH, X = t => (t - t0) / (t1 - t0) * plotW;
+  // the heat
+  if (C) {
+    const ncol = Math.max(1, Math.round((t1 - t0) / C.res));
+    if (!H.img || H.img.ncol !== ncol || H.img.t0 !== t0) { const im = heatImage(t0, C.res, ncol); H.img = im && { ...im, ncol, t0 }; }
+    if (H.img) { g.imageSmoothingEnabled = false; g.drawImage(H.img.oc, 0, TOP, plotW, plotH); }
+  }
+  // before the recording began: say so
+  const since = d.since;
+  if (!since || since > t0) {
+    const xs = since ? X(since) : plotW;
+    g.fillStyle = "rgba(255,255,255,0.025)"; g.fillRect(0, TOP, xs, plotH);
+    g.fillStyle = muted; g.textAlign = "center";
+    g.fillText(since ? `← no book recorded before ${hm(since * 1000)}` : "recording the order book… the heat fills in from now", Math.max(150, xs / 2), TOP + plotH / 2);
+    g.textAlign = "left";
+    if (since) { g.strokeStyle = line; g.setLineDash([3, 4]); g.beginPath(); g.moveTo(xs + 0.5, TOP); g.lineTo(xs + 0.5, TOP + plotH); g.stroke(); g.setLineDash([]); }
+  }
+  // price axis + grid
+  g.strokeStyle = "rgba(255,255,255,0.06)"; g.fillStyle = muted;
+  for (let j = 0; j <= 8; j++) { const p = lo + (hi - lo) * j / 8, yy = Math.round(y(p)) + 0.5;
+    g.beginPath(); g.moveTo(0, yy); g.lineTo(plotW, yy); g.stroke(); g.fillText(px(p), plotW + DEP + 6, yy + 4); }
+  // time axis
+  const every = Math.max(1, Math.ceil(kl.length / Math.max(2, Math.floor(plotW / 90))));
+  for (let j = 0; j < kl.length; j += every) {
+    const dt = new Date(kl[j][0]), lbl = iv >= 86400 ? dt.toLocaleDateString([], { month: "short", day: "numeric" }) : hm(kl[j][0]);
+    g.fillText(lbl, X(kl[j][0] / 1000) + 2, Ht - 5);
+  }
+  // candles
+  const step = plotW / kl.length, bw = Math.max(1, step * 0.6);
+  if (H.ly.candles) for (const k of kl) {
+    const x = X(k[0] / 1000) + step / 2, col = k[4] >= k[1] ? up : dn;
+    g.strokeStyle = col; g.fillStyle = col; g.globalAlpha = 0.95;
+    g.beginPath(); g.moveTo(Math.round(x) + 0.5, y(k[2])); g.lineTo(Math.round(x) + 0.5, y(k[3])); g.stroke();
+    g.fillRect(x - bw / 2, y(Math.max(k[1], k[4])), bw, Math.max(1, Math.abs(y(k[1]) - y(k[4]))));
+    g.globalAlpha = 1;
+  }
+  // liquidations: diamonds sized by value; the big ones are named
+  const hits = [];
+  if (H.ly.liqs) for (const q of d.liqs || []) {
+    const t = q.ts / 1000; if (t < t0 || t > t1 || q.price < lo || q.price > hi) continue;
+    const x = X(t), yy = y(q.price), s = Math.max(3, Math.min(11, 2.4 * Math.sqrt(q.usd / 2e4))), longLiq = q.side === "long";
+    g.fillStyle = longLiq ? css("--liq-long") : css("--liq-short"); g.globalAlpha = 0.85;
+    g.beginPath(); g.moveTo(x, yy - s); g.lineTo(x + s, yy); g.lineTo(x, yy + s); g.lineTo(x - s, yy); g.closePath(); g.fill(); g.globalAlpha = 1;
+    const txt = `${longLiq ? "Longs" : "Shorts"} −$${big(q.usd)}`;
+    if (q.usd >= 1e5) { g.fillText(txt, x + s + 3, yy + 4); }
+    hits.push({ x, y: yy, r: s + 2, text: `💥 ${txt} liquidated at ${px(q.price)}, ${new Date(q.ts).toLocaleTimeString([], { hour12: false })}` });
+  }
+  // depth now: asks above the price (red), bids below (green), bar length ~ dollars resting in the band
+  const bk = d.book;
+  if (H.ly.depth && bk && C) {
+    const x0 = plotW + 2, hb = Math.max(1, plotH / C.rows - 0.5), mx = Math.max(1, ...bk.bids, ...bk.asks);
+    g.fillStyle = css("--panel"); g.fillRect(plotW, TOP, DEP, plotH);
+    for (let j = 0; j < C.rows; j++) {
+      const p = (C.lo + j) * C.step, yy = y(p + C.step);
+      if (bk.bids[j] > 0) { g.fillStyle = up; g.globalAlpha = 0.7; g.fillRect(x0, yy, (DEP - 4) * Math.sqrt(bk.bids[j] / mx), hb); }
+      if (bk.asks[j] > 0) { g.fillStyle = dn; g.globalAlpha = 0.7; g.fillRect(x0, yy, (DEP - 4) * Math.sqrt(bk.asks[j] / mx), hb); }
+    }
+    g.globalAlpha = 1;
+  }
+  // last price
+  const last = kl.at(-1)[4], ly = Math.round(y(last)) + 0.5;
+  g.strokeStyle = amber; g.setLineDash([3, 3]); g.beginPath(); g.moveTo(0, ly); g.lineTo(plotW + DEP, ly); g.stroke(); g.setLineDash([]);
+  g.fillStyle = amber; g.fillRect(plotW + DEP, ly - 8, AX, 16); g.fillStyle = css("--amber-ink"); g.fillText(px(last), plotW + DEP + 6, ly + 4);
+  H.geom = { plotW, plotH, TOP, lo, hi, t0, t1, DEP, hits, step };
+  // crosshair
+  if (H.hover && H.hover.x < plotW + DEP && H.hover.y > TOP && H.hover.y < TOP + plotH) {
+    g.strokeStyle = "rgba(255,255,255,0.35)"; g.setLineDash([2, 3]);
+    g.beginPath(); g.moveTo(H.hover.x, TOP); g.lineTo(H.hover.x, TOP + plotH); g.moveTo(0, H.hover.y); g.lineTo(plotW + DEP, H.hover.y); g.stroke(); g.setLineDash([]);
+  }
+}
+function status() {
+  const d = H.d, C = H.cache;
+  if (!d) { $("stat").textContent = H.err || "connecting…"; return; }
+  const k = d.klines.at(-1), ch = (k[4] / d.klines[0][1] - 1) * 100;
+  $("px").textContent = px(k[4]); $("px").className = k[4] >= k[1] ? "up" : "dn";
+  $("chg").textContent = `${d.symbol} ${ch >= 0 ? "+" : ""}${ch.toFixed(2)}% over the view`;
+  document.title = `${px(k[4])} | ${d.symbol} · Heatmap`;
+  const rec = d.since ? `recording since ${hm(d.since * 1000)} (${d.columns} snapshots, one per ${d.sample_s}s)` : "starting";
+  $("stat").textContent = `${d.source} · ${d.status === "recording" ? rec : d.status}` +
+    (C ? ` · price bands ${+C.step.toPrecision(6)} wide · columns of ${C.res >= 60 ? C.res / 60 + " min" : C.res + " s"}` : "") +
+    (H.err ? ` · ${H.err}` : "") + " · read-only, nothing here trades";
+}
+// hover: time, price band, dollars resting there then, the candle, or a liquidation
+cv.addEventListener("mousemove", e => {
+  const r = cv.getBoundingClientRect(); H.hover = { x: e.clientX - r.left, y: e.clientY - r.top }; draw();
+  const G = H.geom, d = H.d, C = H.cache, tip = $("tip");
+  if (!G || !d || H.hover.x > G.plotW + G.DEP || H.hover.y < G.TOP || H.hover.y > G.TOP + G.plotH) { tip.style.display = "none"; return; }
+  const price = G.hi - (H.hover.y - G.TOP) / G.plotH * (G.hi - G.lo), t = G.t0 + H.hover.x / G.plotW * (G.t1 - G.t0);
+  let html = "";
+  const hit = G.hits.find(m => Math.hypot(m.x - H.hover.x, m.y - H.hover.y) <= m.r);
+  if (hit) html = esc(hit.text);
+  else if (H.hover.x > G.plotW && d.book && C) {
+    const j = Math.floor(price / C.step) - C.lo, b = d.book.bids[j] || 0, a = d.book.asks[j] || 0;
+    html = `now at ${px(Math.floor(price / C.step) * C.step)}–${px((Math.floor(price / C.step) + 1) * C.step)}: ` +
+      (b ? `<span class="up">bids $${big(b)}</span>` : "") + (a ? `<span class="dn">asks $${big(a)}</span>` : "") + (!a && !b ? "nothing resting" : "");
+  } else {
+    const k = d.klines.find(k => k[0] / 1000 <= t && t < k[0] / 1000 + ivS());
+    html = `${new Date(t * 1000).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })} · ${px(price)}`;
+    if (C) {
+      const tb = Math.floor(t / C.res) * C.res, col = C.cols.get(tb), j = Math.floor(price / C.step) - C.lo;
+      html += col && j >= 0 && j < C.rows ? ` · resting <b>$${big(col[j])}</b> in ${px((C.lo + j) * C.step)}–${px((C.lo + j + 1) * C.step)}` : " · no book recorded then";
+    }
+    if (k) html += `<br><span class="mut">O ${px(k[1])} H ${px(k[2])} L ${px(k[3])} C ${px(k[4])}</span>`;
+  }
+  tip.innerHTML = html; tip.style.display = "block";
+  const x = Math.min(H.hover.x + 14, r.width - tip.offsetWidth - 6), yy = Math.min(H.hover.y + 14, r.height - tip.offsetHeight - 6);
+  tip.style.left = x + "px"; tip.style.top = yy + "px";
+});
+cv.addEventListener("mouseleave", () => { H.hover = null; $("tip").style.display = "none"; draw(); });
+let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(draw, 100); });
+document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
+reset();
+</script>
+</body>
+</html>
