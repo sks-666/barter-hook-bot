@@ -903,7 +903,38 @@ async function loadAuto() {
     const r = await fetch("/api/signal-trader", { cache: "no-store" });
     S.auto = r.ok ? await r.json() : r.status === 404 || r.status === 405 ? false : S.auto;   // 404/405: not in this bot
   } catch { /* restarting: keep the last answer */ }
+  if (S.auto && !(S.brkAt > Date.now() - 3600e3)) await loadBrk();
   renderSignals();
+}
+// Binance's maintenance-margin tiers per coin ([[notional cap, rate, amount, max leverage]...]), for liquidation prices
+async function loadBrk() {
+  S.brkAt = Date.now();
+  try { const r = await fetch("/api/brackets"); if (r.ok) S.brk = (await r.json()).tiers || {}; } catch { /* keep the last */ }
+}
+// One signal traded with the Trade button's settings: its size, leverage, liquidation price (Binance's isolated-margin
+// formula with the coin's tier; 1% maintenance when unknown), fees and the loss at the stop with them.
+function liqOf(x, a) {
+  if (!a || !x.entry || !x.stop || x.bias === "wait") return null;
+  const long = x.bias === "long", E = x.entry, d = Math.abs(E - x.stop) / E, mult = x.quality?.type?.risk_mult || 1;
+  const pos = Math.min(a.size_usd || a.risk_usd * mult / d, a.max_usd);
+  const tiers = S.brk?.[x.symbol] || [[Infinity, 0.01, 0, 20]], known = !!S.brk?.[x.symbol];
+  const lev = Math.min(a.leverage, tiers[0][3]);
+  const [, mmr, cum] = tiers.find(t => pos <= t[0]) || tiers[tiers.length - 1];
+  const q = pos / E, m = pos / lev;
+  const liq = long ? Math.max(0, (m + cum - q * E) / (q * mmr - q)) : (m + cum + q * E) / (q * mmr + q);
+  const fee = (S.acct?.taker_bps ?? 5) / 1e4, fees = q * (E + x.stop) * fee;         // taker in and out at the stop
+  return { long, pos, lev, levCapped: lev < a.leverage, mmr, known, liq, dist: Math.abs(liq - E) / E * 100,
+           safe: long ? liq < x.stop : liq > x.stop, room: Math.abs(liq - x.stop) / E * 100,
+           fees, loss: q * Math.abs(E - x.stop) + fees, margin: m * 1.02 };
+}
+function liqCell(x, a) {
+  const L = liqOf(x, a);
+  if (!L) return `<td class="mut">—</td>`;
+  const tip = `Liquidation price if you press Trade now: $${L.pos.toFixed(2)} position ${L.long ? "LONG" : "SHORT"} at ${L.lev}x isolated` +
+    `${L.levCapped ? ` (this coin's limit; you set ${a.leverage}x)` : ""}, margin ~$${L.margin.toFixed(2)}, maintenance ${(L.mmr * 100).toFixed(2)}%${L.known ? "" : " (assumed: tiers not read)"}. ` +
+    `${L.safe ? `The stop comes first, ${L.room.toFixed(2)}% before liquidation.` : "⚠ It would be LIQUIDATED BEFORE THE STOP: lower the leverage."} ` +
+    `Loss at the stop ~$${L.loss.toFixed(2)} including ~$${L.fees.toFixed(2)} of fees.`;
+  return `<td class="${L.safe ? "" : "dn"}" title="${esc(tip)}">${L.liq > 0 ? px(L.liq) : "none"}<span class="sub">${L.safe ? "" : "⚠ "}${L.liq > 0 ? (L.long ? "−" : "+") + L.dist.toFixed(1) + "%" : ""} · ${L.lev}x</span></td>`;
 }
 function pollLoop() {
   if (!document.hidden && !(S.due.auto > Date.now())) loadAuto();
@@ -2273,11 +2304,12 @@ document.addEventListener("click", async ev => {
   const msg = `${a.manual_only ? "⚠ REAL MONEY ⚠\n" : ""}${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on ${where} now?\n\n` +
     `Entry ${px(me.entry)}${Math.abs(me.to_entry_pct || 0) < 0.1 ? " (market)" : " (limit, waits up to " + dur(a.entry_ttl_s) + ")"} · stop ${px(me.stop)} · ` +
     (me.tp1 ? `TP1 ${px(me.tp1)} (half closes) · ` : "") + `TP2 ${px(me.target)}\n` +
-    (() => { const d = Math.abs(me.entry - me.stop) / me.entry, pos = Math.min(a.size_usd || a.risk_usd * mult / d, a.max_usd);
-             const need = pos / a.leverage * 1.02, avail = a.available;
-             return `Position about $${pos.toFixed(2)}${a.size_usd ? " (your size)" : ""} · loses about $${(pos * d).toFixed(2)} at the stop\n` +
-                    `Margin about $${need.toFixed(2)} at ${a.leverage}x${avail != null ? ` · $${avail.toFixed(2)} available${need > avail ? " ⚠ NOT ENOUGH: it will be refused" : ""}` : ""}`; })() +
-    ` · ${me.quality?.type?.name || "signal"}` +
+    (() => { const Q = liqOf(me, a), avail = a.available;
+             return `Position about $${Q.pos.toFixed(2)}${a.size_usd ? " (your size)" : ""} · ${Q.lev}x isolated${Q.levCapped ? ` (this coin's limit, not ${a.leverage}x)` : ""} · ${me.quality?.type?.name || "signal"}\n` +
+                    `Margin about $${Q.margin.toFixed(2)}${avail != null ? ` · $${avail.toFixed(2)} available${Q.margin > avail ? " ⚠ NOT ENOUGH: it will be refused" : ""}` : ""}\n` +
+                    `Loss at the stop about $${Q.loss.toFixed(2)} (incl. ~$${Q.fees.toFixed(2)} fees)\n` +
+                    `Liquidation about ${Q.liq > 0 ? px(Q.liq) + ` (${Q.long ? "−" : "+"}${Q.dist.toFixed(1)}% from entry)` : "none"}` +
+                    (Q.safe ? ` · the stop comes first, ${Q.room.toFixed(2)}% before it` : `\n⚠ LIQUIDATED BEFORE THE STOP at ${Q.lev}x: it will be refused. Lower the leverage.`); })() +
     (warn.length ? "\n\n" + warn.join("\n\n") : "") +
     `\n\nThe price is read again before it is sent: the levels may move a little.`;
   if (!confirm(msg)) return;
@@ -2369,8 +2401,9 @@ function renderSignals() {
       <th title="The quality check: TRADE or NO TRADE (hover for why), its quality score 0-100 and the HTF regime">Verdict</th>
       <th title="Combined score, −100 (bearish) to +100 (bullish)">Score</th><th title="0-100: 40% the score's strength / agreement / data, 60% the quality score; x0.8 in thin hours or near a high-impact release, −15 for an active pre-mortem risk">Conf</th>
       <th class="xw" title="Weight of the sources that point the same way as the score">Agree</th><th class="xw" title="Share of the weights that had data">Data</th>
-      <th>Price</th><th title="Limit entry; % from the price now">Entry</th><th title="Past the last swing + 0.25 ATR, off round numbers">Stop</th><th title="TP1: half the position closes here (at least 1.8R); the stop then moves to breakeven">TP1</th><th title="TP2: the runner (at least 3R)">TP2</th><th title="Reward : risk to TP2">R:R</th>
-      <th class="xw" title="Average true range: one candle's typical move">ATR</th>` +
+      <th>Price</th><th title="Limit entry; % from the price now">Entry</th><th title="Past the last swing + 0.25 ATR, off round numbers">Stop</th><th title="TP1: half the position closes here (at least 1.8R); the stop then moves to breakeven">TP1</th><th title="TP2: the runner (at least 3R)">TP2</th><th title="Reward : risk to TP2">R:R</th>` +
+      (a ? `<th title="Liquidation price with the Trade button's position size and leverage (isolated margin, Binance's maintenance tiers); % from the entry. Red ⚠: liquidated before the stop. Hover a cell for margin, fees and the loss at the stop.">Liq</th>` : "") +
+      `<th class="xw" title="Average true range: one candle's typical move">ATR</th>` +
       SIG_F.map(([k, l]) => `<th class="f xw" title="${l} score, −100 to +100 (hover a cell for why)">${l}</th>`).join("") +
       `<th title="The ${autoName()} holds this coin">${autoReal() ? "Yours" : "Auto"}</th></tr></thead><tbody>` +
       rows.map(x => { const L = x.bias === "long", wait = x.bias === "wait", h = held(x.symbol);
@@ -2387,6 +2420,7 @@ function renderSignals() {
           <td class="up">${x.tp1 ? px(x.tp1) + `<span class="sub">${x.rr1.toFixed(1)}R</span>` : "—"}</td>
           <td class="up">${px(x.target)}<span class="sub">${pctOf(x.target, x.entry)}</span></td>
           <td class="${x.rr >= 3 ? "up" : ""}">${x.rr.toFixed(1)}</td>`) +
+          (a ? (wait || !x.entry || !x.target ? `<td class="mut">—</td>` : liqCell(x, a)) : "") +
           `<td class="xw mut">${x.atr ? px(x.atr) + `<span class="sub">${esc(x.atr_interval)}</span>` : "—"}</td>` +
           SIG_F.map(([k]) => fx(x, k)).join("") +
           `<td>${h ? `<span class="amb" title="the ${autoName()}'s position">● ${h}</span>` : ""}</td></tr>`; }).join("") + `</tbody></table></div>`

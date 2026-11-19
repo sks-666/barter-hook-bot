@@ -25,5 +25,20 @@ class SpotWallet(unittest.TestCase):
         self.assertEqual(spot_wallet([], []), {"total_usd": 0.0, "usdt": 0.0, "assets": []})
 
 
+class Liquidation(unittest.TestCase):
+    def test_binance_isolated_formula(self):
+        from arbbot.testnet_ticket import liquidation_price
+        tiers = [[50_000, 0.004, 0, 125], [250_000, 0.005, 50, 100]]
+        # BTC long $1,000 at 10x from 100,000: margin 100, 0.4% maintenance -> ~90,361 (Binance's calculator)
+        self.assertAlmostEqual(liquidation_price(True, 100_000, 1_000, 10, tiers), 90_361.45, places=1)
+        self.assertAlmostEqual(liquidation_price(False, 100_000, 1_000, 10, tiers), 109_561.75, places=1)
+        # a bigger position falls in the next tier (rate 0.5%, amount 50)
+        q, m = 1.0, 100_000 / 10
+        self.assertAlmostEqual(liquidation_price(True, 100_000, 100_000, 10, tiers), (m + 50 - q * 100_000) / (q * 0.005 - q))
+        # unknown tiers: a cautious 1%; 1x long never liquidates above 0
+        self.assertAlmostEqual(liquidation_price(True, 100, 20, 3), 100 * (1 - 1 / 3) / 0.99)
+        self.assertEqual(liquidation_price(True, 100, 20, 1, [[1e9, 0.0, 0, 1]]), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

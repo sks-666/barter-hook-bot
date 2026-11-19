@@ -361,7 +361,11 @@ live on paper. It starts **three paper accounts** (trend, swing, smc), $10,000 e
   signal flips or after the maximum hold). Starts at $5 risk per trade, $20 daily loss, 2 open trades, 3x leverage
   (change them in the Signals panel); each position stays under 95% of `--real-ticket-max-usd`. **Position size** (Signals
   panel) sets a fixed USDT value per new trade instead (blank = sized by the risk), and **Leverage** picks 1x to 20x; a
-  trade whose margin (size ÷ leverage, +2%) is more than the account's available USDT is refused before it is sent. State:
+  trade whose margin (size ÷ leverage, +2%) is more than the account's available USDT is refused before it is sent.
+  The Signals table's **Liq** column shows each signal's liquidation price with those settings (isolated margin,
+  Binance's maintenance tiers per coin from `/fapi/v1/leverageBracket`, read hourly; 1% when unknown), red when it
+  comes before the stop; hover for margin, fees and the loss at the stop including fees. The confirm box repeats it,
+  and a trade that would be liquidated before its stop is refused. State:
   `data/signal-trader-mainnet.json`.
 * **Swing accounts mirrored to the TESTNET.** Add `--swing --swing-mirror trend` to the testnet command (any of `trend`,
   `swing`, `smc`, comma separated, or `all`; the launcher uses `trend,swing,smc`; `--swing-mirror-fund 10000` sets the

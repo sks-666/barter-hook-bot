@@ -600,6 +600,7 @@ class SignalTrader:
             raise ValueError(f"a ${qty * ref:,.2f} position at {self.leverage}x needs about {need:,.2f} USDT of margin; "
                              f"{avail:,.2f} is available. Lower the position size or raise the leverage")
         self._check_exit_depth(q.get("book"), long, ref, stop, qty)
+        await self._check_liquidation(sym, long, ref, stop, qty * ref)
         if getattr(self.ticket, "leverage", {}).get(sym) != self.leverage:   # low leverage: last in the ADL queue
             await self.ticket.set_leverage(sym, self.leverage)
         # stop and target trigger on the MARK price: a stray trade on a thin testnet book can spike the last price (and
@@ -632,6 +633,20 @@ class SignalTrader:
             raise ValueError(f"the entry came back {o.get('status')}")
         log.info("signal trader: %s %s %s qty %g entry %g stop %g target %g", "market" if market else "limit",
                  side, sym, qty, rec["entry"], stop, target)
+
+    async def _check_liquidation(self, sym: str, long: bool, ref: float, stop: float, notional: float) -> None:
+        """Refuse a trade Binance would liquidate before its stop (isolated margin at self.leverage)."""
+        tiers_of = getattr(self.ticket, "brackets", None)
+        if tiers_of is None:
+            return
+        from .testnet_ticket import liquidation_price
+        tiers = (await tiers_of()).get(sym)
+        if tiers and self.leverage > tiers[0][3]:
+            raise ValueError(f"{sym} allows at most {tiers[0][3]:g}x leverage")
+        liq = liquidation_price(long, ref, notional, self.leverage, tiers)
+        if (liq >= stop) if long else (liq <= stop):
+            raise ValueError(f"at {self.leverage}x it would be liquidated near {liq:.6g}, before its stop {stop:.6g}: "
+                             f"lower the leverage")
 
     def available_usd(self) -> float | None:
         """USDT the futures account can still use as margin (None when the ticket cannot say)."""

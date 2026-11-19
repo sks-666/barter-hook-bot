@@ -138,6 +138,21 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(ValueError):
             t.set_size_usd(2)                                    # below Binance's smallest order
 
+    async def test_a_trade_liquidated_before_its_stop_is_refused(self):
+        t = self.make(max_usd=100)
+        t.set_size_usd(30)
+        async def brackets():
+            return {"SOLUSDT": [[5_000, 0.01, 0, 20]]}
+        self.ticket.brackets = brackets
+        self.desk.rows = [row(stop=80.0, target=140.0)]          # a stop 20% away (moved onto the testnet: 80.8)
+        t.set_leverage(10)                                       # 10x: liquidated ~10% away, before the stop
+        with self.assertRaisesRegex(ValueError, "liquidated near .* before its stop"):
+            await t.take("SOLUSDT")
+        self.assertEqual(self.ticket.sent, [])
+        t.set_leverage(3)                                        # 3x: liquidation ~33% away, past the stop
+        await t.take("SOLUSDT")
+        self.assertEqual(len(self.ticket.sent), 1)
+
     async def test_mainnet_is_the_trade_button_only(self):
         self.ticket.venue, self.ticket.max_order_usd = "mainnet", 100.0
         self.ticket.px = 100.0

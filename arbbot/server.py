@@ -187,6 +187,7 @@ class Dashboard:
         app.router.add_post("/api/swing-capital", self.swing_capital)      # before the generic /api/{action}
         app.router.add_post("/api/swing-power", self.swing_power)
         app.router.add_get("/api/signal-trader", self.signal_trader_get)
+        app.router.add_get("/api/brackets", self.brackets_get)    # maintenance-margin tiers, for liquidation prices
         app.router.add_post("/api/signal-trader", self.signal_trader_post)   # before the generic /api/{action}
         app.router.add_get("/api/signal-types", self.signal_types_get)
         app.router.add_post("/api/signal-types", self.signal_types_post)
@@ -194,6 +195,13 @@ class Dashboard:
         app.router.add_post("/api/alerts", self.alerts_post)
         app.router.add_post("/api/{action}", self.action)
         return app
+
+    async def brackets_get(self, request: web.Request) -> web.Response:
+        """Every coin's maintenance-margin tiers from the futures account ([[notional cap, rate, amount, max lev]...]);
+        {} on a bot without a Binance futures ticket (the page then uses a cautious 1%)."""
+        read = getattr(self.paper, "brackets", None)
+        tiers = await read() if read else {}
+        return web.json_response({"tiers": tiers}, headers={"Cache-Control": "max-age=600"})
 
     async def signal_trader_get(self, request: web.Request) -> web.Response:
         if self.signal_trader is None:

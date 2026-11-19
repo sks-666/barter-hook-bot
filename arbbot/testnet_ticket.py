@@ -96,6 +96,20 @@ def spot_wallet(balances: list[dict], prices: list[dict]) -> dict:
     return dict(total_usd=total, usdt=usdt, assets=assets)
 
 
+DEFAULT_TIER = [[float("inf"), 0.01, 0.0, 20.0]]   # a coin whose tiers are unknown: 1% maintenance (cautious)
+
+
+def liquidation_price(long: bool, entry: float, notional: float, leverage: float, tiers=None) -> float:
+    """Binance's isolated-margin liquidation price of a new one-way position: margin = notional / leverage, and the
+    maintenance rate and amount of the tier the notional falls in. tiers: [[notional cap, rate, amount, max lev]...]."""
+    tiers = tiers or DEFAULT_TIER
+    cap, mmr, cum, _ = next((t for t in tiers if notional <= t[0]), tiers[-1])
+    q, margin = notional / entry, notional / leverage
+    if long:
+        return max(0.0, (margin + cum - q * entry) / (q * mmr - q))
+    return (margin + cum + q * entry) / (q * mmr + q)
+
+
 def _fmt(d: Decimal) -> str:
     return format(d.normalize(), "f")
 
@@ -142,6 +156,9 @@ class TestnetTicket:
         # the spot wallet, read-only, for the page's balances (every SPOT_S; its own errors never stop the ticket)
         self.spot: dict | None = None
         self.spot_error, self._spot_at = "", -1e9
+        # Binance's maintenance-margin tiers per coin (for liquidation prices), read at most hourly
+        self._brackets: dict[str, list[list[float]]] = {}
+        self._brackets_at = -1e9
 
     # ---- state ------------------------------------------------------------------------------------
     def _load(self) -> dict | None:
@@ -573,6 +590,24 @@ class TestnetTicket:
         self._save()
         if self.clock() - self._spot_at > SPOT_S:
             await self.refresh_spot()
+
+    async def brackets(self) -> dict[str, list[list[float]]]:
+        """Every coin's maintenance-margin tiers, {symbol: [[notional cap, rate, amount, max leverage], ...]}: one
+        read-only request (weight 1), kept for an hour; the last copy if Binance does not answer."""
+        if self._brackets and self.clock() - self._brackets_at < 3600:
+            return self._brackets
+        try:
+            got = await self.c.get("fapi", "/fapi/v1/leverageBracket", signed=True)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.info("leverage brackets not readable: %s", e)
+            return self._brackets
+        self._brackets = {g["symbol"]: [[float(b["notionalCap"]), float(b["maintMarginRatio"]), float(b.get("cum") or 0),
+                                         float(b["initialLeverage"])] for b in g.get("brackets", [])]
+                          for g in got if isinstance(g, dict) and g.get("symbol")}
+        self._brackets_at = self.clock()
+        return self._brackets
 
     async def refresh_spot(self) -> None:
         """The spot wallet's coins, each valued in USDT (stablecoins at 1, others at their USDT price; Simple Earn's
