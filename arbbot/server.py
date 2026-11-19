@@ -348,6 +348,12 @@ class Dashboard:
             return web.json_response({"error": "market data is not available in this bot"}, status=404)
         if kind == "history":
             return await self.market_history(q)
+        if kind == "heatmap-symbols":             # the heatmap's search: every mainnet USDT perpetual, busiest first
+            try:
+                return web.json_response(await (self.book_market or self.market).symbols(),
+                                         headers={"Cache-Control": "no-store"})
+            except Exception as e:
+                return web.json_response({"error": f"{type(e).__name__}: {str(e)[:160]}"}, status=502)
         if kind == "heatmap":                     # the heatmap page: the mainnet book recorded over time
             src = self.book_market or self.market
             session = getattr(getattr(src, "client", None), "session", None)

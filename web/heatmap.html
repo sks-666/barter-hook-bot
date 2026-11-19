@@ -29,6 +29,18 @@
   #sym-form { display: flex; align-items: center; background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 0 4px 0 10px; }
   #sym-form:focus-within { border-color: var(--accent); }
   #sym { width: 110px; text-transform: uppercase; font-weight: 700; border: 0; padding: 5px 4px; outline: none; }
+  #sym-form { position: relative; }
+  /* coin suggestions under the search box (every mainnet USDT perpetual, busiest first) */
+  .sugg { position: absolute; left: 0; top: calc(100% + 4px); z-index: 20; width: 380px; max-width: calc(100vw - 20px); max-height: 60vh; overflow-y: auto;
+          margin: 0; padding: 4px 0; list-style: none; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; box-shadow: 0 10px 30px rgba(0,0,0,.55); }
+  .sugg li { display: flex; gap: 10px; align-items: baseline; padding: 5px 12px; cursor: pointer; white-space: nowrap; }
+  .sugg li[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 24%, transparent); }
+  .sugg .b { min-width: 64px; font-weight: 700; } .sugg .s { flex: 1; color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+  .sugg .p { min-width: 84px; text-align: right; } .sugg .c { min-width: 58px; text-align: right; } .sugg .v { min-width: 50px; text-align: right; color: var(--muted); font-size: 11px; }
+  .sugg .hd { display: block; padding: 3px 12px 5px; color: var(--muted); font-size: 10.5px; letter-spacing: 1px; cursor: default; }
+  .sugg mark { background: none; color: var(--amber); }
+  .sugg .u { color: var(--pos); } .sugg .d { color: var(--neg); }
+  @media (max-width: 760px) { .sugg .v, .sugg .s { display: none; } }
   #ivs button { font-weight: 600; } #ivs button[aria-pressed="true"] { color: var(--amber); }
   .hbtn { display: inline-flex; align-items: center; gap: 6px; }
   .hbtn[aria-pressed="true"] { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
@@ -57,7 +69,8 @@
 <body>
 <div class="head">
   <span class="brand">Heatmap</span>
-  <form id="sym-form" autocomplete="off"><span class="help">⌕</span><input id="sym" aria-label="Coin" placeholder="BTCUSDT" spellcheck="false"></form>
+  <form id="sym-form" autocomplete="off"><span class="help">⌕</span><input id="sym" aria-label="Coin" placeholder="BTCUSDT" spellcheck="false"
+    role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="sugg"><ul class="sugg mono" id="sugg" role="listbox" aria-label="Coins" hidden></ul></form>
   <span class="sep"></span>
   <span id="ivs" role="group" aria-label="Timeframe"></span>
   <span class="sep"></span>
@@ -127,7 +140,55 @@ const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).
 $("ivs").innerHTML = IVS.map(([k]) => `<button type="button" data-iv="${k}" aria-pressed="${k === H.iv}">${k}</button>`).join("");
 $("ivs").addEventListener("click", e => { const b = e.target.closest("[data-iv]"); if (!b) return; H.iv = b.dataset.iv; ls.set("heat-iv", H.iv); reset(true); });
 $("sym").value = H.sym;
-$("sym-form").addEventListener("submit", e => { e.preventDefault(); let s = $("sym").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
+// ---- coin suggestions: every mainnet USDT perpetual (busiest first), ranked by what is typed --------------------------
+const SG = { list: null, at: 0, items: [], active: -1, open: false };
+async function loadSymbols() {
+  if (SG.list && Date.now() - SG.at < 120000) return;
+  try { const r = await fetch("/api/market/heatmap-symbols", { cache: "no-store" }); if (r.ok) { SG.list = await r.json(); SG.at = Date.now(); } } catch { /* typed coins still work */ }
+  if (SG.open || document.activeElement === $("sym")) suggest($("sym").selectionStart === 0 && $("sym").selectionEnd === $("sym").value.length);
+}
+function suggest(all = false) {                    // all: the busiest coins (the box was just clicked, its coin selected)
+  const word = all ? "" : $("sym").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, ""), q = word.replace(/USDT$/, ""), list = SG.list || [];
+  if (!q) { SG.items = list.slice(0, 10); SG.head = "MOST TRADED · type to search"; }
+  else {
+    const rank = c => c.base === q || c.symbol === word ? 0 : c.base.startsWith(q) ? 1 : c.symbol.startsWith(word) ? 2 : c.base.includes(q) ? 3 : 9;
+    SG.items = list.map(c => [rank(c), c]).filter(([r]) => r < 9).sort((a, b) => a[0] - b[0] || b[1].quote_volume - a[1].quote_volume).slice(0, 12).map(([, c]) => c);
+    SG.head = SG.items.length ? "" : list.length ? `no coin like "${q}" on Binance futures` : "loading the coin list…";
+  }
+  SG.active = SG.items.length && q ? 0 : -1;
+  SG.open = true; drawSugg();
+}
+function hl(text, q) { const i = q ? text.indexOf(q) : -1;
+  return i < 0 ? esc(text) : esc(text.slice(0, i)) + `<mark>${esc(text.slice(i, i + q.length))}</mark>` + esc(text.slice(i + q.length)); }
+function drawSugg() {
+  const ul = $("sugg"), input = $("sym");
+  ul.hidden = !SG.open; input.setAttribute("aria-expanded", String(SG.open));
+  if (!SG.open) { input.removeAttribute("aria-activedescendant"); return; }
+  const q = input.value.trim().toUpperCase().replace(/USDT$/, "");
+  ul.innerHTML = (SG.head ? `<li class="hd" role="presentation">${esc(SG.head)}</li>` : "") + SG.items.map((c, j) =>
+    `<li id="sg-${j}" role="option" aria-selected="${j === SG.active}" data-j="${j}"><span class="b">${hl(c.base, q)}</span><span class="s">${esc(c.symbol)}</span>` +
+    `<span class="p">${px(c.last)}</span><span class="c ${c.change_pct >= 0 ? "u" : "d"}">${c.change_pct >= 0 ? "+" : ""}${c.change_pct.toFixed(2)}%</span>` +
+    `<span class="v">${c.quote_volume ? "$" + big(c.quote_volume) : ""}</span></li>`).join("");
+  if (SG.active >= 0) { input.setAttribute("aria-activedescendant", `sg-${SG.active}`); $(`sg-${SG.active}`).scrollIntoView({ block: "nearest" }); }
+}
+function closeSugg() { SG.open = false; SG.active = -1; drawSugg(); }
+$("sym").addEventListener("focus", () => { $("sym").select(); suggest(true); loadSymbols(); });
+$("sym").addEventListener("input", () => suggest());
+$("sym").addEventListener("blur", () => setTimeout(closeSugg, 120));
+$("sym").addEventListener("keydown", e => {
+  if (!SG.open || !SG.items.length) { if (e.key === "ArrowDown") suggest(true); return; }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") { e.preventDefault(); const n = SG.items.length;
+    SG.active = ((SG.active < 0 ? (e.key === "ArrowDown" ? -1 : 0) : SG.active) + (e.key === "ArrowDown" ? 1 : n - 1)) % n; drawSugg(); }
+  else if (e.key === "Escape") { closeSugg(); }
+  else if (e.key === "Tab" && SG.active >= 0) { e.preventDefault(); $("sym").value = SG.items[SG.active].symbol; suggest(); }
+});
+$("sugg").addEventListener("mousedown", e => e.preventDefault());       // keep the focus in the search box
+$("sugg").addEventListener("mousemove", e => { const li = e.target.closest("li[data-j]"); if (li && Number(li.dataset.j) !== SG.active) { SG.active = Number(li.dataset.j); drawSugg(); } });
+$("sugg").addEventListener("click", e => { const li = e.target.closest("li[data-j]"); if (!li) return; SG.active = Number(li.dataset.j); $("sym-form").requestSubmit(); });
+$("sym-form").addEventListener("submit", e => { e.preventDefault();
+  if (SG.open && SG.active >= 0 && SG.items[SG.active]) $("sym").value = SG.items[SG.active].symbol;   // Enter takes the highlighted coin
+  closeSugg();
+  let s = $("sym").value.trim().toUpperCase().replace(/[^A-Z0-9]/g, "");
   if (!s) return; if (!s.endsWith("USDT")) s += "USDT"; $("sym").value = s; H.sym = s; ls.set("heat-sym", s); history.replaceState(null, "", "?symbol=" + s); reset(true); $("sym").blur(); });
 const syncBtns = () => { $("b-heat").setAttribute("aria-pressed", String(OPT.heat)); $("b-candles").setAttribute("aria-pressed", String(OPT.candles)); };
 $("b-heat").addEventListener("click", () => { OPT.heat = !OPT.heat; saveOpt(); syncBtns(); syncPop(); draw(); });
