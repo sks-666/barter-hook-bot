@@ -2116,7 +2116,19 @@ function autoRiskCell(a) {
   const edit = canControl() && a.risk_range && a.daily_loss_range;
   const val = edit ? `$${box("risk_usd", a.risk_usd, a.risk_range, "Risk per trade in USDT")} · day −$${box("daily_loss_usd", a.daily_loss_usd, a.daily_loss_range, "Daily loss limit in USDT")}`
     : `$${a.risk_usd} risk · day −$${a.daily_loss_usd}`;
-  return `<div title="${esc(tip)}"><div class="l">Risk per trade · day limit</div><div class="v wrap">${val}</div></div>`;
+  return `<div title="${esc(tip)}"><div class="l">Risk per trade · day limit</div><div class="v wrap">${val}</div></div>` + autoSizeCell(a);
+}
+// "Position size": a fixed position value for new trades (blank = sized from the risk at the stop), with the margin it needs
+function autoSizeCell(a) {
+  if (!a.size_range) return "";
+  const [lo, hi] = a.size_range, pos = a.size_usd ? Math.min(a.size_usd, a.max_usd) : null;
+  const need = pos ? pos / a.leverage * 1.02 : null, short = need != null && a.available != null && need > a.available;
+  const tip = `Position size of NEW trades in USDT (blank = sized so the stop loses the risk per trade). At most $${a.max_usd}. ` +
+    `Margin = size ÷ leverage${a.available != null ? `; $${a.available.toFixed(2)} available now` : ""}. Binance's smallest position is $5 on most coins ($20 ETH, $100 BTC).`;
+  const box = canControl() ? `$<input type="number" class="auto-usd" data-auto-set="size_usd" value="${a.size_usd ?? ""}" min="${lo}" max="${hi}" step="1" placeholder="by risk" aria-label="Position size in USDT (blank: by risk)">`
+    : (a.size_usd ? "$" + a.size_usd : "by risk");
+  const m = need != null ? ` <span class="${short ? "dn" : "mut"}" style="font-size:.85em">margin $${need.toFixed(2)}${short ? " · too little!" : ""}</span>` : "";
+  return `<div title="${esc(tip)}"><div class="l">Position size · new trades</div><div class="v wrap">${box}${m}</div></div>`;
 }
 document.addEventListener("keydown", ev => {                       // Enter applies, Escape puts the value back
   const inp = ev.target.closest?.("[data-auto-set]");
@@ -2146,17 +2158,20 @@ document.addEventListener("change", async ev => {
   catch (err) { alert("Could not change the leverage: " + err.message); sel.value = was; sel.disabled = false; }
 });
 const AUTO_SET = { risk_usd: ["risk per trade", v => `New trades will lose about $${v} if they hit their stop (open trades keep their size).`],
-                   daily_loss_usd: ["daily loss limit", v => `No new trade after $${v} of realised loss in a UTC day (open trades stay managed).`] };
+                   daily_loss_usd: ["daily loss limit", v => `No new trade after $${v} of realised loss in a UTC day (open trades stay managed).`],
+                   size_usd: ["position size", v => v ? `New trades open a $${Math.min(v, S.auto.max_usd)} position${v > S.auto.max_usd ? ` (capped at $${S.auto.max_usd})` : ""}, needing about $${(Math.min(v, S.auto.max_usd) / S.auto.leverage * 1.02).toFixed(2)} of margin at ${S.auto.leverage}x. The loss at the stop then depends on how far the stop is.`
+                                                   : `New trades are sized so the stop loses $${S.auto.risk_usd} (the risk per trade).`] };
 document.addEventListener("change", async ev => {
   const inp = ev.target.closest("[data-auto-set]");
   if (!inp) return;
-  const key = inp.dataset.autoSet, [what, says] = AUTO_SET[key], v = Number(inp.value), was = S.auto[key];
-  if (!(v >= Number(inp.min) && v <= Number(inp.max))) { alert(`The ${what} must be from $${inp.min} to $${inp.max}.`); inp.value = was; return; }
+  const key = inp.dataset.autoSet, [what, says] = AUTO_SET[key], blank = key === "size_usd" && inp.value.trim() === "";
+  const v = blank ? 0 : Number(inp.value), was = S.auto[key] ?? 0, show = x => x ? "$" + x : "by risk";
+  if (!blank && !(v >= Number(inp.min) && v <= Number(inp.max))) { alert(`The ${what} must be from $${inp.min} to $${inp.max}${key === "size_usd" ? " (or blank: by risk)" : ""}.`); inp.value = was || ""; return; }
   if (v === was) return;
-  if (!confirm(`Set the ${autoName()}'s ${what} to $${v} (now $${was})?\n\n${says(v)}`)) { inp.value = was; inp.blur(); return; }
+  if (!confirm(`Set the ${autoName()}'s ${what} to ${show(v)} (now ${show(was)})?\n\n${says(v)}`)) { inp.value = was || ""; inp.blur(); return; }
   inp.disabled = true;
   try { await autoPost({ [key]: v }); }
-  catch (err) { alert(`Could not change the ${what}: ` + err.message); inp.value = was; inp.disabled = false; }
+  catch (err) { alert(`Could not change the ${what}: ` + err.message); inp.value = was || ""; inp.disabled = false; }
 });
 document.addEventListener("change", async ev => {
   const sel = ev.target.closest("[data-auto-max]");
@@ -2258,9 +2273,11 @@ document.addEventListener("click", async ev => {
   const msg = `${a.manual_only ? "⚠ REAL MONEY ⚠\n" : ""}${L ? "BUY (LONG)" : "SELL (SHORT)"} ${sym} on ${where} now?\n\n` +
     `Entry ${px(me.entry)}${Math.abs(me.to_entry_pct || 0) < 0.1 ? " (market)" : " (limit, waits up to " + dur(a.entry_ttl_s) + ")"} · stop ${px(me.stop)} · ` +
     (me.tp1 ? `TP1 ${px(me.tp1)} (half closes) · ` : "") + `TP2 ${px(me.target)}\n` +
-    (() => { const d = Math.abs(me.entry - me.stop) / me.entry, pos = Math.min(a.risk_usd * mult / d, a.max_usd);
-             return `Position about $${pos.toFixed(0)} · loses about $${(pos * d).toFixed(2)} at the stop`; })() +
-    ` · ${a.leverage}x leverage · ${me.quality?.type?.name || "signal"}` +
+    (() => { const d = Math.abs(me.entry - me.stop) / me.entry, pos = Math.min(a.size_usd || a.risk_usd * mult / d, a.max_usd);
+             const need = pos / a.leverage * 1.02, avail = a.available;
+             return `Position about $${pos.toFixed(2)}${a.size_usd ? " (your size)" : ""} · loses about $${(pos * d).toFixed(2)} at the stop\n` +
+                    `Margin about $${need.toFixed(2)} at ${a.leverage}x${avail != null ? ` · $${avail.toFixed(2)} available${need > avail ? " ⚠ NOT ENOUGH: it will be refused" : ""}` : ""}`; })() +
+    ` · ${me.quality?.type?.name || "signal"}` +
     (warn.length ? "\n\n" + warn.join("\n\n") : "") +
     `\n\nThe price is read again before it is sent: the levels may move a little.`;
   if (!confirm(msg)) return;

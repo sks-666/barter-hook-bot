@@ -58,6 +58,8 @@ MAX_OPEN_RANGE = (1, 20)     # the most open trades (positions + waiting limit e
 RISK_RANGE = (1.0, 500.0)    # USDT lost at the stop per trade, settable from the page
 DAILY_LOSS_RANGE = (5.0, 5000.0)   # USDT of realised loss in a UTC day before new entries stop, settable from the page
 LEVERAGE_RANGE = (1, 20)     # the leverage it sets on a coin before entering, settable from the page
+SIZE_RANGE = (5.0, 100_000.0)   # a fixed position value in USDT per trade (instead of sizing by risk), settable
+MARGIN_BUFFER = 1.02         # margin needed = position / leverage x this (fees, price moving before the fill)
 # Binance's own closes, by the closing order's client id: auto-deleveraging is the exchange closing a PROFITABLE
 # position against a liquidated trader (on the testnet at absurd prices), not a loss the strategy made
 FORCED = (("adl_autoclose", "adl", "closed by Binance: auto-deleveraging"),
@@ -110,6 +112,9 @@ class SignalTrader:
             saved = self.s.get(key)
             if isinstance(saved, (int, float)) and not isinstance(saved, bool) and lo <= saved <= hi:
                 setattr(self, key, float(saved))
+        saved = self.s.get("size_usd")                              # a fixed position size, if you set one
+        self.size_usd = float(saved) if isinstance(saved, (int, float)) and not isinstance(saved, bool) \
+            and SIZE_RANGE[0] <= saved <= SIZE_RANGE[1] else None
         saved = self.s.get("leverage")                              # and the leverage
         if isinstance(saved, int) and not isinstance(saved, bool) and LEVERAGE_RANGE[0] <= saved <= LEVERAGE_RANGE[1]:
             self.leverage = saved
@@ -215,6 +220,26 @@ class SignalTrader:
         keep the size they were opened with."""
         v = self._set_usd("risk_usd", value, RISK_RANGE, "risk per trade")
         self.notify(f"🤖 {self.tag} signal auto-trader: new trades risk ${v:g} at the stop")
+
+    def set_size_usd(self, value) -> None:
+        """A fixed position value (USDT) for NEW trades, or 0 / None to size by the risk at the stop again. Still capped
+        by max_usd (the real ticket's per-order limit). Saved."""
+        if value in (0, None):
+            self.size_usd = None
+            self.s.pop("size_usd", None)
+            self._save()
+            self.notify(f"🤖 {self.tag} signal trades: sized by risk again (${self.risk_usd:g} at the stop)")
+            return
+        v = self._set_usd("size_usd", value, SIZE_RANGE, "position size")
+        cap = f" (capped at ${self.max_usd:g})" if v > self.max_usd else ""
+        self.notify(f"🤖 {self.tag} signal trades: new positions ${v:g}{cap}")
+
+    def position_usd(self, ref: float, stop: float, mult: float = 1.0) -> float:
+        """The position value a new trade gets: your fixed size, else the size that loses risk_usd x mult at the stop;
+        never above max_usd."""
+        if self.size_usd:
+            return min(self.size_usd, self.max_usd)
+        return min(self.risk_usd * mult * ref / abs(ref - stop), self.max_usd)
 
     def set_daily_loss_usd(self, value) -> None:
         """Realised loss in a UTC day after which no new entry is made (open trades stay managed). Saved."""
@@ -568,7 +593,12 @@ class SignalTrader:
         if long and not stop < ref < target or not long and not target < ref < stop:
             raise ValueError("the price has already moved past the stop or the target")
         mult = float(((r.get("quality") or {}).get("type") or {}).get("risk_mult") or 1.0)   # the signal type's risk x
-        qty = min(self.risk_usd * mult / abs(ref - stop), self.max_usd / ref)
+        qty = self.position_usd(ref, stop, mult) / ref
+        avail = self.available_usd()
+        need = qty * ref / self.leverage * MARGIN_BUFFER
+        if avail is not None and need > avail:
+            raise ValueError(f"a ${qty * ref:,.2f} position at {self.leverage}x needs about {need:,.2f} USDT of margin; "
+                             f"{avail:,.2f} is available. Lower the position size or raise the leverage")
         self._check_exit_depth(q.get("book"), long, ref, stop, qty)
         if getattr(self.ticket, "leverage", {}).get(sym) != self.leverage:   # low leverage: last in the ADL queue
             await self.ticket.set_leverage(sym, self.leverage)
@@ -603,6 +633,13 @@ class SignalTrader:
         log.info("signal trader: %s %s %s qty %g entry %g stop %g target %g", "market" if market else "limit",
                  side, sym, qty, rec["entry"], stop, target)
 
+    def available_usd(self) -> float | None:
+        """USDT the futures account can still use as margin (None when the ticket cannot say)."""
+        read = getattr(self.ticket, "_usdt", None)
+        if read is None or not getattr(self.ticket, "account", None):
+            return None
+        return read("availableBalance")
+
     async def step_safely(self) -> None:
         try:
             async with self._lock:
@@ -625,8 +662,8 @@ class SignalTrader:
         info = lambda sym: self.ticket.position_info(sym)            # noqa: E731
         return dict(venue=self.venue, manual_only=self.manual_only, enabled=self.s["enabled"], window_s=self.window_s, windows=WINDOWS,
                     max_open_range=list(MAX_OPEN_RANGE), risk_range=list(RISK_RANGE), leverage_range=list(LEVERAGE_RANGE),
-                    daily_loss_range=list(DAILY_LOSS_RANGE),
-                    risk_usd=self.risk_usd,
+                    daily_loss_range=list(DAILY_LOSS_RANGE), size_range=list(SIZE_RANGE), size_usd=self.size_usd,
+                    available=self.available_usd(), risk_usd=self.risk_usd,
                     max_open=self.max_open, min_conf=self.min_conf, max_usd=self.max_usd, leverage=self.leverage,
                     daily_loss_usd=self.daily_loss_usd, entry_ttl_s=self.entry_ttl_s, max_hold_s=self.max_hold_s,
                     blocked=self.can_enter(), last_run=int(self.last_run * 1000), error=self.last_error,

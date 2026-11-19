@@ -118,6 +118,26 @@ class Trader(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             self.make(manual_only=True)
 
+    async def test_your_position_size_and_the_margin_check(self):
+        t = self.make(max_usd=100)
+        t.set_size_usd(30)
+        self.assertEqual(t.view()["size_usd"], 30)
+        self.ticket.account, self.ticket._usdt = {"assets": []}, lambda key: 9.0     # 9 USDT free
+        t.set_leverage(3)
+        with self.assertRaisesRegex(ValueError, "needs about 10.20 USDT of margin; 9.00 is available"):
+            await t.take("SOLUSDT")                              # $30 at 3x needs ~$10.2
+        self.assertEqual(self.ticket.sent, [])
+        t.set_leverage(5)                                        # $30 at 5x needs ~$6.1: fits
+        await t.take("SOLUSDT")
+        self.assertAlmostEqual(self.ticket.sent[0]["qty"] * 101.01, 30.0)
+        t.set_size_usd(500)                                      # above the largest position: capped
+        self.assertEqual(t.position_usd(100, 98), 100)
+        t.set_size_usd(0)                                        # back to sizing by risk
+        self.assertIsNone(t.size_usd)
+        self.assertAlmostEqual(t.position_usd(100, 98), 100)     # $20 risk / 2% = $1000, capped at 100
+        with self.assertRaises(ValueError):
+            t.set_size_usd(2)                                    # below Binance's smallest order
+
     async def test_mainnet_is_the_trade_button_only(self):
         self.ticket.venue, self.ticket.max_order_usd = "mainnet", 100.0
         self.ticket.px = 100.0

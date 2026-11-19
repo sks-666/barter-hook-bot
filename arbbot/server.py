@@ -231,7 +231,9 @@ class Dashboard:
             return web.json_response({"ok": True, "taken": rec, **self.signal_trader.view()})
         on, win, most = body.get("enabled"), body.get("window_s"), body.get("max_open")
         risk, daily, lev = body.get("risk_usd"), body.get("daily_loss_usd"), body.get("leverage")
-        if not isinstance(on, bool) and win is None and most is None and risk is None and daily is None and lev is None:
+        has_size = "size_usd" in body             # a number, or 0 / null to size by risk again
+        if not isinstance(on, bool) and win is None and most is None and risk is None and daily is None and lev is None \
+                and not has_size:
             return web.json_response({"ok": False, "error": 'send {"enabled": true|false}, {"window_s": seconds}, '
                                                             '{"max_open": n}, {"risk_usd": usd}, '
                                                             '{"daily_loss_usd": usd} and/or {"leverage": n}'}, status=400)
@@ -248,6 +250,8 @@ class Dashboard:
                 self.signal_trader.set_daily_loss_usd(daily)
             if lev is not None:
                 self.signal_trader.set_leverage(lev)
+            if has_size:
+                self.signal_trader.set_size_usd(body["size_usd"])
             if isinstance(on, bool):
                 self.signal_trader.set_enabled(on)
         except ValueError as e:

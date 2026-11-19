@@ -359,7 +359,9 @@ live on paper. It starts **three paper accounts** (trend, swing, smc), $10,000 e
   at the stop). Automatic entries are locked off: they cannot be switched on from the page or Telegram. A trade then
   manages itself like a testnet auto-trade (stop and TP2 on Binance, half at TP1 then stop to breakeven, closes if the
   signal flips or after the maximum hold). Starts at $5 risk per trade, $20 daily loss, 2 open trades, 3x leverage
-  (change them in the Signals panel); each position stays under 95% of `--real-ticket-max-usd`. State:
+  (change them in the Signals panel); each position stays under 95% of `--real-ticket-max-usd`. **Position size** (Signals
+  panel) sets a fixed USDT value per new trade instead (blank = sized by the risk), and **Leverage** picks 1x to 20x; a
+  trade whose margin (size ÷ leverage, +2%) is more than the account's available USDT is refused before it is sent. State:
   `data/signal-trader-mainnet.json`.
 * **Swing accounts mirrored to the TESTNET.** Add `--swing --swing-mirror trend` to the testnet command (any of `trend`,
   `swing`, `smc`, comma separated, or `all`; the launcher uses `trend,swing,smc`; `--swing-mirror-fund 10000` sets the
