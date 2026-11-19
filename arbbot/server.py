@@ -123,6 +123,7 @@ class Dashboard:
         self.book = None                          # an arbbot.orderbook.BookWatch, made on the first BOOK request
         self.heat = None                          # an arbbot.heatmap.Heatmap, made on the first heatmap request
         self.live = None                          # an arbbot.livefeed.LiveFeed, made when a terminal first connects
+        self.live_book = None                     # ...and one on the heatmap's exchange (mainnet), for /ws/live?src=book
         self.paper = paper                        # an arbbot.paper_futures.PaperFutures for the order ticket, or None
         self.cfg = cfg
         self.web_dir = web_dir
@@ -365,10 +366,10 @@ class Dashboard:
             if self.heat is None:
                 from .heatmap import Heatmap
                 self.heat = Heatmap(src, session, whales=self.whales)
+            num = lambda k: float(q[k]) if q.get(k) not in (None, "", "undefined", "null", "NaN") else None    # noqa: E731
             try:
-                body = await self.heat.view(q.get("symbol", ""), q.get("interval", "5m"),
-                                            candles=int(q.get("candles", "200")), per_candle=int(q.get("per", "4")),
-                                            after=float(q.get("after", "0")))
+                body = await self.heat.view(q.get("symbol", ""), q.get("interval", "5m"), t0=num("t0"), t1=num("t1"),
+                                            res=num("res"), plo=num("plo"), phi=num("phi"), after=num("after") or 0.0)
             except ValueError as e:
                 return web.json_response({"error": str(e)}, status=400)
             except Exception as e:                # Binance unreachable, unknown coin: the page says it
@@ -623,15 +624,17 @@ class Dashboard:
         the chart's REST data. Without a Binance connection the socket just closes and the page keeps polling."""
         ws = web.WebSocketResponse(heartbeat=20)
         await ws.prepare(request)
-        client = getattr(self.market, "client", None)
+        book = request.query.get("src") == "book"             # the heatmap: the exchange its book comes from
+        client = getattr(self.book_market or self.market if book else self.market, "client", None)
         session = getattr(client, "session", None)
         if session is None:
             await ws.close()
             return ws
-        if self.live is None:
+        attr = "live_book" if book else "live"
+        if getattr(self, attr) is None:
             from .livefeed import LiveFeed
-            self.live = LiveFeed(session, getattr(client, "env", "mainnet"))
-        await self.live.serve(ws)
+            setattr(self, attr, LiveFeed(session, getattr(client, "env", "mainnet")))
+        await getattr(self, attr).serve(ws)
         return ws
 
     async def broadcast_loop(self) -> None:

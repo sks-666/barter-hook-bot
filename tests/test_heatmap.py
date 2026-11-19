@@ -3,6 +3,7 @@ their running per-bucket sums, the answer's rows and incremental buckets, and wh
 import array
 import asyncio
 import base64
+import struct
 import unittest
 
 from arbbot import heatmap as hm
@@ -19,9 +20,9 @@ def ev(U, u, pu, b=(), a=()):
 
 class Book(unittest.TestCase):
     def test_band_height(self):
-        self.assertEqual(nice_step(63_000), 25)
-        self.assertEqual(nice_step(3_000), 1)
-        self.assertAlmostEqual(nice_step(0.5), 0.0002)
+        self.assertEqual(nice_step(63_000), 10)
+        self.assertEqual(nice_step(3_700), 0.5)
+        self.assertAlmostEqual(nice_step(0.5), 0.0001)
 
     def test_sync_rules(self):
         b = LocalBook()
@@ -52,7 +53,11 @@ class Book(unittest.TestCase):
         self.assertEqual((list(b.bids), list(b.asks)), ([99.0], [101.0]))
 
 
-class Columns(unittest.TestCase):
+def floats(col: bytes) -> tuple:
+    return struct.unpack(f"<{len(col) // 2}e", col)
+
+
+class Columns(unittest.IsolatedAsyncioTestCase):
     def make(self):
         self.now = [10_000.0]
         r = Recorder("BTCUSDT", None, None, clock=lambda: self.now[0])
@@ -60,48 +65,55 @@ class Columns(unittest.TestCase):
         r.book.synced = True
         return r
 
-    def test_record_and_buckets(self):
+    async def test_record_and_buckets(self):
         r = self.make()
         r.record()
-        self.assertEqual(r.step, 0.05)                                  # nice_step(100)
-        t, lo, vals, strength = r.cols[0]
+        self.assertEqual(r.step, 0.02)                                  # nice_step(100)
+        t, lo, col, strength = r.cols[0]
         self.assertEqual(strength, r.book.strength(100.0))
         self.assertEqual(strength, 1.0)                               # only the 99.5 bid is within 0.5%
-        self.assertEqual(len(vals), int(2 * hm.RANGE * 100 / 0.05) + 1)
-        self.assertAlmostEqual(sum(vals), 99.5 * 2 + 99 + 100.5 + 101 * 3, places=2)
-        roll = r.rollup(60)
+        self.assertEqual(len(col), 2 * (int(2 * hm.RANGE * 100 / 0.02) + 1))   # half floats: 2 bytes a band
+        total = (99.5 * 2 + 99 + 100.5 + 101 * 3) / hm.K              # in $K
+        self.assertAlmostEqual(sum(floats(col)), total, places=3)
+        roll = await r.rollup(60)
         self.now[0] += 5
         r.record()                                                    # the same minute: added to the bucket
         self.now[0] += 60
         r.record()
         self.assertEqual(sorted(k[2] for k in roll.values()), [1, 2])
-        times, counts, data, st = r.grid(0, 1e9, 60, lo, len(vals))
+        n = len(col) // 2
+        times, data, st = await r.grid(0, 1e9, 60, lo, n)
         self.assertAlmostEqual(st[0], strength, places=4)
-        self.assertEqual((times, counts), ([9960.0, 10020.0], [2, 1]))
-        rows = array.array("f", data)
-        self.assertAlmostEqual(sum(rows[:len(vals)]) / 2, sum(vals), places=1)   # the page divides by the count
+        self.assertEqual(times, [9960.0, 10020.0])
+        self.assertAlmostEqual(sum(floats(data[:2 * n])), total, places=3)    # a bucket answers its average
+        raw_t, raw, _ = await r.grid(0, 1e9, hm.SAMPLE_S, lo, n)        # the finest: the columns themselves
+        self.assertEqual(len(raw_t), 3)
+        self.assertEqual(raw[:2 * n], col)
 
-    def test_a_drifting_price_widens_the_bucket(self):
+    async def test_a_drifting_price_widens_the_bucket(self):
         r = self.make()
         r.record()
-        roll = r.rollup(300)
+        roll = await r.rollup(300)
         r.book.load(snap(mid=101.0))
         r.book.synced = True
         self.now[0] += 5
         r.record()
-        lo, arr, k, _ = next(iter(roll.values()))
+        lo, arr, k, _, _ = next(iter(roll.values()))
         self.assertEqual(k, 2)
-        (l0, c0), (l1, c1) = [(c[1], len(c[2])) for c in r.cols]
+        (l0, c0), (l1, c1) = [(c[1], len(c[2]) // 2) for c in r.cols]
         self.assertEqual((lo, len(arr)), (min(l0, l1), max(l0 + c0, l1 + c1) - min(l0, l1)))
 
-    def test_old_columns_and_buckets_go(self):
+    async def test_old_columns_and_buckets_go(self):
         r = self.make()
         r.record()
-        r.rollup(60)
+        await r.rollup(60)
         self.now[0] += hm.KEEP_S + 120
         r.record()
         self.assertEqual(len(r.cols), 1)
         self.assertEqual(len(r.rolls[60]), 1)
+
+    def test_resolution_snaps_up(self):
+        self.assertEqual([hm.snap_res(x) for x in (1, 5, 6, 61, 99999)], [5, 5, 10, 120, 1800])
 
 
 class Market:
@@ -127,7 +139,7 @@ class Session:
 
 
 class View(unittest.IsolatedAsyncioTestCase):
-    async def test_answer_rows_and_incremental_buckets(self):
+    async def test_answer_rows_and_incremental_columns(self):
         m = Market()
         now = [m.kl[-1][0] / 1000 + 10]
         h = Heatmap(m, Session(), clock=lambda: now[0])
@@ -139,18 +151,20 @@ class View(unittest.IsolatedAsyncioTestCase):
         r.book.synced = True
         for _ in range(3):
             r.record()
-            now[0] += 30
-        v = await h.view("BTCUSDT", "5m", per_candle=4)
+            now[0] += 5
+        t0 = now[0] - 600
+        v = await h.view("BTCUSDT", "5m", t0=t0, t1=now[0], res=1, plo=99.0, phi=101.0)
         g = v["grid"]
-        self.assertEqual(v["res"], 75)
-        self.assertEqual(g["lo_bin"] % 32, 0)
-        self.assertEqual(sum(g["counts"]), 3)
-        self.assertEqual(len(base64.b64decode(g["data"])), 4 * g["rows"] * len(g["times"]))
-        self.assertEqual(len(v["book"]["bids"]), g["rows"])
-        self.assertEqual(len(g["strength"]), len(g["times"]))
-        part = await h.view("BTCUSDT", "5m", per_candle=4, after=g["times"][-1])
+        self.assertEqual(v["res"], hm.SAMPLE_S)                       # one column per snapshot
+        self.assertEqual(g["lo_bin"] % 64, 0)
+        self.assertEqual(len(g["times"]), 3)
+        self.assertEqual(len(base64.b64decode(g["data"])), 2 * g["rows"] * 3)
+        self.assertEqual((len(v["book"]["bids"]), v["book"]["best_bid"], v["book"]["best_ask"]), (g["rows"], 99.5, 100.5))
+        part = await h.view("BTCUSDT", "5m", t0=t0, t1=now[0], res=1, plo=99.0, phi=101.0, after=g["times"][-1])
         self.assertTrue(part["grid"]["partial"])
         self.assertEqual(part["grid"]["times"], [g["times"][-1]])
+        wide = await h.view("BTCUSDT", "5m", t0=now[0] - 86_000, t1=now[0], res=1)
+        self.assertGreaterEqual(wide["res"], 86_000 / hm.MAX_COLS)    # too many columns: coarser
         with self.assertRaises(ValueError):
             await h.view("BTCUSDT", "2h")
         for x in h.rec.values():

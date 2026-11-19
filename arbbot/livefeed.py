@@ -128,10 +128,13 @@ class LiveFeed:
                 trades, latest = hub.take()
                 if not trades and not latest:
                     continue
+                # how late the newest trade is as it leaves the bot (Binance's trade time -> now, the bot's clock)
+                lag = round(time.time() * 1000 - trades[-1]["ts"]) if trades else None
                 for ws, iv in list(hub.pages.items()):
                     msg = {"sym": sym, "iv": iv}
                     if trades:
                         msg["t"] = trades[::-1]          # newest first, like /api/market/trades
+                        msg["lag"] = lag
                     if "k:" + iv in latest:
                         msg["k"] = latest["k:" + iv]
                     for k in ("tk", "mk"):

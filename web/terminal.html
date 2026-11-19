@@ -657,7 +657,7 @@ async function load(kind) {
   }
 }
 // ---- live: the loaded coin's trades, forming candle, 24h ticker and mark price pushed by the bot (/ws/live) ----------
-const LV = { ws: null, ok: false, sym: null, iv: null, k: null, tk: null, mk: null, at: 0, retry: 0, raf: 0, dirty: new Set() };
+const LV = { ws: null, ok: false, sym: null, iv: null, k: null, tk: null, mk: null, at: 0, retry: 0, raf: 0, dirty: new Set(), lags: [] };
 const LIVE_KINDS = new Set(["info", "klines", "trades"]);
 function liveConnect() {
   try { LV.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/live`); } catch { return; }
@@ -667,7 +667,7 @@ function liveConnect() {
 }
 function liveWant() {                                 // tell the bot which coin and interval this page shows
   if (!LV.ws || LV.ws.readyState !== 1 || (LV.sym === S.sym && LV.iv === S.iv)) return;
-  if (LV.sym !== S.sym) { LV.tk = LV.mk = null; LV.ok = false; }
+  if (LV.sym !== S.sym) { LV.tk = LV.mk = null; LV.ok = false; LV.lags = []; }
   LV.k = null;                                        // a candle of the old coin / interval
   LV.sym = S.sym; LV.iv = S.iv;
   LV.ws.send(JSON.stringify({ sym: S.sym, iv: S.iv }));
@@ -675,6 +675,7 @@ function liveWant() {                                 // tell the bot which coin
 function liveOn(m) {
   if (m.sym !== S.sym) return;
   LV.ok = true; LV.at = Date.now();
+  if (m.lag != null) { LV.lags.push(m.lag); if (LV.lags.length > 40) LV.lags.shift(); }
   if (m.k && m.iv === S.iv) { LV.k = m.k; liveMerge("klines"); LV.dirty.add("klines"); }
   if (m.tk || m.mk) { if (m.tk) LV.tk = m.tk; if (m.mk) LV.mk = m.mk; liveMerge("info"); LV.dirty.add("info"); }
   if (m.t?.length && S.trades) { S.trades = [...m.t, ...S.trades].slice(0, 40); LV.dirty.add("trades"); }
@@ -698,12 +699,14 @@ function liveMerge(kind) {                            // put the live values ove
     if (LV.tk || LV.mk) S.info.open_interest_usd = S.info.open_interest * S.info.last;
   }
 }
+function liveLag() { if (!LV.lags.length) return null; const s = [...LV.lags].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; }
 function renderLive() {
   const el = $("c-live"); if (!el) return;
   const on = LV.ok && LV.sym === S.sym && Date.now() - LV.at < 5000;
   el.className = "live " + (on ? "on" : "off");
-  el.title = on ? "Live: trades, the forming candle and the price are pushed as Binance sends them" : "Not live: refreshing every few seconds";
-  el.textContent = on ? "● LIVE" : "○ polling";
+  const lag = liveLag();
+  el.title = on ? `Live: trades, the forming candle and the price are pushed as Binance sends them. Lag = how late the newest trade is when it leaves the bot (median of the last ${LV.lags.length}); your network adds a few ms.` : "Not live: price, candles and trades refresh every 5 s";
+  el.textContent = on ? `● LIVE${lag == null ? "" : " · lag " + (lag / 1000).toFixed(2) + " s"}` : "○ polling · up to 5 s behind";
 }
 setInterval(() => { liveWant(); renderLive(); }, 1000);
 // ---- desk: research gates and the promotion ladder (deskkit; refresh with `python desk.py research`) -------------

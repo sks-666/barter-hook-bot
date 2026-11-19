@@ -53,7 +53,11 @@
   .wrap { position: relative; flex: 1; min-height: 300px; touch-action: none; }
   canvas { display: block; width: 100%; height: 100%; }
   .legend { position: absolute; left: 10px; top: 6px; pointer-events: none; font-size: 12px; line-height: 1.55; text-shadow: 0 0 3px #000, 0 0 3px #000; }
-  .legend .t { font-weight: 700; } .legend .u { color: var(--pos); } .legend .d { color: var(--neg); } .legend .m { color: var(--muted); }
+  .legend .t { font-weight: 700; }
+  .legend .qb { display: inline-flex; flex-direction: column; align-items: center; min-width: 74px; padding: 1px 8px; border: 1px solid; border-radius: 5px; font-weight: 600; line-height: 1.25; margin-top: 4px; }
+  .legend .qb small { font-size: 9px; letter-spacing: .5px; font-weight: 500; }
+  .legend .qb.bid { color: var(--neg); border-color: var(--neg); } .legend .qb.ask { color: #6b8cff; border-color: #6b8cff; }
+  .legend .qs { display: inline-block; padding: 0 8px; color: var(--muted); font-size: 11px; vertical-align: middle; } .legend .u { color: var(--pos); } .legend .d { color: var(--neg); } .legend .m { color: var(--muted); }
   .chip { position: absolute; top: 8px; display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--muted); background: color-mix(in srgb, var(--panel) 85%, transparent);
           border: 1px solid var(--line); border-radius: 12px; padding: 2px 9px; pointer-events: none; }
   .chip i { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); display: inline-block; }
@@ -121,7 +125,7 @@ let OPT; try { OPT = Object.assign({}, OPT0, JSON.parse(ls.get("heat-opt") || "{
 const H = {
   sym: (qp.get("symbol") || ls.get("heat-sym") || ls.get("term-sym") || "BTCUSDT").toUpperCase(),
   iv: ls.get("heat-iv") || "5m", d: null, cache: null, busy: false, err: "", hover: null, img: null,
-  V: { bars: 120, off: 6, auto: true, lo: 0, hi: 1 },       // view: bars across, empty bars right of the last, price range
+  V: { bars: 90, off: 3, auto: true, lo: 0, hi: 1 },       // view: bars across, empty bars right of the last, price range
 };
 const saveOpt = () => ls.set("heat-opt", JSON.stringify(OPT));
 // the colour map: deep navy -> violet-blue -> blue -> cyan -> green -> yellow -> orange -> white (index 0..255)
@@ -226,82 +230,150 @@ pop.addEventListener("input", e => { const el = e.target.closest("[data-o]"); if
 pop.addEventListener("change", e => { if (e.target.dataset.o === "step") syncPop(); });
 const stepMul = () => Math.max(1, Math.round(OPT.step || 1));
 const stepNow = () => H.cache ? H.cache.step * stepMul() : null;
-function resetView() { H.V.bars = 120; H.V.off = 6; H.V.auto = true; }
+function resetView() { H.V.bars = 90; H.V.off = 3; H.V.auto = true; }
 function reset(full) { H.d = null; H.cache = null; H.img = null; H.err = "";
   if (full) resetView();
   document.querySelectorAll("[data-iv]").forEach(b => b.setAttribute("aria-pressed", String(b.dataset.iv === H.iv)));
-  ls.set("term-sym", H.sym); draw(); load(); }
+  ls.set("term-sym", H.sym); liveWant(); draw(); load(true); }
 
 // ---- data: /api/market/heatmap (arbbot/heatmap.py); after the first answer only the newest buckets -------------------
-function b64f32(s) { const bin = atob(s), u = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) u[i] = bin.charCodeAt(i); return new Float32Array(u.buffer); }
-async function load() {
-  if (H.busy) return;
+// half floats ($K) -> numbers, through one table
+const HALF = (() => { const t = new Float32Array(65536);
+  for (let h = 0; h < 65536; h++) { const sg = h & 0x8000 ? -1 : 1, e = (h >> 10) & 31, f = h & 1023;
+    t[h] = e === 0 ? sg * Math.pow(2, -14) * (f / 1024) : e === 31 ? 0 : sg * Math.pow(2, e - 15) * (1 + f / 1024); }
+  return t; })();
+function b64half(str) { const bin = atob(str), n = bin.length >> 1, out = new Float32Array(n);
+  for (let i = 0; i < n; i++) out[i] = HALF[bin.charCodeAt(2 * i) | (bin.charCodeAt(2 * i + 1) << 8)]; return out; }
+const RES = [5, 10, 15, 30, 60, 120, 300, 600, 900, 1800];
+// what the view needs: the visible time at about one column a pixel, and the visible prices, each with a margin
+function wanted() {
+  const G = H.geom; if (!G || !H.d) return null;
+  const { L, v } = G, now = Date.now() / 1000;
+  const tA = v.t0 + (v.iOf(0) + 0.5) * v.iv, tB = v.t0 + (v.iOf(L.plotW) + 0.5) * v.iv, span = tB - tA, pr = H.V.hi - H.V.lo;
+  return { res: RES.find(r => r >= span / L.plotW) || 1800, tA: Math.max(tA, now - 86400), tB: Math.min(tB, now),
+           t0: Math.max(now - 86400, tA - span * 0.5), t1: Math.min(now + v.iv, tB + span * 0.5),
+           plo: H.V.lo - pr * 0.6, phi: H.V.hi + pr * 0.6, vlo: H.V.lo, vhi: H.V.hi };
+}
+function covers(C, w) {        // the heat in hand still serves the view: same coin and detail, the visible part inside it
+  if (!C || C.want !== H.sym + "|" + H.iv || C.wantRes !== w.res) return false;
+  if (w.tA < C.t0 - C.res || w.tB > C.t1 + C.res) return false;
+  return C.rows >= 512 || (w.vlo >= C.lo * C.step && w.vhi <= (C.lo + C.rows) * C.step);   // 512 rows: the most there is
+}
+function maybeLoad() {          // after a pan, a zoom or a new timeframe: fetch the heat for the new view (once it settles)
+  const w = wanted(); if (!w || covers(H.cache, w)) return;
+  clearTimeout(H.lt); H.lt = setTimeout(() => load(true), 220);
+}
+async function load(full) {
+  if (H.busy) { if (full) H.again = true; return; }
   H.busy = true;
-  const want = H.sym + "|" + H.iv, c = H.cache;
-  const after = c && c.want === want && c.times.length ? c.times.at(-1) : 0;
+  const want = H.sym + "|" + H.iv, w = wanted(), C = H.cache, inc = !full && C && C.want === want && (!w || covers(C, w));
+  const q = { symbol: H.sym, interval: H.iv };
+  if (inc) Object.assign(q, { t0: C.t0, t1: Date.now() / 1000 + 120, res: C.wantRes, plo: C.plo, phi: C.phi, after: C.last });
+  else if (w) Object.assign(q, { t0: w.t0, t1: w.t1, res: w.res, plo: w.plo, phi: w.phi });
   try {
-    const r = await fetch("/api/market/heatmap?" + new URLSearchParams({ symbol: H.sym, interval: H.iv, per: 6, candles: 300, after }), { cache: "no-store" });
+    for (const k of Object.keys(q)) if (q[k] == null || !isFinite(q[k]) && k !== "symbol" && k !== "interval") delete q[k];   // only real numbers
+    const r = await fetch("/api/market/heatmap?" + new URLSearchParams(q), { cache: "no-store" });
     const d = await r.json().catch(() => ({}));
     if (want !== H.sym + "|" + H.iv) return;
     if (!r.ok) { H.err = d.error || "HTTP " + r.status; draw(); return; }
-    H.err = ""; H.d = d;
+    H.err = ""; H.d = d; H.fetchedAt = Date.now(); liveMerge();
     const g = d.grid;
     if (g) {
       const key = [want, d.res, g.lo_bin, g.rows, d.step].join("|");
-      if (!H.cache || H.cache.key !== key) {
-        if (g.partial) { H.cache = null; H.busy = false; return load(); }    // the rows moved: ask for everything again
-        H.cache = { key, want, lo: g.lo_bin, rows: g.rows, step: d.step, res: d.res, times: [], cols: new Map(), str: new Map() };
+      if (!(inc && C && C.key === key)) {
+        if (inc) { H.busy = false; return load(true); }          // the rows moved: ask for the whole view again
+        H.cache = { key, want, lo: g.lo_bin, rows: g.rows, step: d.step, res: d.res, wantRes: w ? w.res : d.res,
+                    t0: d.t0, t1: d.t1, plo: q.plo, phi: q.phi, cols: new Map(), str: new Map(), times: [], last: 0 };
       }
-      const C = H.cache, f = b64f32(g.data);
-      g.times.forEach((t, i) => { const k = g.counts[i], col = new Float32Array(C.rows);
-        for (let j = 0; j < C.rows; j++) col[j] = f[i * C.rows + j] / k;
-        C.cols.set(t, col); C.str.set(t, g.strength[i]); });
-      const first = d.klines[0][0] / 1000 - d.res;
-      for (const t of C.cols.keys()) if (t < first) { C.cols.delete(t); C.str.delete(t); }
-      C.times = [...C.cols.keys()].sort((a, b) => a - b);
+      const K = H.cache, f = b64half(g.data);
+      g.times.forEach((t, i) => { K.cols.set(t, f.slice(i * K.rows, (i + 1) * K.rows)); K.str.set(t, g.strength[i]); });
+      K.times = [...K.cols.keys()].sort((x, y) => x - y);
+      K.last = K.times.length ? K.times.at(-1) : (K.last || d.t0);
+      K.t1 = Math.max(K.t1, d.now);
       H.img = null;
       if (pop.classList.contains("open")) syncPop();
     }
     draw();
   } catch (e) { H.err = String(e); draw(); }
-  finally { H.busy = false; }
+  finally { H.busy = false; if (H.again) { H.again = false; setTimeout(() => load(true), 0); } }
 }
-setInterval(() => { if (!document.hidden) load(); }, 3000);
-setInterval(() => { if (!document.hidden && H.d) draw(); }, 1000);        // the candle countdown
+setInterval(() => { if (!document.hidden) load(false); }, 3000);
+setInterval(() => { if (!document.hidden && H.d) draw(); }, 1000);        // the candle countdown and the lag
 
-// ---- the heat image: one pixel per bucket x band (bands merged by the price step) -----------------------------------
+// ---- live: the forming candle and the last price pushed by the bot (/ws/live, the book's exchange) --------------------
+const LV = { ws: null, ok: false, sym: null, iv: null, k: null, last: null, at: 0, retry: 0, raf: 0, lags: [] };
+function liveConnect() {
+  try { LV.ws = new WebSocket(`${location.protocol === "https:" ? "wss" : "ws"}://${location.host}/ws/live?src=book`); } catch { return; }
+  LV.ws.onopen = () => { LV.retry = 0; LV.sym = LV.iv = null; liveWant(); };
+  LV.ws.onmessage = ev => liveOn(JSON.parse(ev.data));
+  LV.ws.onclose = () => { LV.ok = false; LV.ws = null; setTimeout(liveConnect, Math.min(15000, 1000 * 2 ** LV.retry++)); };
+}
+function liveWant() {
+  if (!LV.ws || LV.ws.readyState !== 1 || (LV.sym === H.sym && LV.iv === H.iv)) return;
+  if (LV.sym !== H.sym) { LV.ok = false; LV.lags = []; LV.last = null; }
+  LV.k = null; LV.sym = H.sym; LV.iv = H.iv;
+  LV.ws.send(JSON.stringify({ sym: H.sym, iv: H.iv }));
+}
+function liveOn(m) {
+  if (m.sym !== H.sym) return;
+  LV.ok = true; LV.at = Date.now();
+  if (m.lag != null) { LV.lags.push(m.lag); if (LV.lags.length > 40) LV.lags.shift(); }
+  if (m.k && m.iv === H.iv) LV.k = m.k;
+  if (m.t?.length) LV.last = m.t[0].price;
+  liveMerge();
+  if (!LV.raf) LV.raf = requestAnimationFrame(() => { LV.raf = 0; draw(); });
+}
+function liveMerge() {          // the live candle over the (up to 3 s older) fetched ones
+  const kl = H.d?.klines; if (!kl?.length || !LV.k || LV.sym !== H.sym || LV.iv !== H.iv) return;
+  const lastK = kl.at(-1);
+  if (LV.k[0] === lastK[0]) kl[kl.length - 1] = LV.k;
+  else if (LV.k[0] > lastK[0]) kl.push(LV.k);
+}
+const liveLag = () => { if (!LV.lags.length) return null; const t = [...LV.lags].sort((x, y) => x - y); return t[Math.floor(t.length / 2)]; };
+const liveOn_ = () => LV.ok && LV.sym === H.sym && Date.now() - LV.at < 5000;
+setInterval(liveWant, 1000);
+
+// ---- the heat image: one pixel per column x band (bands merged by the price step) -----------------------------------
 function heatImage() {
   const C = H.cache; if (!C || !C.times.length) return null;
-  const m = stepMul(), rows = Math.ceil(C.rows / m), t0 = C.times[0], ncol = Math.round((C.times.at(-1) - t0) / C.res) + 1;
+  const m = stepMul(), rows = Math.ceil(C.rows / m), o = Math.floor(C.times[0] / C.res) * C.res;
+  const ncol = Math.max(1, Math.ceil((C.times.at(-1) + C.res - o) / C.res));
   const merged = new Map(), sample = [];
   for (const [t, col] of C.cols) {
-    const out = new Float32Array(rows);
-    for (let j = 0; j < C.rows; j++) out[Math.floor(j / m)] += col[j];
+    let out = col;
+    if (m > 1) { out = new Float32Array(rows); for (let j = 0; j < C.rows; j++) out[Math.floor(j / m)] += col[j]; }
     merged.set(t, out);
-    for (let j = 0; j < rows; j += 2) if (out[j] > 0) sample.push(out[j]);
+    for (let j = 0; j < rows; j += 3) if (out[j] > 0) sample.push(out[j]);
   }
   if (!sample.length) return null;
-  sample.sort((a, b) => a - b);
-  const vmax = sample[Math.floor(sample.length * 0.99)] || sample.at(-1);
-  const gam = 1.4 - OPT.contrast * 0.012;                      // contrast 0..100 -> gamma 1.4..0.2
+  sample.sort((x, y) => x - y);
+  const vmax = sample[Math.floor(sample.length * 0.985)] || sample.at(-1);
+  const gam = 1.3 - OPT.contrast * 0.011;                      // contrast 0..100 -> gamma 1.3..0.2
   const oc = document.createElement("canvas"); oc.width = ncol; oc.height = rows;
-  const g = oc.getContext("2d"), im = g.createImageData(ncol, rows);
+  const g = oc.getContext("2d"), im = g.createImageData(ncol, rows), med = [];
   for (const [t, col] of merged) {
-    const x = Math.round((t - t0) / C.res); if (x < 0 || x >= ncol) continue;
-    const nz = []; for (const v of col) if (v > 0) nz.push(v);
-    nz.sort((a, b) => a - b);
-    const wall = OPT.walls > 0 && nz.length ? nz[Math.floor(nz.length / 2)] * OPT.walls : Infinity;
+    const x = Math.min(ncol - 1, Math.floor((t - o) / C.res)); if (x < 0) continue;
+    med.length = 0; for (const v of col) if (v > 0) med.push(v);
+    med.sort((x1, y1) => x1 - y1);
+    const wall = OPT.walls > 0 && med.length ? med[Math.floor(med.length / 2)] * OPT.walls : Infinity;
     for (let j = 0; j < rows; j++) {
       const v = col[j]; if (!(v > 0)) continue;
       let a = Math.min(1, Math.pow(v / vmax, gam));
-      if (v >= wall) a = Math.max(a, 0.93);                    // a wall: at least orange-white
-      if (a < 0.02) continue;
+      if (v >= wall) a = Math.max(a, 0.9);                     // a wall: at least orange-white
+      if (a < 0.035) continue;                                 // almost nothing: leave the background
       const li = Math.round(a * 255) * 3, p = ((rows - 1 - j) * ncol + x) * 4;
-      im.data[p] = LUT[li]; im.data[p + 1] = LUT[li + 1]; im.data[p + 2] = LUT[li + 2]; im.data[p + 3] = 235;
+      im.data[p] = LUT[li]; im.data[p + 1] = LUT[li + 1]; im.data[p + 2] = LUT[li + 2]; im.data[p + 3] = 255;
     }
   }
   g.putImageData(im, 0, 0);
-  return { oc, t0, t1: C.times.at(-1) + C.res, lo: C.lo * C.step, hi: (C.lo + rows * m) * C.step, merged, m, rows };
+  return { oc, t0: o, t1: o + ncol * C.res, lo: C.lo * C.step, hi: (C.lo + rows * m) * C.step, merged, m, rows, vmax };
+}
+function colAt(t) {             // the column covering time t (the newest one starting at or before it, within a column)
+  const C = H.cache; if (!C || !C.times.length) return null;
+  let a = 0, z = C.times.length - 1;
+  if (t < C.times[0]) return null;
+  while (a < z) { const mid = (a + z + 1) >> 1; if (C.times[mid] <= t) a = mid; else z = mid - 1; }
+  return t - C.times[a] <= C.res * 1.5 ? C.times[a] : null;
 }
 
 // ---- geometry ---------------------------------------------------------------------------------------------------------
@@ -370,9 +442,16 @@ function draw() {
   // volume (bottom of the price pane)
   const vis = []; for (let i = Math.max(0, Math.floor(v.iOf(0))); i <= Math.min(v.n - 1, Math.ceil(v.iOf(L.plotW))); i++) vis.push(i);
   const vmax = Math.max(1, ...vis.map(i => kl[i][6])), volH = L.mainH * 0.16, bw = Math.max(1, v.barW * 0.7);
-  for (const i of vis) { const k = kl[i], hh = k[6] / vmax * volH; g.fillStyle = k[4] >= k[1] ? up : dn; g.globalAlpha = 0.3;
-    g.fillRect(v.xOf(i) - bw / 2, L.mainH - hh, bw, hh); }
+  const heatOn = OPT.heat && H.img;
+  const hx0 = heatOn ? v.xT(H.img.t0) : Infinity, hx1 = heatOn ? v.xT(H.img.t1) : -Infinity;
+  for (const i of vis) { const k = kl[i], hh = k[6] / vmax * volH, x = v.xOf(i), over = x >= hx0 && x <= hx1;   // dark over the heat
+    g.fillStyle = over ? "rgba(5,6,10,0.8)" : k[4] >= k[1] ? up : dn; g.globalAlpha = over ? 1 : 0.3;
+    g.fillRect(x - (over ? v.barW / 2 : bw / 2), L.mainH - hh, over ? v.barW : bw, hh); }
   g.globalAlpha = 1;
+  const ema50 = []; { const a = 2 / 51; let e = null; for (const k of kl) { e = e == null ? k[4] : k[4] * a + e * (1 - a); ema50.push(e); } }
+  if (kl.length > 50) { g.strokeStyle = "#3b82f6"; g.lineWidth = 1.5; g.beginPath(); let st = false;
+    for (const i of vis) { if (i < 20) continue; const x = v.xOf(i), yy = v.y(ema50[i]); st ? g.lineTo(x, yy) : g.moveTo(x, yy); st = true; }
+    g.stroke(); g.lineWidth = 1; }
   // candles
   if (OPT.candles) for (const i of vis) {
     const k = kl[i], x = v.xOf(i), col = k[4] >= k[1] ? up : dn;
@@ -382,35 +461,40 @@ function draw() {
   }
   const hits = [];
   // volume bubbles: big trades, area ~ value (0 = off)
+  const minBubble = 2.5e6 * Math.pow(1 - OPT.bubbles / 100, 2) + 1.5e5;
   if (OPT.bubbles > 0) for (const t of d.trades || []) {
+    if (t.usd < minBubble) continue;
     const x = v.xT(t.ts / 1000), yy = v.y(t.price); if (x < -20 || x > L.plotW + 20) continue;
-    const r = Math.max(2, Math.min(22, Math.sqrt(t.usd / 1e5) * OPT.bubbles / 12)), c = t.side === "buy" ? css("--buy") : css("--sell");
+    const r = Math.max(3, Math.min(20, Math.sqrt(t.usd / 1e5) * (0.6 + OPT.bubbles / 60))), c = t.side === "buy" ? css("--buy") : css("--sell");
     g.fillStyle = `rgba(${c},0.18)`; g.strokeStyle = `rgba(${c},0.75)`;
     g.beginPath(); g.arc(x, yy, r, 0, Math.PI * 2); g.fill(); g.stroke();
     hits.push({ x, y: yy, r, text: `${t.side === "buy" ? "Buy" : "Sell"} $${big(t.usd)} at ${px(t.price)} · ${hm(t.ts)}`, cls: t.side === "buy" ? "u" : "d" });
   }
   // liquidations: diamonds, the big ones named
+  const placed = [];
   if (OPT.liqs) for (const q of d.liqs || []) {
     const x = v.xT(q.ts / 1000), yy = v.y(q.price); if (x < -20 || x > L.plotW + 20) continue;
     const s = Math.max(4, Math.min(12, 2.6 * Math.sqrt(q.usd / 2e4))), longLiq = q.side === "long";
     g.fillStyle = longLiq ? css("--liq-long") : css("--liq-short"); g.globalAlpha = 0.9;
     g.beginPath(); g.moveTo(x, yy - s); g.lineTo(x + s, yy); g.lineTo(x, yy + s); g.lineTo(x - s, yy); g.closePath(); g.fill(); g.globalAlpha = 1;
     const txt = `${longLiq ? "Longs" : "Shorts"} −$${big(q.usd)}`;
-    if (q.usd >= 5e4) { g.font = "11px system-ui, sans-serif"; g.fillText(txt, x - s - 4 - g.measureText(txt).width, yy - s - 2); g.font = "11px ui-monospace, Menlo, Consolas, monospace"; }
+    if (q.usd >= 5e4) { g.font = "11px Geist, system-ui, sans-serif"; const tw = g.measureText(txt).width, lx = x - s - 4 - tw, ly0 = yy - s - 2;
+      if (!placed.some(r => lx < r[0] + r[2] && lx + tw > r[0] && Math.abs(ly0 - r[1]) < 12)) { g.fillText(txt, lx, ly0); placed.push([lx, ly0, tw]); }
+      g.font = "11px ui-monospace, Menlo, Consolas, monospace"; }
     hits.push({ x, y: yy, r: s + 2, text: `${txt} liquidated at ${px(q.price)} · ${hm(q.ts)}`, cls: longLiq ? "d" : "u" });
   }
   // liquidity profile: the book now, against the price scale (asks red above, bids green below)
   const bk = d.book;
   if (OPT.profile && bk && C) {
-    const PW = Math.min(80, L.plotW * 0.09), m = stepMul(), rows = Math.ceil(C.rows / m), bid = new Float64Array(rows), ask = new Float64Array(rows);
+    const PW = Math.min(70, L.plotW * 0.08), m = stepMul(), rows = Math.ceil(C.rows / m), bid = new Float64Array(rows), ask = new Float64Array(rows);
     for (let j = 0; j < C.rows; j++) { bid[Math.floor(j / m)] += bk.bids[j]; ask[Math.floor(j / m)] += bk.asks[j]; }
     const all = [...bid, ...ask].filter(x => x > 0).sort((a, b) => a - b), mx = all.at(-1) || 1, med = all[Math.floor(all.length / 2)] || 0;
     const tops = [];
     for (let j = 0; j < rows; j++) {
-      const p0 = (C.lo + j * m) * C.step, p1 = p0 + m * C.step, ya = v.y(p1), yb = v.y(p0), hh = Math.max(1, yb - ya - 0.5);
+      const p0 = (C.lo + j * m) * C.step, p1 = p0 + m * C.step, ya = v.y(p1), yb = v.y(p0), hh = Math.max(1, Math.min(2.5, (yb - ya) * 0.45));
       for (const [val, c] of [[bid[j], up], [ask[j], dn]]) { if (!(val > 0)) continue;
-        const w = PW * Math.sqrt(val / mx), wall = OPT.walls > 0 && val >= med * OPT.walls;
-        g.fillStyle = c; g.globalAlpha = wall ? 0.9 : 0.42; g.fillRect(L.plotW - w, ya, w, hh);
+        const wall = OPT.walls > 0 && val >= med * OPT.walls, w = (wall ? PW * 1.25 : PW) * Math.sqrt(val / mx);
+        g.fillStyle = c; g.globalAlpha = wall ? 1 : 0.85; g.fillRect(L.plotW - w, (ya + yb) / 2 - hh / 2, w, hh);
         if (wall) tops.push([val, (ya + yb) / 2, c]); }
     }
     g.globalAlpha = 1;
@@ -421,7 +505,7 @@ function draw() {
   g.fillStyle = css("--panel"); g.fillRect(L.plotW, 0, AXW, L.mainH); g.strokeStyle = lineC; g.beginPath(); g.moveTo(L.plotW + 0.5, 0); g.lineTo(L.plotW + 0.5, L.Ht); g.stroke();
   g.fillStyle = muted; for (const p of pt) { const yy = v.y(p); if (yy > 8 && yy < L.mainH - 6) g.fillText(px(p), L.plotW + 8, yy + 4); }
   // last price + time to the candle's close
-  const last = kl.at(-1), ly = v.y(last[4]), col = last[4] >= last[1] ? up : dn;
+  const last = kl.at(-1), ly = v.y(last[4]), col = last[4] >= last[1] ? up : dn;   // (the live candle carries the live price)
   if (ly > 0 && ly < L.mainH) {
     g.strokeStyle = col; g.setLineDash([2, 3]); g.beginPath(); g.moveTo(0, Math.round(ly) + 0.5); g.lineTo(L.plotW, Math.round(ly) + 0.5); g.stroke(); g.setLineDash([]);
     const left = Math.max(0, last[0] / 1000 + v.iv - Date.now() / 1000), cd = left >= 3600 ? `${Math.floor(left / 3600)}:${two(Math.floor(left % 3600 / 60))}:${two(Math.floor(left % 60))}` : `${two(Math.floor(left / 60))}:${two(Math.floor(left % 60))}`;
@@ -477,13 +561,13 @@ function draw() {
       g.fillStyle = "#2a2a3a"; g.fillRect(L.plotW, hv.y - 9, AXW, 18); g.fillStyle = text; g.fillText(px(p), L.plotW + 8, hv.y + 4);
       hit = hits.find(m => Math.hypot(m.x - hv.x, m.y - hv.y) <= m.r);
       if (!hit && C && H.img) {
-        const im = H.img, tb = C.times[0] + Math.floor((tAt / 1000 - C.times[0]) / C.res) * C.res, col = im.merged.get(tb);
+        const im = H.img, tb = colAt(tAt / 1000), col = tb == null ? null : im.merged.get(tb);
         const j = Math.floor((p / C.step - C.lo) / im.m);
         if (col && j >= 0 && j < im.rows) heatTxt = `book ${px((C.lo + j * im.m) * C.step)}–${px((C.lo + (j + 1) * im.m) * C.step)}: <b>$${big(col[j])}</b> resting at ${hm(tb * 1000)}`;
         else if (OPT.heat) heatTxt = `<span class="m">no book recorded here</span>`;
       }
     } else if (L.strH && C) {
-      const tb = C.times[0] + Math.floor((tAt / 1000 - C.times[0]) / C.res) * C.res, s = C.str.get(tb);
+      const tb = colAt(tAt / 1000), s = tb == null ? null : C.str.get(tb);
       if (s != null) heatTxt = `strength at ${hm(tb * 1000)}: <b class="${s >= 0 ? "u" : "d"}">${s >= 0 ? "bids +" : "asks −"}${Math.abs(Math.round(s * 100))}</b>`;
     }
   }
@@ -491,8 +575,10 @@ function draw() {
   $("legend").innerHTML = `<span class="t">${esc(d.symbol)}</span> <span class="m">· ${H.iv} · Binance futures</span> &nbsp;` +
     `<span class="m">O</span><span class="${c}">${px(k[1])}</span> <span class="m">H</span><span class="${c}">${px(k[2])}</span> ` +
     `<span class="m">L</span><span class="${c}">${px(k[3])}</span> <span class="m">C</span><span class="${c}">${px(k[4])} (${ch >= 0 ? "+" : ""}${ch.toFixed(2)}%)</span> ` +
-    `<span class="m">V</span> ${big(k[6])}` + (hit ? `<br><span class="${hit.cls}">${esc(hit.text)}</span>` : heatTxt ? `<br>${heatTxt}` : "");
+    `<span class="m">V</span> ${big(k[6])}` + (kl.length > 50 ? `<br><span class="m">EMA 50</span> <span style="color:#3b82f6">${px(ema50[hoverI])}</span>` : "") +
+    (d.book?.best_bid ? `<br><span class="qb bid">${px(d.book.best_bid)}<small>BID</small></span><span class="qs">${+(d.book.best_ask - d.book.best_bid).toPrecision(4)}</span><span class="qb ask">${px(d.book.best_ask)}<small>ASK</small></span>` : "") + (hit ? `<br><span class="${hit.cls}">${esc(hit.text)}</span>` : heatTxt ? `<br>${heatTxt}` : "");
   H.geom = { L, v };
+  maybeLoad();
 }
 function status() {
   const d = H.d, C = H.cache;
@@ -500,9 +586,11 @@ function status() {
   const k = d.klines.at(-1);
   document.title = `${px(k[4])} | ${d.symbol} · Heatmap`;
   const rec = d.since ? `recording since ${hm(d.since * 1000)} · ${d.columns} snapshots, one per ${d.sample_s}s` : "starting";
-  $("stat").textContent = `${d.source} · ${d.status === "recording" ? rec : d.status}` +
-    (C ? ` · price step ${+stepNow().toPrecision(6)} · columns of ${C.res >= 60 ? C.res / 60 + " min" : C.res + " s"}` : "") +
-    (H.err ? ` · ${H.err}` : "") + " · read-only, nothing here trades";
+  const lag = liveLag(), live = liveOn_() ? `● LIVE${lag == null ? "" : " · lag " + (lag / 1000).toFixed(2) + " s"}` : "○ price every 3 s";
+  const age = d.book_age == null ? "" : ` · book ${Math.round(d.book_age + (Date.now() - (H.fetchedAt || Date.now())) / 1000)} s old`;
+  $("stat").innerHTML = `<b style="color:${liveOn_() ? "var(--pos)" : "var(--muted)"};font-weight:600">${live}</b>${age} · ${esc(d.source)} · ${esc(d.status === "recording" ? rec : d.status)}` +
+    (C ? ` · price step ${+stepNow().toPrecision(6)} · ${C.res >= 60 ? C.res / 60 + " min" : C.res + " s"} a column` : "") +
+    (H.err ? ` · ${esc(H.err)}` : "") + " · read-only, nothing here trades";
 }
 
 // ---- interaction: wheel zoom at the cursor, drag to pan, drag the price scale to stretch it, double-click to reset ----
@@ -561,6 +649,7 @@ cv.addEventListener("dblclick", e => {
 let rt; window.addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(draw, 80); });
 document.addEventListener("visibilitychange", () => { if (!document.hidden) load(); });
 syncBtns();
+liveConnect();
 reset(false);
 </script>
 </body>

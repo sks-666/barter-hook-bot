@@ -4,8 +4,12 @@ For each coin the page opens, a local copy of Binance's MAINNET futures order bo
 WebSocket (<sym>@depth@500ms) on top of one 1000-level REST snapshot (weight 20, only when (re)connecting), following
 Binance's sync rules (drop events before the snapshot, then every event's `pu` must be the last event's `u`, else
 resync). Every SAMPLE_S the book is summed into price bands (BIN_FRAC of the price wide, +-RANGE around it) and kept
-as one column, for KEEP_S. The diff stream reports changes across the whole book, so bands far from the price fill in
+as one column, for KEEP_S, in thousands of dollars as half-precision floats (2 bytes a band: about 12 MB a coin a day). The diff stream reports changes across the whole book, so bands far from the price fill in
 as their orders change: the first minutes after a coin is opened show mostly the snapshot's +-0.2% (on BTC).
+
+The page asks for the time and price window it shows at about one column per screen pixel (RESOLUTIONS): every
+timeframe gets the same fine heat. Columns coarser than SAMPLE_S are averaged into per-resolution buckets, built once
+(in a thread, so the bot's loop is not held up) and then one column at a time.
 
 A coin is recorded while the page asked about it in the last WATCH_S, at most MAX_COINS at a time, in memory only (a
 restart starts over). Read-only: nothing here trades.
@@ -16,6 +20,7 @@ import base64
 import json
 import logging
 import math
+import struct
 import time
 from collections import deque
 
@@ -26,18 +31,20 @@ SAMPLE_S = 5.0               # one column this often
 KEEP_S = 86_400.0            # columns kept this long
 WATCH_S = 6 * 3600.0         # a coin not asked for in this long stops being recorded
 MAX_COINS = 3                # coins recorded at once (the most recently asked)
-BIN_FRAC = 0.0004            # a band is about this share of the price (rounded to a 1/2/2.5/5 x 10^n step)
-RANGE = 0.04                 # columns cover +-this share of the price
+BIN_FRAC = 0.00015           # a band is about this share of the price, rounded (BTC 63,000 -> 10, gold 3,700 -> 0.5)
+RANGE = 0.025                # columns cover +-this share of the price
 BOOK_SPAN = 0.10             # levels further than this from the price are dropped from the local book
 SNAPSHOT = 1000              # levels a side in the REST snapshot
-MAX_ROWS = 384               # rows in one answer
-MAX_COLS = 600               # columns in one answer
+MAX_ROWS = 512               # rows in one answer
+MAX_COLS = 2400              # columns in one answer
+RESOLUTIONS = (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800)     # seconds a column may cover
+K = 1000.0                   # columns hold thousands of dollars (half precision tops out at 65,504)
 STEPS = {"1m": 60, "5m": 300, "15m": 900, "1h": 3600, "4h": 14_400}
 STRENGTH_BAND = 0.005        # the strength level: bids vs asks within this share of the price
 
 
 def nice_step(price: float) -> float:
-    """The round band height nearest price x BIN_FRAC: 1, 2, 2.5 or 5 x 10^n (BTC at 63,000 -> 25)."""
+    """The round band height nearest price x BIN_FRAC: 1, 2, 2.5 or 5 x 10^n (BTC at 63,000 -> 10)."""
     raw = max(price * BIN_FRAC, 1e-12)
     e = 10 ** math.floor(math.log10(raw))
     return min((m * e for m in (1, 2, 2.5, 5, 10)), key=lambda x: abs(math.log(x / raw)))
@@ -112,7 +119,7 @@ class LocalBook:
 
 
 class Recorder:
-    """One coin: the WebSocket, the local book and its columns (t, lo_bin, band dollars)."""
+    """One coin: the WebSocket, the local book and its columns (t, lo_bin, band $K as half floats, strength)."""
 
     def __init__(self, sym: str, market, session, clock=time.time):
         self.sym, self.market, self.session, self.clock = sym, market, session, clock
@@ -132,7 +139,7 @@ class Recorder:
         n = int(2 * RANGE * mid / self.step) + 1
         lo = int(mid // self.step) - n // 2
         now = self.clock()
-        col, strength = self.book.bands(self.step, lo, n), self.book.strength(mid)
+        col, strength = half(self.book.bands(self.step, lo, n)), self.book.strength(mid)
         self.cols.append((now, lo, col, strength))
         self.since = self.since or now
         for res, roll in self.rolls.items():
@@ -189,14 +196,17 @@ class Recorder:
             await asyncio.sleep(wait)
             wait = min(wait * 2, 60.0)
 
-    # ---- buckets: per answer resolution, running sums of the columns (built once, then one column at a time) --------
-    def _add(self, roll: dict, res: float, t: float, lo: int, vals: array.array, strength: float = 0.0) -> None:
+    # ---- buckets: per answer resolution, average band $K of the columns in each (built once, then kept up to date) ---
+    @staticmethod
+    def _add(roll: dict, res: float, t: float, lo: int, col: bytes, strength: float = 0.0) -> None:
+        vals = struct.unpack(f"<{len(col) // 2}e", col)
         b = int(t // res)
         acc = roll.get(b)
         if acc is None:
-            roll[b] = [lo, array.array("f", vals), 1, strength]
+            roll[b] = [lo, array.array("f", vals), 1, strength, None]
             return
         acc[3] += strength
+        acc[4] = None                                         # its packed answer is out of date
         a_lo, arr = acc[0], acc[1]
         new_lo, new_hi = min(a_lo, lo), max(a_lo + len(arr), lo + len(vals))
         if new_lo != a_lo or new_hi != a_lo + len(arr):          # the price drifted: widen the bucket
@@ -210,36 +220,76 @@ class Recorder:
                 arr[off + i] += v
         acc[2] += 1
 
-    def rollup(self, res: float) -> dict:
-        """{bucket index: [lo_bin, band dollar sums, columns, strength sum]} for this resolution, kept up to date."""
+    @classmethod
+    def _build(cls, cols: list, res: float) -> dict:
+        roll: dict = {}
+        for t, lo, col, strength in cols:
+            cls._add(roll, res, t, lo, col, strength)
+        return roll
+
+    async def rollup(self, res: float) -> dict:
+        """{bucket: [lo_bin, band $K sums, columns, strength sum, packed answer]} for this resolution; the first time
+        it is built from every column kept, in a thread (it can take a second), then kept up to date by record()."""
         roll = self.rolls.get(res)
         if roll is None:
-            roll = self.rolls[res] = {}
-            for t, lo, vals, strength in list(self.cols):
-                self._add(roll, res, t, lo, vals, strength)
+            cols = list(self.cols)
+            roll = await asyncio.to_thread(self._build, cols, res)
+            last = cols[-1][0] if cols else -1.0
+            for t, lo, col, strength in list(self.cols):          # columns recorded meanwhile
+                if t > last:
+                    self._add(roll, res, t, lo, col, strength)
+            self.rolls[res] = roll
             while len(self.rolls) > 4:                            # an old resolution nobody asks for any more
                 del self.rolls[next(iter(self.rolls))]
         return roll
 
-    def grid(self, t0: float, t1: float, res: float, lo_bin: int, n: int) -> tuple[list[float], list[int], bytes, list]:
-        """The buckets between t0 and t1 over bands [lo_bin, lo_bin + n): their start times, column counts, the band
-        dollar SUMS as float32 rows (the page divides by the count) and the average strength level."""
-        roll = self.rollup(res)
-        times, counts, out, strength = [], [], bytearray(), []
+    async def grid(self, t0: float, t1: float, res: float, lo_bin: int, n: int) -> tuple[list[float], bytes, list]:
+        """The columns (res = SAMPLE_S) or bucket averages between t0 and t1 over bands [lo_bin, lo_bin + n): their start
+        times, the band $K as half-precision rows, and the strength level of each."""
+        times, out, strength = [], bytearray(), []
+        zero = bytes(2 * n)
+        if res <= SAMPLE_S:
+            for t, lo, col, st in self.cols:
+                if t < t0 or t >= t1:
+                    continue
+                row = bytearray(zero)
+                a, z = max(lo, lo_bin), min(lo + len(col) // 2, lo_bin + n)
+                if z > a:
+                    row[2 * (a - lo_bin): 2 * (z - lo_bin)] = col[2 * (a - lo): 2 * (z - lo)]
+                times.append(t)
+                strength.append(round(st, 4))
+                out += row
+            return times, bytes(out), strength
+        roll = await self.rollup(res)
+        done = self.clock() - SAMPLE_S
         for b in sorted(roll):
             t = b * res
             if t < t0 - res or t >= t1:
                 continue
-            lo, arr, k, st = roll[b]
-            row = array.array("f", bytes(4 * n))
-            a, z = max(lo, lo_bin), min(lo + len(arr), lo_bin + n)
-            if z > a:
-                row[a - lo_bin: z - lo_bin] = arr[a - lo: z - lo]
+            acc = roll[b]
+            lo, arr, k, st, packed = acc
+            if packed is None or packed[0] != (lo_bin, n):
+                row = array.array("f", bytes(4 * n))
+                a, z = max(lo, lo_bin), min(lo + len(arr), lo_bin + n)
+                if z > a:
+                    row[a - lo_bin: z - lo_bin] = arr[a - lo: z - lo]
+                packed = ((lo_bin, n), struct.pack(f"<{n}e", *(min(65_000.0, v / k) for v in row)))
+                if t + res < done:                                # a finished bucket: its answer will not change
+                    acc[4] = packed
             times.append(t)
-            counts.append(k)
             strength.append(round(st / k, 4))
-            out += row.tobytes()
-        return times, counts, bytes(out), strength
+            out += packed[1]
+        return times, bytes(out), strength
+
+
+def half(vals) -> bytes:
+    """Band dollars -> $K as little-endian half floats."""
+    return struct.pack(f"<{len(vals)}e", *(min(65_000.0, v / K) for v in vals))
+
+
+def snap_res(want: float) -> int:
+    """The finest resolution no finer than `want` seconds a column."""
+    return next((r for r in RESOLUTIONS if r >= want), RESOLUTIONS[-1])
 
 
 class Heatmap:
@@ -272,45 +322,56 @@ class Heatmap:
         return r
 
     @staticmethod
-    def rows_for(kl: list, step: float) -> tuple[int, int]:
-        """The bands shown: the candles' range with a margin, snapped to 32-band blocks so it stays put while the price
-        moves inside it (the page keeps its buckets as long as the rows are the same), at most MAX_ROWS."""
-        lo_p, hi_p = min(k[3] for k in kl), max(k[2] for k in kl)
-        pad = (hi_p - lo_p) * 0.1 or hi_p * 0.002
-        lo_bin, hi_bin = int((lo_p - pad) // step) // 32 * 32, (int((hi_p + pad) // step) // 32 + 1) * 32
+    def rows_for(lo_p: float, hi_p: float, mid: float, step: float) -> tuple[int, int]:
+        """The bands from lo_p to hi_p, snapped to 64-band blocks (the page keeps its columns while the rows stay the
+        same), at most MAX_ROWS around `mid`."""
+        lo_bin, hi_bin = int(lo_p // step) // 64 * 64, (int(hi_p // step) // 64 + 1) * 64
         if hi_bin - lo_bin > MAX_ROWS:
-            mid_bin = int(kl[-1][4] // step) // 32 * 32
+            mid_bin = int(mid // step) // 64 * 64
             lo_bin, hi_bin = mid_bin - MAX_ROWS // 2, mid_bin + MAX_ROWS // 2
         return lo_bin, hi_bin - lo_bin
 
-    async def view(self, sym: str, interval: str, candles: int = 200, per_candle: int = 4, after: float = 0.0) -> dict:
-        """The chart's answer. `after`: only the buckets from this time on (the page has the older ones) when the rows
-        are still the ones it has."""
+    async def view(self, sym: str, interval: str, t0: float | None = None, t1: float | None = None,
+                   res: float | None = None, plo: float | None = None, phi: float | None = None,
+                   after: float = 0.0) -> dict:
+        """The chart's answer: the candles, and the heat for the window it shows (t0..t1 seconds, prices plo..phi) at
+        `res` seconds a column (snapped to RESOLUTIONS, coarser when the window would need more than MAX_COLS).
+        `after`: only the columns from this time on (the page has the older ones)."""
         sym = self.market.check_symbol(sym)
         if interval not in STEPS:
             raise ValueError(f"interval must be one of {', '.join(STEPS)}")
         r = self.want(sym)
-        kl = (await self.market.klines(sym, interval))[-max(20, min(int(candles), 300)):]
+        kl = await self.market.klines(sym, interval)
         iv = STEPS[interval]
-        res = max(SAMPLE_S, iv / max(1, min(int(per_candle), 12)))
-        t0, t1 = kl[0][0] / 1000, kl[-1][0] / 1000 + iv
-        if (t1 - t0) / res > MAX_COLS:
-            res = math.ceil((t1 - t0) / MAX_COLS / SAMPLE_S) * SAMPLE_S
+        now = self.clock()
+        t0 = kl[0][0] / 1000 if t0 is None else max(float(t0), now - KEEP_S)
+        t1 = now + iv if t1 is None else float(t1)
+        if t1 <= t0:
+            raise ValueError("the window must end after it starts")
+        res = snap_res(max(float(res or SAMPLE_S), (t1 - t0) / MAX_COLS))
         out = {"symbol": sym, "interval": interval, "klines": kl, "status": r.status, "since": r.since,
                "columns": len(r.cols), "sample_s": SAMPLE_S, "res": res, "source": "Binance mainnet futures book",
-               "step": r.step, "grid": None, "book": None, "liqs": [], "trades": []}
+               "step": r.step, "grid": None, "book": None, "liqs": [], "trades": [], "t0": t0, "t1": t1, "now": now}
         if self.whales is not None:
             mk = self.whales.markers(sym)
-            out["liqs"] = [q for q in mk.get("liqs", []) if q["ts"] >= t0 * 1000]
-            out["trades"] = [x for x in mk.get("trades", []) if x["ts"] >= t0 * 1000]   # the volume bubbles
+            first = kl[0][0]
+            out["liqs"] = [q for q in mk.get("liqs", []) if q["ts"] >= first]
+            out["trades"] = [x for x in mk.get("trades", []) if x["ts"] >= first]   # the volume bubbles
         if r.step is None:
             return out
-        lo_bin, n = self.rows_for(kl, r.step)
-        times, counts, data, strength = r.grid(max(t0, after), t1, res, lo_bin, n)
-        out["grid"] = {"lo_bin": lo_bin, "rows": n, "times": times, "counts": counts, "partial": after > 0,
-                       "strength": strength, "data": base64.b64encode(data).decode()}
+        if plo is None or phi is None:
+            seen = [k for k in kl if t0 * 1000 <= k[0] < t1 * 1000] or kl[-60:]
+            lo_p, hi_p = min(k[3] for k in seen), max(k[2] for k in seen)
+            pad = (hi_p - lo_p) * 0.5 or hi_p * 0.002
+            plo, phi = lo_p - pad, hi_p + pad
+        lo_bin, n = self.rows_for(float(plo), float(phi), kl[-1][4], r.step)
+        times, data, strength = await r.grid(max(t0, float(after or 0)), t1, res, lo_bin, n)
+        out["grid"] = {"lo_bin": lo_bin, "rows": n, "times": times, "partial": bool(after), "strength": strength,
+                       "unit": K, "data": base64.b64encode(data).decode()}
         if r.book.synced:
             out["book"] = {"mid": r.book.mid(), "strength": round(r.book.strength(r.book.mid()), 4),
-                           "bids": list(r.book.bands(r.step, lo_bin, n, "bid")),
-                           "asks": list(r.book.bands(r.step, lo_bin, n, "ask"))}
+                           "bids": [round(v) for v in r.book.bands(r.step, lo_bin, n, "bid")],
+                           "asks": [round(v) for v in r.book.bands(r.step, lo_bin, n, "ask")],
+                           "best_bid": max(r.book.bids), "best_ask": min(r.book.asks)}
+            out["book_age"] = round(now - r.cols[-1][0], 2) if r.cols else None
         return out

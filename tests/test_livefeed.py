@@ -74,6 +74,7 @@ class Feed(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b.sent[0]["k"], [2])
         self.assertEqual([t["price"] for t in a.sent[0]["t"]], [2, 1])        # newest first
         self.assertEqual(a.sent[0]["tk"], {"last": 2})
+        self.assertGreater(a.sent[0]["lag"], 0)                            # how late the newest trade left the bot
         self.assertEqual(len(a.sent), 1)                                      # nothing new: nothing sent
 
     async def test_switching_coin_moves_the_page_and_idle_coins_close(self):
