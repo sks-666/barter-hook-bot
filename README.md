@@ -700,8 +700,10 @@ Everything they show comes from public Binance data, relayed by the bot, plus yo
   a cautious 1% until read), e.g. `90.9091 ⚠ −9.1% · 10x`. **Red ⚠** = liquidated before the stop. Hover: margin,
   maintenance rate, room between stop and liquidation, fees and the loss at the stop with fees. An estimate at the
   entry: funding paid over time moves the real one a little.
-* **Balances hidden by default:** the **👁 $** button in the top bar shows or hides your account money (the SUB / MAIN
-  switch's balances, the BALANCES cards and the coins line show `$••••` until you press it; each browser remembers
+* **Balances and P&L hidden by default:** the **👁 $** button in the top bar shows or hides your account money and P&L (the SUB / MAIN
+  switch's balances, the BALANCES cards, the coins line, and every P&L: Positions & P&L, Account positions, the
+  Trade button's open / today / realised, closed trades and the signal types' results, without their green / red; they
+  show `••••` until you press it; each browser remembers
   your choice). The trade ticket popup still shows the margin and what is available, since you need them to trade.
 * **Account balances** (Positions & P&L, and the Account positions block under the signals): futures wallet,
   available, open P&L and equity, plus the **spot** wallet (every coin valued in USDT, read every minute, read-only)

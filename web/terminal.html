@@ -377,7 +377,7 @@
   <span id="t-mode" class="tag">PAPER</span>
   <span><span id="t-dot" class="dot"></span><span id="t-feed">connecting…</span></span>
   <span id="t-halt"></span>
-  <button id="t-bal" type="button" aria-pressed="false" title="Show or hide your account balances (hidden by default; this browser remembers it)">👁 $</button>
+  <button id="t-bal" type="button" aria-pressed="false" title="Show or hide your account balances and P&L (hidden by default; this browser remembers it)">👁 $</button>
   <select id="t-acct" hidden aria-label="Account the order ticket and Trade button use" title="Which Binance account the order ticket, balances and the Trade button use. Open trades on the other one stay managed."></select>
   <span class="spacer"></span>
   <span id="t-clock"></span>
@@ -901,15 +901,17 @@ async function loadAcct() {
 // account money is hidden until you show it (👁 $ in the top bar; per browser): $•••• instead of the amount
 S.showBal = lsGet("term-show-bal") === "1";
 const hid = (v, f = usd) => S.showBal ? f(v) : "$••••";
+const pl = (v, f = sgMoney) => S.showBal ? f(v) : "••••";       // a P&L figure (hidden with the balances)
+const plc = v => S.showBal ? cls(v) : "";                         // ...and its green / red, which would give it away
 function setShowBal(on) {
   S.showBal = on; lsSet("term-show-bal", on ? "1" : "0");
   const b = $("t-bal");
   b.setAttribute("aria-pressed", String(on)); b.textContent = on ? "👁 $ shown" : "👁 $";
-  b.title = on ? "Hide your account balances" : "Show your account balances (hidden by default; this browser remembers it)";
-  renderAccts(); if (S.snap) renderPos(); renderSignals();
+  b.title = on ? "Hide your account balances and P&L" : "Show your account balances and P&L (hidden by default; this browser remembers it)";
+  renderAccts(); if (S.snap) renderPos(); renderSignals(); if (typeof renderTypes === "function") renderTypes();
 }
 $("t-bal").addEventListener("click", () => setShowBal(!S.showBal));
-if (S.showBal) { $("t-bal").setAttribute("aria-pressed", "true"); $("t-bal").textContent = "👁 $ shown"; $("t-bal").title = "Hide your account balances"; }
+if (S.showBal) { $("t-bal").setAttribute("aria-pressed", "true"); $("t-bal").textContent = "👁 $ shown"; $("t-bal").title = "Hide your account balances and P&L"; }
 // futures + spot balances, read-only (the futures wallet from the account read, the spot wallet every minute)
 function balancesHtml(a) {
   if (!a || a.balance == null) return "";
@@ -919,7 +921,7 @@ function balancesHtml(a) {
   let h = `<div class="kpis bal">` +
     kpi("Futures wallet", hid(a.balance), "", "USDT in the futures wallet, before open P&L") +
     kpi("Futures avail.", hid(a.available), "", "What new orders can use as margin") +
-    kpi("Futures P&amp;L", hid(a.unrealized), S.showBal ? cls(a.unrealized) : "", "Open positions' unrealised P&L") +
+    kpi("Futures P&amp;L", hid(a.unrealized), plc(a.unrealized), "Open positions' unrealised P&L") +
     kpi("Futures equity", hid(a.equity), "", "Wallet + open P&L") +
     (sp ? kpi("Spot total", spOk ? (S.showBal ? "≈" : "") + hid(sp.total_usd) : "—", "", spOk ? "Every coin in the spot wallet valued in USDT" : sp.error) +
           kpi("Spot USDT", spOk ? hid(sp.usdt) : "—", "", "USDT in the spot wallet (free + in orders)") +
@@ -1357,8 +1359,8 @@ function renderPos() {
   const s = S.snap, st = s.stats;
   $("pos-k").textContent = `${st.open}/${st.max_open} open · ${big(st.open_notional)} notional`;
   const kpi = (l, v, c = "") => `<div><div class="l">${l}</div><div class="v ${c}">${v}</div></div>`;
-  let html = `<div class="kpis">${kpi("Realised", usd(st.realized), cls(st.realized))}${kpi("Today", usd(st.day), cls(st.day))}
-    ${kpi("Unrealised", usd(st.unrealized), cls(st.unrealized))}${kpi("Day limit", usd(-st.day_limit, 0), "dn")}
+  let html = `<div class="kpis">${kpi("Realised", hid(st.realized), plc(st.realized))}${kpi("Today", hid(st.day), plc(st.day))}
+    ${kpi("Unrealised", hid(st.unrealized), plc(st.unrealized))}${kpi("Day limit", usd(-st.day_limit, 0), "dn")}
     ${kpi("Win rate", st.wins + st.losses ? (st.win_rate * 100).toFixed(0) + "%" : "—")}${kpi("W / L", `${st.wins} / ${st.losses}`)}</div>`;
   html += s.positions.length ? `<table><thead><tr><th>Coin</th><th>Notional</th><th>Entry bp</th><th>Now bp</th><th>Z</th><th>Funding</th><th>Unreal</th><th>Held</th></tr></thead><tbody>` +
     s.positions.map(p => `<tr class="click" data-sym="${esc(p.sym)}"><td class="amb">${esc(p.sym.replace(/USDT$/, ""))}${p.live ? " ●" : ""}${p.manual ? " M" : ""}${p.stuck ? ' <span class="dn">STUCK</span>' : ""}</td>
@@ -1371,12 +1373,12 @@ function renderPos() {
   html += acct.length ? `<table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th>Size $</th><th>Entry</th><th>Mark</th><th>P&amp;L (ROE)</th></tr></thead><tbody>` +
     acct.map(p => `<tr class="click" data-sym="${esc(p.symbol)}"><td class="amb">${esc(p.symbol.replace(/USDT$/, ""))}</td><td>${srcTag(p.source)}</td>
       <td class="${p.side === "long" ? "up" : "dn"}">${p.side === "long" ? "LONG" : "SHORT"} ${p.leverage}x</td><td>${big(p.notional)}</td>
-      <td>${px(p.entry)}</td><td>${px(p.mark)}</td><td class="${cls(p.pnl)}">${usd(p.pnl)} (${sgn(p.roe, 2)}%)</td></tr>`).join("") +
+      <td>${px(p.entry)}</td><td>${px(p.mark)}</td><td class="${plc(p.pnl)}">${S.showBal ? `${usd(p.pnl)} (${sgn(p.roe, 2)}%)` : "••••"}</td></tr>`).join("") +
     `</tbody></table>` : `<div class="empty">${S.acct ? "No open futures positions." : "Futures account not available in this bot."}</div>`;
   html += `<div class="sub">RECENT TRADES</div>`;
   html += s.trades.length ? `<table><thead><tr><th>Coin</th><th>Closed</th><th>P&amp;L</th><th>bp</th><th>Held</th><th>Reason</th></tr></thead><tbody>` +
     s.trades.map(t => `<tr class="click" data-sym="${esc(t.sym)}"><td class="amb">${esc(t.sym.replace(/USDT$/, ""))}</td><td>${hms(t.closed_at * 1000)}</td>
-      <td class="${cls(t.pnl)}">${usd(t.pnl, 3)}</td><td class="${cls(t.bps)}">${sgn(t.bps)}</td><td>${dur(t.held_s)}</td><td class="mut">${esc(t.reason)}</td></tr>`).join("") +
+      <td class="${plc(t.pnl)}">${pl(t.pnl, v => usd(v, 3))}</td><td class="${plc(t.bps)}">${pl(t.bps, sgn)}</td><td>${dur(t.held_s)}</td><td class="mut">${esc(t.reason)}</td></tr>`).join("") +
     `</tbody></table>` : `<div class="empty">No closed trades yet.</div>`;
   $("pos").innerHTML = html;
 }
@@ -2174,12 +2176,12 @@ function renderTypes() {
         <td class="wrap mut">${t.needs.length ? t.needs.map(esc).join(" · ") : "—"}</td>
         <td title="${esc(T.entries[t.entry] || "")}">${esc(t.entry)}</td><td>${t.stop_atr} · ${t.tp1_r}R · ${t.tp2_r}R</td><td>${t.min_quality}</td><td>×${t.risk_mult}</td>
         <td>${r ? r.closed : 0}</td><td>${r && r.win_rate != null ? Math.round(r.win_rate * 100) + "%" : "—"}</td>
-        <td class="${r && r.avg_r != null ? cls(r.avg_r) : "mut"}">${r ? fmtR(r.avg_r) : "—"}</td><td class="${r ? cls(r.pnl) : "mut"}">${r ? sgMoney(r.pnl) : "—"}</td>
+        <td class="${r && r.avg_r != null ? cls(r.avg_r) : "mut"}">${r ? fmtR(r.avg_r) : "—"}</td><td class="${r ? plc(r.pnl) : "mut"}">${r ? pl(r.pnl) : "—"}</td>
         <td style="white-space:nowrap">${can ? `<button type="button" class="ty-b" data-ty-copy="${k}" title="Make a custom type starting from this one">Copy</button>` +
           (t.custom ? `<button type="button" class="ty-b" data-ty-edit="${k}">Edit</button><button type="button" class="ty-b dn" data-ty-del="${k}">Delete</button>` : "") : ""}</td></tr>`; }).join("") +
     `</tbody></table></div>`;
   const other = Object.entries(st).filter(([k]) => !T.types.some(t => t.key === k));
-  if (other.length) h += `<div class="mut" style="font-size:.88em;padding:2px 8px">Also closed: ${other.map(([, r]) => `${esc(r.name)}: ${r.closed} trades, ${sgMoney(r.pnl)} $${r.avg_r != null ? ", " + fmtR(r.avg_r) : ""}`).join(" · ")}</div>`;
+  if (other.length) h += `<div class="mut" style="font-size:.88em;padding:2px 8px">Also closed: ${other.map(([, r]) => `${esc(r.name)}: ${r.closed} trades, ${pl(r.pnl)} $${r.avg_r != null ? ", " + fmtR(r.avg_r) : ""}`).join(" · ")}</div>`;
   if (S.typeEdit) h += typeEditor(S.typeEdit);
   el.innerHTML = h;
 }
@@ -2376,10 +2378,10 @@ function sigAuto() {
     (real ? "" : autoTfCell(a)) +
     cell("Status", a.error ? esc(a.error) : real && a.blocked.startsWith("button only") ? "press ▶ Trade on a signal" : a.blocked ? esc(a.blocked) : "looking for entries", a.error ? "dn" : a.blocked && !real ? "wrn" : "up", a.error || a.blocked || "") +
     autoMaxCell(a, open.length) +
-    cell("Its open P&amp;L", sgMoney(upnl) + " $", cls(upnl)) +
+    cell("Its open P&amp;L", pl(upnl) + " $", plc(upnl)) +
     (S.acct ? cell("Whole account", `${S.acct.positions.length} pos · ${(S.acct.orders || []).length} orders`, "", `Every position and order on the ${esc(a.venue)} account, whoever opened it: listed below`) : "") +
-    cell("Today", sgMoney(st.today) + " $", cls(st.today), `Today's result for the daily loss limit ($${a.daily_loss_usd}). Trades closed by Binance's auto-deleveraging are not counted here.`) +
-    cell("Realised", sgMoney(st.realized) + " $" + (st.adl_count ? ` <span class="mut" style="font-size:.8em">ADL ${sgMoney(st.adl_pnl)}</span>` : ""), cls(st.realized),
+    cell("Today", pl(st.today) + " $", plc(st.today), `Today's result for the daily loss limit ($${a.daily_loss_usd}). Trades closed by Binance's auto-deleveraging are not counted here.`) +
+    cell("Realised", pl(st.realized) + " $" + (st.adl_count && S.showBal ? ` <span class="mut" style="font-size:.8em">ADL ${sgMoney(st.adl_pnl)}</span>` : ""), plc(st.realized),
          st.adl_count ? `Includes ${st.adl_count} trade(s) Binance closed itself by auto-deleveraging (${sgMoney(st.adl_pnl)} $): the exchange took a profitable position away at the price of a liquidated trader.` : "") +
     cell("Won / lost", `${st.wins} / ${st.losses}${st.win_rate != null ? ` · ${Math.round(st.win_rate * 100)}%` : ""}`) +
     autoRiskCell(a) +
@@ -2401,13 +2403,13 @@ function sigTrades() {
   if (!acct && !a) return `<h3>Account positions</h3><div class="mut">No futures account in this bot. The testnet bot (port 8767) trades the demo account.</div>`;
   const tag = s => s === "signal" ? `<span class="src ticket" title="Opened by the signal auto-trader">SIGNAL</span>` : srcTag(s);
   const total = rows.reduce((t, r) => t + (r.pnl || 0), 0);
-  let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")}${acct?.account_label ? " · " + esc(acct.account_label) : ""} · ${rows.length} open · <span class="${cls(total)}">${sgMoney(total)} $</span></h3>` + balancesHtml(acct);
+  let h = `<h3>Account positions · ${esc(acct?.venue || "testnet")}${acct?.account_label ? " · " + esc(acct.account_label) : ""} · ${rows.length} open · <span class="${plc(total)}">${pl(total)} $</span></h3>` + balancesHtml(acct);
   const pend = a ? Object.entries(a.pending) : [];
   h += rows.length || pend.length ? `<div style="overflow-x:auto"><table><thead><tr><th>Coin</th><th>Opened by</th><th>Side</th><th title="Leverage of the position on Binance">Lev</th><th>Size $</th><th>Entry</th><th>Now</th><th>Stop</th><th>Target</th><th>P&amp;L $</th><th>Held</th></tr></thead><tbody>` +
     rows.map(r => `<tr class="click${r.symbol === S.sym ? " sel" : ""}" data-sym="${esc(r.symbol)}"><td class="amb">${sgCoin(r.symbol)}</td><td>${tag(r.source)}</td>
       <td class="${r.long ? "up" : "dn"}">${r.long ? "LONG" : "SHORT"}</td><td class="mut">${r.lev ? r.lev + "x" : "—"}</td><td>${r.notional ? big(r.notional) : "—"}</td><td>${px(r.entry)}</td><td>${r.mark ? px(r.mark) : "—"}</td>
       <td class="dn">${r.stop ? px(r.stop) : "—"}</td><td class="up">${r.target ? px(r.target) : "—"}</td>
-      <td class="${cls(r.pnl || 0)}">${r.pnl != null ? sgMoney(r.pnl) : "—"}${r.roe != null ? `<span class="sub mut" style="display:block;font-size:.82em">${sgn(r.roe, 1)}%</span>` : ""}</td>
+      <td class="${plc(r.pnl || 0)}">${r.pnl != null ? pl(r.pnl) : "—"}${r.roe != null && S.showBal ? `<span class="sub mut" style="display:block;font-size:.82em">${sgn(r.roe, 1)}%</span>` : ""}</td>
       <td class="mut">${r.opened ? dur((now - r.opened) / 1000) : "—"}</td></tr>`).join("") +
     pend.map(([s, m]) => `<tr class="click mut" data-sym="${esc(s)}"><td class="amb">${sgCoin(s)}</td><td>${tag("signal")}</td><td>${m.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${m.leverage ? m.leverage + "x" : "—"}</td>
       <td></td><td>${px(m.price || m.entry)}</td><td colspan="5">limit order waiting to fill</td></tr>`).join("") + `</tbody></table></div>`
@@ -2417,7 +2419,7 @@ function sigTrades() {
     ? `<table><thead><tr><th>Coin</th><th>Side</th><th title="Leverage the trade was opened at (— for trades from before this was recorded)">Lev</th><th title="Signal type (— for trades from before types)">Type</th><th>Closed</th><th>Why</th><th>P&amp;L $</th></tr></thead><tbody>` +
       a.trades.slice(0, 15).map(t => `<tr class="click" data-sym="${esc(t.symbol)}"><td class="amb">${sgCoin(t.symbol)}</td>
         <td class="${t.side === "buy" ? "up" : "dn"}">${t.side === "buy" ? "LONG" : "SHORT"}</td><td class="mut">${t.leverage ? t.leverage + "x" : "—"}</td><td class="mut">${esc(t.type_name || "—")}${t.manual ? ` <span class="amb" title="You opened it with the Trade button">· you</span>` : ""}</td><td class="mut">${t.closed_ms ? hms(t.closed_ms) : "—"}</td>
-        <td class="mut">${esc(t.why || "")}</td><td class="${cls(t.pnl || 0)}">${t.pnl != null ? sgMoney(t.pnl) : "…"}</td></tr>`).join("") + `</tbody></table>`
+        <td class="mut">${esc(t.why || "")}</td><td class="${plc(t.pnl || 0)}">${t.pnl != null ? pl(t.pnl) : "…"}</td></tr>`).join("") + `</tbody></table>`
     : `<div class="mut">None yet.</div>`);
   return h;
 }
