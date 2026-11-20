@@ -109,9 +109,16 @@ and committed here, then copied over (step 2 below).
 * **Read-only key check before mainnet** (sends no order):
   `cd /srv/apps/binance-arb-bot && set -a && . ./.env && set +a && .venv/bin/python run.py --check --config config.toml`.
   Your home IP changes from time to time; when Binance answers `-2015 Invalid API-key, IP, or permissions`, add the
-  new IP to the API key's allow-list on Binance.
-* **Which address for the phone:** `hostname -I` (the first address); it changes between networks. The phone link is
-  `http://<that address>:<port>/?key=$(cat /srv/apps/binance-arb-bot/data/lan-key-<port>.txt)`.
+  new IP to the API key's allow-list on Binance. **A VPN changes it too:** with NordVPN on, Binance sees the VPN
+  server's address, not your home one, so the start fails with `-2015` unless that address is also on the key's
+  allow-list (or the VPN is off). The same applies to the main account's key. Check what Binance will see with
+  `curl -s https://api.ipify.org`.
+* **Which address for the phone:** `mainnet.sh start` / `restart` / `status` print the dashboard address with this
+  computer's current Wi-Fi address filled in (it skips VPN and Docker addresses), plus the command that prints the
+  full key link. The address changes between networks (it has been `192.168.1.77` and `192.168.100.139`). By hand:
+  `hostname -I`, and the phone link is
+  `http://<that address>:<port>/?key=$(cat /srv/apps/binance-arb-bot/data/lan-key-<port>.txt)`. Don't paste the key
+  link into chats or screenshots; if it got out, delete `data/lan-key-8770.txt` and restart mainnet for a new key.
 
 **Deploying a change** (code is edited and committed in this folder):
 
@@ -131,6 +138,24 @@ git push origin main
 
 On macOS the launcher scripts below (`Start Binance Bots.command`, `start-bots.sh`) still do the same from the project
 folder.
+
+### Keeping keys and tokens out of git
+
+The bots hold the keys to real money, so no secret is ever committed or pushed:
+
+* **Where secrets live:** `.env` (the Binance sub, main and testnet API keys and secrets, the Telegram token, the
+  dashboard tokens) and `data/` (the dashboard LAN keys `data/lan-key-<port>.txt`, account and trader state). Both are
+  in `.gitignore`, as are `logs/` and the Freqtrade credentials. Only `.env.example`, with empty values, is committed.
+  Check a file with `git check-ignore -v .env data/lan-key-8770.txt`.
+* **A check before every push** (`.git/hooks/pre-push`, on this computer only: git hooks are not committed or cloned).
+  It refuses the push if the commits being pushed add a `.env`, `data/` or `lan-key` file, or contain the value of any
+  variable from `/srv/apps/binance-arb-bot/.env` or this folder's `.env`, or a dashboard LAN key. It prints only the
+  variable's name, never the value, and nothing is sent. Remove the secret from those commits
+  (`git reset --soft origin/main`, fix, commit again) and push again. A fresh clone does not have the hook; copy it
+  from this folder.
+* **If a secret did get out** (pushed, pasted or screenshotted): delete that API key on Binance and make a new one
+  (Futures only, no withdrawals, IP-restricted), revoke the Telegram token with @BotFather, or delete the
+  `data/lan-key-<port>.txt` and restart that bot. Rewriting git history afterwards does not make a pushed key safe again.
 
 ## The strategy, and what it can honestly deliver
 
